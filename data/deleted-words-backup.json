@@ -1,0 +1,1479 @@
+{
+  "deletedAt": "2026-05-30T15:36:21.011Z",
+  "source": "deepseek_missing_library_audit",
+  "model": "deepseek-v4-flash",
+  "deletedCount": 56,
+  "items": [
+    {
+      "kanji": "日常",
+      "reason": "太基础教材化，单独成词画面感弱，不好做标题和配图。",
+      "deletedAt": "2026-05-30T10:52:45.459Z",
+      "original": {
+        "kanji": "日常",
+        "reading": "にちじょう",
+        "meaning": "日常、每天的生活",
+        "category": "日常",
+        "popularity": 85,
+        "source": "NHK",
+        "cover": "🏠",
+        "explanation": "指每天重复的平凡生活。近年日本社交媒体上常与「非日常」对比使用。",
+        "synonyms": [
+          "毎日",
+          "平常"
+        ],
+        "example": "日常に小さな幸せを見つける。",
+        "status": "approved",
+        "createdAt": "2026-05-15",
+        "updatedAt": "2026-05-15",
+        "sourceType": "manual",
+        "verified": false
+      }
+    },
+    {
+      "kanji": "選択肢",
+      "reason": "过于教材和抽象，单独做小红书日语选题画面感弱。",
+      "deletedAt": "2026-05-30T10:52:45.459Z",
+      "original": {
+        "kanji": "選択肢",
+        "reading": "せんたくし",
+        "meaning": "选项、选择",
+        "category": "日常",
+        "popularity": 65,
+        "source": "NHK",
+        "cover": "🔀",
+        "explanation": "指可供选择的项目。日本年轻人面对人生选择时常提到。",
+        "synonyms": [
+          "オプション",
+          "チョイス"
+        ],
+        "example": "選択肢を増やすことが大切。",
+        "status": "approved",
+        "createdAt": "2026-05-15",
+        "updatedAt": "2026-05-15",
+        "sourceType": "manual",
+        "verified": false
+      }
+    },
+    {
+      "kanji": "効率",
+      "reason": "抽象概念，配图困难，标题吸引力不足。",
+      "deletedAt": "2026-05-30T10:52:45.459Z",
+      "original": {
+        "kanji": "効率",
+        "reading": "こうりつ",
+        "meaning": "效率",
+        "category": "日常",
+        "popularity": 82,
+        "source": "YouTube",
+        "cover": "⚡",
+        "explanation": "日本社会极重视效率，近年更是流行「効率化」「時短」。",
+        "synonyms": [
+          "スピード",
+          "生産性"
+        ],
+        "example": "作業効率を上げたい。",
+        "status": "approved",
+        "createdAt": "2026-05-15",
+        "updatedAt": "2026-05-15",
+        "sourceType": "manual",
+        "verified": false
+      }
+    },
+    {
+      "kanji": "改善",
+      "reason": "偏商务表达，日常使用频率较低，不好做标题。",
+      "deletedAt": "2026-05-30T10:52:45.459Z",
+      "original": {
+        "kanji": "改善",
+        "reading": "かいぜん",
+        "meaning": "改善",
+        "category": "日常",
+        "popularity": 70,
+        "source": "ビジネス",
+        "cover": "🔧",
+        "explanation": "源自丰田生产方式的「カイゼン」，已融入日常用语。",
+        "synonyms": [
+          "改良",
+          "向上"
+        ],
+        "example": "毎日少しずつ改善する。",
+        "status": "approved",
+        "createdAt": "2026-05-15",
+        "updatedAt": "2026-05-15",
+        "sourceType": "manual",
+        "verified": false
+      }
+    },
+    {
+      "kanji": "優先",
+      "reason": "抽象，不好配图，标题价值低。",
+      "deletedAt": "2026-05-30T10:52:45.459Z",
+      "original": {
+        "kanji": "優先",
+        "reading": "ゆうせん",
+        "meaning": "优先",
+        "category": "日常",
+        "popularity": 72,
+        "source": "Instagram",
+        "cover": "📌",
+        "explanation": "强调把重要的事放在前面。近年流行「優先順位」话题。",
+        "synonyms": [
+          "ファースト",
+          "プライオリティ"
+        ],
+        "example": "自分を優先すること。",
+        "status": "approved",
+        "createdAt": "2026-05-15",
+        "updatedAt": "2026-05-15",
+        "sourceType": "manual",
+        "verified": false
+      }
+    },
+    {
+      "kanji": "卍",
+      "reason": "潮流已过，无实义，配图困难，易引起误解（宗教/政治符号风险），内容价值低。",
+      "deletedAt": "2026-05-30T10:52:45.459Z",
+      "original": {
+        "kanji": "卍",
+        "reading": "まんじ",
+        "meaning": "（无实义，强调语气）",
+        "category": "若者語",
+        "popularity": 60,
+        "source": "Twitter",
+        "cover": "🔮",
+        "explanation": "2016-2018年流行的语尾装饰，无实际意义但增添语气。",
+        "synonyms": [
+          "（語尾装飾）"
+        ],
+        "example": "それな卍",
+        "status": "approved",
+        "createdAt": "2026-05-15",
+        "updatedAt": "2026-05-15",
+        "sourceType": "manual",
+        "verified": false
+      }
+    },
+    {
+      "kanji": "AI",
+      "reason": "太基础、太教材，作为单独词条内容单薄，更建议做具体领域如ChatGPT、生成AI等。",
+      "deletedAt": "2026-05-30T10:52:45.459Z",
+      "original": {
+        "kanji": "AI",
+        "reading": "えーあい",
+        "meaning": "人工智能",
+        "category": "ビジネス",
+        "popularity": 95,
+        "source": "SNS総合",
+        "cover": "🤖",
+        "explanation": "2023年后日本最热门话题之一。ChatGPT影响深远。",
+        "synonyms": [
+          "人工知能",
+          "機械学習"
+        ],
+        "example": "AIに仕事奪われる？",
+        "status": "approved",
+        "createdAt": "2026-05-15",
+        "updatedAt": "2026-05-15",
+        "sourceType": "manual",
+        "verified": false
+      }
+    },
+    {
+      "kanji": "蜩",
+      "reason": "太专门小众，不好配图（昆虫可能劝退），标题难做，内容延展弱。",
+      "deletedAt": "2026-05-30T10:52:45.459Z",
+      "original": {
+        "kanji": "蜩",
+        "reading": "ひぐらし",
+        "meaning": "茅蜩（秋蝉）",
+        "category": "自然",
+        "popularity": 50,
+        "source": "歌詞",
+        "cover": "🦗",
+        "explanation": "夏末秋初鸣叫的蝉，日本文学中秋天的意象。",
+        "synonyms": [
+          "蝉",
+          "秋の虫"
+        ],
+        "example": "蜩の声が聞こえる。",
+        "status": "approved",
+        "createdAt": "2026-05-15",
+        "updatedAt": "2026-05-15",
+        "sourceType": "manual",
+        "verified": false
+      }
+    },
+    {
+      "kanji": "英語学習",
+      "reason": "过于教材，且与日语账号方向弱，单独做词内容价值低。",
+      "deletedAt": "2026-05-30T10:52:45.459Z",
+      "original": {
+        "kanji": "英語学習",
+        "reading": "えいごがくしゅう",
+        "meaning": "英语学习",
+        "category": "学習",
+        "popularity": 80,
+        "source": "YouTube",
+        "cover": "🇬🇧",
+        "explanation": "日本人的英语学习热潮持续不减。",
+        "synonyms": [
+          "英会話",
+          "TOEIC"
+        ],
+        "example": "英語学習始めた。",
+        "status": "approved",
+        "createdAt": "2026-05-15",
+        "updatedAt": "2026-05-15",
+        "sourceType": "manual",
+        "verified": false
+      }
+    },
+    {
+      "kanji": "オンライン",
+      "reason": "过于基础教材化，单独做选题画面感弱，标题价值低，与账号方向融合度不高。",
+      "deletedAt": "2026-05-30T10:52:45.459Z",
+      "original": {
+        "kanji": "オンライン",
+        "reading": "おんらいん",
+        "meaning": "线上",
+        "category": "トレンド",
+        "popularity": 76,
+        "source": "ビジネス",
+        "cover": "🌐",
+        "explanation": "各种活动线上化成为新常态。",
+        "synonyms": [
+          "ネット",
+          "デジタル"
+        ],
+        "example": "オンライン授業に慣れた。",
+        "status": "approved",
+        "createdAt": "2026-05-15",
+        "updatedAt": "2026-05-15",
+        "sourceType": "manual",
+        "verified": false
+      }
+    },
+    {
+      "kanji": "スマホ",
+      "reason": "太基础，不好做单独选题和配图，与账号方向弱",
+      "deletedAt": "2026-05-30T10:52:45.459Z",
+      "original": {
+        "kanji": "スマホ",
+        "reading": "すまほ",
+        "meaning": "智能手机",
+        "category": "テクノロジー",
+        "popularity": 88,
+        "source": "SNS総合",
+        "cover": "📱",
+        "explanation": "日本人生活不可或缺的设备。屏幕时间问题受关注。",
+        "synonyms": [
+          "携帯",
+          "ケータイ"
+        ],
+        "example": "スマホ依存かも…",
+        "status": "approved",
+        "createdAt": "2026-05-15",
+        "updatedAt": "2026-05-15",
+        "sourceType": "manual",
+        "verified": false
+      }
+    },
+    {
+      "kanji": "消費",
+      "reason": "过于基础教材化，单独词条画面感弱，内容价值低。",
+      "deletedAt": "2026-05-30T10:52:45.459Z",
+      "original": {
+        "kanji": "消費",
+        "reading": "しょうひ",
+        "meaning": "消费",
+        "category": "その他",
+        "popularity": 65,
+        "source": "ビジネス",
+        "cover": "💳",
+        "explanation": "日本消费文化变迁是社会热门话题。",
+        "synonyms": [
+          "買い物",
+          "ショッピング"
+        ],
+        "example": "消費のあり方を考える。",
+        "status": "approved",
+        "createdAt": "2026-05-15",
+        "updatedAt": "2026-05-15",
+        "sourceType": "manual",
+        "verified": false
+      }
+    },
+    {
+      "kanji": "洗濯",
+      "reason": "太普通的家务词，不好配图，标题吸引力低，内容价值弱。",
+      "deletedAt": "2026-05-30T10:52:45.459Z",
+      "original": {
+        "kanji": "洗濯",
+        "reading": "せんたく",
+        "meaning": "洗衣",
+        "category": "日常",
+        "popularity": 52,
+        "source": "LINE",
+        "cover": "👕",
+        "explanation": "日本主妇日常的象征性家务。",
+        "synonyms": [
+          "ランドリー",
+          "洗浄"
+        ],
+        "example": "洗濯物が山積み…",
+        "status": "approved",
+        "createdAt": "2026-05-15",
+        "updatedAt": "2026-05-15",
+        "sourceType": "manual",
+        "verified": false
+      }
+    },
+    {
+      "kanji": "マネジメント",
+      "reason": "过于教材和抽象，单独成词画面感弱，不好配图，标题吸引力不足。",
+      "deletedAt": "2026-05-30T10:52:45.459Z",
+      "original": {
+        "kanji": "マネジメント",
+        "reading": "まねじめんと",
+        "meaning": "管理",
+        "category": "ビジネス",
+        "popularity": 60,
+        "source": "ビジネス",
+        "cover": "📊",
+        "explanation": "人员或项目管理。日本商务核心能力之一。",
+        "synonyms": [
+          "経営",
+          "管理"
+        ],
+        "example": "マネジメント能力を磨く。",
+        "status": "approved",
+        "createdAt": "2026-05-15",
+        "updatedAt": "2026-05-15",
+        "sourceType": "manual",
+        "verified": false
+      }
+    },
+    {
+      "kanji": "感動",
+      "reason": "过于基础和教材，单独做标题和配图缺乏独特性。",
+      "deletedAt": "2026-05-30T10:52:45.459Z",
+      "original": {
+        "kanji": "感動",
+        "reading": "かんどう",
+        "meaning": "感动",
+        "category": "感情",
+        "popularity": 80,
+        "source": "YouTube",
+        "cover": "😭",
+        "explanation": "日本人容易被感动。感动分享是社交媒体重要内容。",
+        "synonyms": [
+          "涙",
+          "胸アツ"
+        ],
+        "example": "感動した！涙止まらない。",
+        "status": "approved",
+        "createdAt": "2026-05-15",
+        "updatedAt": "2026-05-15",
+        "sourceType": "manual",
+        "verified": false
+      }
+    },
+    {
+      "kanji": "資格",
+      "reason": "过于教材化和抽象，单独做小红书日语选题画面感弱，不好配图。",
+      "deletedAt": "2026-05-30T10:52:45.459Z",
+      "original": {
+        "kanji": "資格",
+        "reading": "しかく",
+        "meaning": "资格证书",
+        "category": "学習",
+        "popularity": 72,
+        "source": "YouTube",
+        "cover": "📜",
+        "explanation": "日本资格社会。各种资格考试是职场竞争力。",
+        "synonyms": [
+          "免許",
+          "ライセンス"
+        ],
+        "example": "資格取得を目指す。",
+        "status": "approved",
+        "createdAt": "2026-05-15",
+        "updatedAt": "2026-05-15",
+        "sourceType": "manual",
+        "verified": false
+      }
+    },
+    {
+      "kanji": "語学",
+      "reason": "表达过于宽泛和教材，单独成词内容价值低，不好配图。",
+      "deletedAt": "2026-05-30T10:52:45.459Z",
+      "original": {
+        "kanji": "語学",
+        "reading": "ごがく",
+        "meaning": "语言学习",
+        "category": "学習",
+        "popularity": 70,
+        "source": "YouTube",
+        "cover": "🗣️",
+        "explanation": "日本人的语言学习热情。英语、中文、韩语最多。",
+        "synonyms": [
+          "外国語",
+          "ランゲージ"
+        ],
+        "example": "語学勉強楽しい。",
+        "status": "approved",
+        "createdAt": "2026-05-15",
+        "updatedAt": "2026-05-15",
+        "sourceType": "manual",
+        "verified": false
+      }
+    },
+    {
+      "kanji": "スマート家電",
+      "reason": "单词为英语外来语组合，缺乏日语独有文化内涵，内容延展有限。",
+      "deletedAt": "2026-05-30T10:52:45.459Z",
+      "original": {
+        "kanji": "スマート家電",
+        "reading": "すまーとかでん",
+        "meaning": "智能家电",
+        "category": "テクノロジー",
+        "popularity": 58,
+        "source": "YouTube",
+        "cover": "🏠",
+        "explanation": "IoT家电在日本普及中。",
+        "synonyms": [
+          "IoT家電",
+          "connected家電"
+        ],
+        "example": "スマート家電で快適生活。",
+        "status": "approved",
+        "createdAt": "2026-05-15",
+        "updatedAt": "2026-05-15",
+        "sourceType": "manual",
+        "verified": false
+      }
+    },
+    {
+      "kanji": "インボイス",
+      "reason": "话题偏商业，配图困难，标题不易吸引普通用户，内容价值较低。",
+      "deletedAt": "2026-05-30T10:52:45.459Z",
+      "original": {
+        "kanji": "インボイス",
+        "reading": "いんぼいす",
+        "meaning": "发票制度",
+        "category": "ビジネス",
+        "popularity": 60,
+        "source": "NHK",
+        "cover": "🧾",
+        "explanation": "2023年10月日本实施的新发票制度。话题性高。",
+        "synonyms": [
+          "インボイス制度",
+          "適格請求書"
+        ],
+        "example": "インボイス対応しなきゃ。",
+        "status": "approved",
+        "createdAt": "2026-05-15",
+        "updatedAt": "2026-05-15",
+        "sourceType": "manual",
+        "verified": false
+      }
+    },
+    {
+      "kanji": "Z会",
+      "reason": "品牌词，中国用户认知度低，配图难，标题不具吸引力，内容价值低。",
+      "deletedAt": "2026-05-30T10:52:45.459Z",
+      "original": {
+        "kanji": "Z会",
+        "reading": "ぜっとかい",
+        "meaning": "Z会（日本知名补习班）",
+        "category": "学習",
+        "popularity": 56,
+        "source": "学習",
+        "cover": "📐",
+        "explanation": "日本最难的通信教育。考上名校的代名词。",
+        "synonyms": [
+          "進研ゼミ",
+          "塾"
+        ],
+        "example": "Z会やってた。",
+        "status": "approved",
+        "createdAt": "2026-05-15",
+        "updatedAt": "2026-05-15",
+        "sourceType": "manual",
+        "verified": false
+      }
+    },
+    {
+      "kanji": "最適化",
+      "reason": "抽象概念，画面感弱，不适合单独成词",
+      "deletedAt": "2026-05-30T10:52:45.459Z",
+      "original": {
+        "kanji": "最適化",
+        "reading": "さいてきか",
+        "meaning": "最优化",
+        "category": "ビジネス",
+        "popularity": 60,
+        "source": "YouTube",
+        "cover": "⚙️",
+        "explanation": "将工作和生活优化到最佳状态。",
+        "synonyms": [
+          "オプティマイズ",
+          "効率化"
+        ],
+        "example": "生活の最適化を図る。",
+        "status": "approved",
+        "createdAt": "2026-05-15",
+        "updatedAt": "2026-05-15",
+        "sourceType": "manual",
+        "verified": false
+      }
+    },
+    {
+      "kanji": "ペーパーレス",
+      "reason": "概念无画面感，内容价值低",
+      "deletedAt": "2026-05-30T10:52:45.459Z",
+      "original": {
+        "kanji": "ペーパーレス",
+        "reading": "ぺーぱーれす",
+        "meaning": "无纸化",
+        "category": "ビジネス",
+        "popularity": 54,
+        "source": "ビジネス",
+        "cover": "📄❌",
+        "explanation": "日本企业推进的数字化转型一环。",
+        "synonyms": [
+          "デジタル化",
+          "電子化"
+        ],
+        "example": "ペーパーレス化進めてる。",
+        "status": "approved",
+        "createdAt": "2026-05-15",
+        "updatedAt": "2026-05-15",
+        "sourceType": "manual",
+        "verified": false
+      }
+    },
+    {
+      "kanji": "りょ",
+      "reason": "过于简化的LINE用语，缺乏教育价值，不好配图做标题。",
+      "deletedAt": "2026-05-30T15:36:21.011Z",
+      "original": {
+        "kanji": "りょ",
+        "reading": "りょ",
+        "meaning": "了解、OK",
+        "category": "若者語",
+        "popularity": 55,
+        "source": "LINE",
+        "cover": "✅",
+        "explanation": "「了解」的极致省略，年轻人LINE常用。",
+        "synonyms": [
+          "OK",
+          "了解"
+        ],
+        "example": "りょ！",
+        "status": "approved",
+        "createdAt": "2026-05-15",
+        "updatedAt": "2026-05-15",
+        "sourceType": "manual",
+        "verified": false
+      }
+    },
+    {
+      "kanji": "うp",
+      "reason": "小众网络用语，源于2ch，普通用户不熟悉，视觉化困难。",
+      "deletedAt": "2026-05-30T15:36:21.011Z",
+      "original": {
+        "kanji": "うp",
+        "reading": "うぷ",
+        "meaning": "上传",
+        "category": "若者語",
+        "popularity": 50,
+        "source": "2ch",
+        "cover": "📤",
+        "explanation": "源自upload，2ch论坛文化的产物。",
+        "synonyms": [
+          "アップロード",
+          "投稿"
+        ],
+        "example": "うpしておいた。",
+        "status": "approved",
+        "createdAt": "2026-05-15",
+        "updatedAt": "2026-05-15",
+        "sourceType": "manual",
+        "verified": false
+      }
+    },
+    {
+      "kanji": "働き方改革",
+      "reason": "偏新闻政治，不适合小红书日语学习的轻松氛围，视觉化难度高。",
+      "deletedAt": "2026-05-30T15:36:21.011Z",
+      "original": {
+        "kanji": "働き方改革",
+        "reading": "はたらきかたかいかく",
+        "meaning": "工作方式改革",
+        "category": "ビジネス",
+        "popularity": 74,
+        "source": "NHK",
+        "cover": "💼",
+        "explanation": "安倍政权推动的工作方式改革，近年日本社会持续关注。",
+        "synonyms": [
+          "労働改革",
+          "ワークライフバランス"
+        ],
+        "example": "働き方改革が進まない。",
+        "status": "approved",
+        "createdAt": "2026-05-15",
+        "updatedAt": "2026-05-15",
+        "sourceType": "manual",
+        "verified": false
+      }
+    },
+    {
+      "kanji": "プレゼン",
+      "reason": "表现过于教材和普通，不适合小红书选题，不好配图，标题价值低。",
+      "deletedAt": "2026-05-30T15:36:21.011Z",
+      "original": {
+        "kanji": "プレゼン",
+        "reading": "ぷれぜん",
+        "meaning": "演示、提案",
+        "category": "ビジネス",
+        "popularity": 70,
+        "source": "ビジネス",
+        "cover": "🎤",
+        "explanation": "商务场景中最重要的技能之一。",
+        "synonyms": [
+          "提案",
+          "ピッチ"
+        ],
+        "example": "プレゼン資料作らなきゃ。",
+        "status": "approved",
+        "createdAt": "2026-05-15",
+        "updatedAt": "2026-05-15",
+        "sourceType": "manual",
+        "verified": false
+      }
+    },
+    {
+      "kanji": "DX",
+      "reason": "过于专业和抽象，普通用户不熟悉，不适合小红书日常选题。",
+      "deletedAt": "2026-05-30T15:36:21.011Z",
+      "original": {
+        "kanji": "DX",
+        "reading": "でぃーえっくす",
+        "meaning": "数字化转型",
+        "category": "ビジネス",
+        "popularity": 78,
+        "source": "ビジネス",
+        "cover": "🔄",
+        "explanation": "Digital Transformation的简称。日本企业近年重点推进。",
+        "synonyms": [
+          "デジタル化",
+          "IT化"
+        ],
+        "example": "DX推進部門に異動した。",
+        "status": "approved",
+        "createdAt": "2026-05-15",
+        "updatedAt": "2026-05-15",
+        "sourceType": "manual",
+        "verified": false
+      }
+    },
+    {
+      "kanji": "美食",
+      "reason": "过于普通通用，缺乏日语特色和画面感，标题价值低，不适合小红书日语选题。",
+      "deletedAt": "2026-05-30T15:36:21.011Z",
+      "original": {
+        "kanji": "美食",
+        "reading": "びしょく",
+        "meaning": "美食",
+        "category": "食",
+        "popularity": 82,
+        "source": "Instagram",
+        "cover": "🍽️",
+        "explanation": "Instagram最热门话题之一。日本「映え」文化的重要组成。",
+        "synonyms": [
+          "グルメ",
+          "絶品"
+        ],
+        "example": "美食巡りしたい。",
+        "status": "approved",
+        "createdAt": "2026-05-15",
+        "updatedAt": "2026-05-15",
+        "sourceType": "manual",
+        "verified": false
+      }
+    },
+    {
+      "kanji": "カフェ",
+      "reason": "常见外来语，太普通，无日语特色，配图标题一般，不适合作为日语选题核心词。",
+      "deletedAt": "2026-05-30T15:36:21.011Z",
+      "original": {
+        "kanji": "カフェ",
+        "reading": "かふぇ",
+        "meaning": "咖啡店",
+        "category": "食",
+        "popularity": 88,
+        "source": "Instagram",
+        "cover": "☕",
+        "explanation": "日本カフェ文化极盛。特色咖啡店是打卡圣地。",
+        "synonyms": [
+          "喫茶店",
+          "コーヒーショップ"
+        ],
+        "example": "カフェ巡りが趣味。",
+        "status": "approved",
+        "createdAt": "2026-05-15",
+        "updatedAt": "2026-05-15",
+        "sourceType": "manual",
+        "verified": false
+      }
+    },
+    {
+      "kanji": "タピオカ",
+      "reason": "过时流行语，外来语，非日语特有，话题热度已退，不适合当前账号方向。",
+      "deletedAt": "2026-05-30T15:36:21.011Z",
+      "original": {
+        "kanji": "タピオカ",
+        "reading": "たぴおか",
+        "meaning": "珍珠奶茶",
+        "category": "食",
+        "popularity": 75,
+        "source": "Instagram",
+        "cover": "🧋",
+        "explanation": "2018-2019年日本大流行的饮品。至今仍有影响力。",
+        "synonyms": [
+          "タピ活",
+          "ミルクティー"
+        ],
+        "example": "タピオカ飲みに行かない？",
+        "status": "approved",
+        "createdAt": "2026-05-15",
+        "updatedAt": "2026-05-15",
+        "sourceType": "manual",
+        "verified": false
+      }
+    },
+    {
+      "kanji": "読書",
+      "reason": "太普通太教材，不够独特，小红书日语选题价值低，且难做标题和配图。",
+      "deletedAt": "2026-05-30T15:36:21.011Z",
+      "original": {
+        "kanji": "読書",
+        "reading": "どくしょ",
+        "meaning": "读书",
+        "category": "学習",
+        "popularity": 76,
+        "source": "Instagram",
+        "cover": "📚",
+        "explanation": "日本读书文化深厚。#読書メーター 是SNS热门标签。",
+        "synonyms": [
+          "ブックリーディング",
+          "本"
+        ],
+        "example": "読書が一番の自己投資。",
+        "status": "approved",
+        "createdAt": "2026-05-15",
+        "updatedAt": "2026-05-15",
+        "sourceType": "manual",
+        "verified": false
+      }
+    },
+    {
+      "kanji": "生成AI",
+      "reason": "技术术语过强，不适合小红书日语选题，不好配图做标题，与账号方向偏离。",
+      "deletedAt": "2026-05-30T15:36:21.011Z",
+      "original": {
+        "kanji": "生成AI",
+        "reading": "せいせいえーあい",
+        "meaning": "生成式AI",
+        "category": "テクノロジー",
+        "popularity": 90,
+        "source": "SNS総合",
+        "cover": "🤖",
+        "explanation": "2023年后最热门技术话题。ChatGPT、画像生成AI等。",
+        "synonyms": [
+          "Generative AI",
+          "創発AI"
+        ],
+        "example": "生成AIで作業効率化。",
+        "status": "approved",
+        "createdAt": "2026-05-15",
+        "updatedAt": "2026-05-15",
+        "sourceType": "manual",
+        "verified": false
+      }
+    },
+    {
+      "kanji": "メタバース",
+      "reason": "概念较新且技术性强，日语学习受众兴趣低，难以视觉化。",
+      "deletedAt": "2026-05-30T15:36:21.011Z",
+      "original": {
+        "kanji": "メタバース",
+        "reading": "めたばーす",
+        "meaning": "元宇宙",
+        "category": "テクノロジー",
+        "popularity": 64,
+        "source": "ビジネス",
+        "cover": "🥽",
+        "explanation": "虚拟空间概念。日本企业也在积极布局。",
+        "synonyms": [
+          "バーチャル空間",
+          "VR空間"
+        ],
+        "example": "メタバースでイベント開催。",
+        "status": "approved",
+        "createdAt": "2026-05-15",
+        "updatedAt": "2026-05-15",
+        "sourceType": "manual",
+        "verified": false
+      }
+    },
+    {
+      "kanji": "Web3",
+      "reason": "过于专业的技术术语，不适合小红书日语内容，缺乏生活化场景。",
+      "deletedAt": "2026-05-30T15:36:21.011Z",
+      "original": {
+        "kanji": "Web3",
+        "reading": "うぇぶすりー",
+        "meaning": "Web3",
+        "category": "テクノロジー",
+        "popularity": 58,
+        "source": "ビジネス",
+        "cover": "🌐",
+        "explanation": "去中心化互联网概念。日本政府积极推动。",
+        "synonyms": [
+          "ブロックチェーン",
+          "分散型Web"
+        ],
+        "example": "Web3の未来を考える。",
+        "status": "approved",
+        "createdAt": "2026-05-15",
+        "updatedAt": "2026-05-15",
+        "sourceType": "manual",
+        "verified": false
+      }
+    },
+    {
+      "kanji": "ノーコード",
+      "reason": "技术领域词汇，与日语学习/生活类账号定位不符，视觉素材难找。",
+      "deletedAt": "2026-05-30T15:36:21.011Z",
+      "original": {
+        "kanji": "ノーコード",
+        "reading": "のーこーど",
+        "meaning": "无代码",
+        "category": "テクノロジー",
+        "popularity": 62,
+        "source": "YouTube",
+        "cover": "🛠️",
+        "explanation": "不需编程就能开发应用。降低技术门槛。",
+        "synonyms": [
+          "ローコード",
+          "ビジュアル開発"
+        ],
+        "example": "ノーコードでアプリ作った。",
+        "status": "approved",
+        "createdAt": "2026-05-15",
+        "updatedAt": "2026-05-15",
+        "sourceType": "manual",
+        "verified": false
+      }
+    },
+    {
+      "kanji": "器",
+      "reason": "过于抽象和教材化，难以配图和制作吸引人的标题，与小红书日语选题契合度低。",
+      "deletedAt": "2026-05-30T15:36:21.011Z",
+      "original": {
+        "kanji": "器",
+        "reading": "うつわ",
+        "meaning": "器量、格局",
+        "category": "その他",
+        "popularity": 62,
+        "source": "書籍",
+        "cover": "🫙",
+        "explanation": "人的度量与格局。近年日本自助书籍常用。",
+        "synonyms": [
+          "度量",
+          "キャパシティ"
+        ],
+        "example": "器の大きい人になりたい。",
+        "status": "approved",
+        "createdAt": "2026-05-15",
+        "updatedAt": "2026-05-15",
+        "sourceType": "manual",
+        "verified": false
+      }
+    },
+    {
+      "kanji": "奥深い",
+      "reason": "抽象、教材化，不适合小红书短内容，画面感弱。",
+      "deletedAt": "2026-05-30T15:36:21.011Z",
+      "original": {
+        "kanji": "奥深い",
+        "reading": "おくぶかい",
+        "meaning": "深奥、意味深长",
+        "category": "その他",
+        "popularity": 60,
+        "source": "書籍",
+        "cover": "🕳️",
+        "explanation": "日本文化中对「深み」的追求。",
+        "synonyms": [
+          "ディープ",
+          "趣深い"
+        ],
+        "example": "日本文化は奥深い。",
+        "status": "approved",
+        "createdAt": "2026-05-15",
+        "updatedAt": "2026-05-15",
+        "sourceType": "manual",
+        "verified": false
+      }
+    },
+    {
+      "kanji": "挑戦",
+      "reason": "太普通、太教材，不适合小红书日语选题，标题价值低且不好配图。",
+      "deletedAt": "2026-05-30T15:36:21.011Z",
+      "original": {
+        "kanji": "挑戦",
+        "reading": "ちょうせん",
+        "meaning": "挑战",
+        "category": "その他",
+        "popularity": 78,
+        "source": "YouTube",
+        "cover": "🎯",
+        "explanation": "日本社会鼓励挑战精神。常见于自我启発内容。",
+        "synonyms": [
+          "チャレンジ",
+          "トライ"
+        ],
+        "example": "新しいことに挑戦する。",
+        "status": "approved",
+        "createdAt": "2026-05-15",
+        "updatedAt": "2026-05-15",
+        "sourceType": "manual",
+        "verified": false
+      }
+    },
+    {
+      "kanji": "サンダル",
+      "reason": "普通单品，与日语文化关联弱，难以做出特色标题和配图。",
+      "deletedAt": "2026-05-30T15:36:21.011Z",
+      "original": {
+        "kanji": "サンダル",
+        "reading": "さんだる",
+        "meaning": "凉鞋",
+        "category": "ファッション",
+        "popularity": 54,
+        "source": "Instagram",
+        "cover": "🩴",
+        "explanation": "日本夏季定番鞋款。",
+        "synonyms": [
+          "ミュール",
+          "スリッパ"
+        ],
+        "example": "サンダルで出かけよう。",
+        "status": "approved",
+        "createdAt": "2026-05-15",
+        "updatedAt": "2026-05-15",
+        "sourceType": "manual",
+        "verified": false
+      }
+    },
+    {
+      "kanji": "TOEIC",
+      "reason": "英语考试，与日语选题关系弱，不适合作为日语学习账号内容。",
+      "deletedAt": "2026-05-30T15:36:21.011Z",
+      "original": {
+        "kanji": "TOEIC",
+        "reading": "といっく",
+        "meaning": "托业",
+        "category": "学習",
+        "popularity": 66,
+        "source": "ビジネス",
+        "cover": "📝",
+        "explanation": "日本最普及的英语能力考试。",
+        "synonyms": [
+          "英検",
+          "IELTS"
+        ],
+        "example": "TOEIC 900目指す。",
+        "status": "approved",
+        "createdAt": "2026-05-15",
+        "updatedAt": "2026-05-15",
+        "sourceType": "manual",
+        "verified": false
+      }
+    },
+    {
+      "kanji": "SDGs",
+      "reason": "全球议题，抽象难配图，与日语选题关联弱，不适合账号方向。",
+      "deletedAt": "2026-05-30T15:36:21.011Z",
+      "original": {
+        "kanji": "SDGs",
+        "reading": "えすでぃーじーず",
+        "meaning": "可持续发展目标",
+        "category": "トレンド",
+        "popularity": 62,
+        "source": "NHK",
+        "cover": "🌍",
+        "explanation": "联合国可持续发展目标。日本教育界大力推广。",
+        "synonyms": [
+          "持続可能",
+          "エコ"
+        ],
+        "example": "SDGsについて考える。",
+        "status": "approved",
+        "createdAt": "2026-05-15",
+        "updatedAt": "2026-05-15",
+        "sourceType": "manual",
+        "verified": false
+      }
+    },
+    {
+      "kanji": "ChatGPT",
+      "reason": "太普通，非日语特有表达，不好配图，标题价值低。",
+      "deletedAt": "2026-05-30T15:36:21.011Z",
+      "original": {
+        "kanji": "ChatGPT",
+        "reading": "ちゃっとじーぴーてぃー",
+        "meaning": "ChatGPT",
+        "category": "テクノロジー",
+        "popularity": 88,
+        "source": "SNS総合",
+        "cover": "💬",
+        "explanation": "2023年后日本最火的AI话题。影响各行各业。",
+        "synonyms": [
+          "AIチャット",
+          "対話AI"
+        ],
+        "example": "ChatGPTで作業効率3倍。",
+        "status": "approved",
+        "createdAt": "2026-05-15",
+        "updatedAt": "2026-05-15",
+        "sourceType": "manual",
+        "verified": false
+      }
+    },
+    {
+      "kanji": "プログラミング",
+      "reason": "过于教材化，不适合小红书日语选题，画面感弱。",
+      "deletedAt": "2026-05-30T15:36:21.011Z",
+      "original": {
+        "kanji": "プログラミング",
+        "reading": "ぷろぐらみんぐ",
+        "meaning": "编程",
+        "category": "テクノロジー",
+        "popularity": 72,
+        "source": "YouTube",
+        "cover": "💻",
+        "explanation": "日本编程教育已纳入小学必修。",
+        "synonyms": [
+          "コーディング",
+          "開発"
+        ],
+        "example": "プログラミング学び始めた。",
+        "status": "approved",
+        "createdAt": "2026-05-15",
+        "updatedAt": "2026-05-15",
+        "sourceType": "manual",
+        "verified": false
+      }
+    },
+    {
+      "kanji": "感謝",
+      "reason": "太普通、太教材，不适合小红书日语选题，不好配图，不好做标题。",
+      "deletedAt": "2026-05-30T15:36:21.011Z",
+      "original": {
+        "kanji": "感謝",
+        "reading": "かんしゃ",
+        "meaning": "感谢",
+        "category": "その他",
+        "popularity": 82,
+        "source": "SNS総合",
+        "cover": "🙏",
+        "explanation": "日本文化中最重要的情感之一。",
+        "synonyms": [
+          "ありがとう",
+          "恩"
+        ],
+        "example": "感謝の気持ちを伝える。",
+        "status": "approved",
+        "createdAt": "2026-05-15",
+        "updatedAt": "2026-05-15",
+        "sourceType": "manual",
+        "verified": false
+      }
+    },
+    {
+      "kanji": "向上心",
+      "reason": "太教材，抽象，不好配图，不好做标题。",
+      "deletedAt": "2026-05-30T15:36:21.011Z",
+      "original": {
+        "kanji": "向上心",
+        "reading": "こうじょうしん",
+        "meaning": "上进心",
+        "category": "その他",
+        "popularity": 64,
+        "source": "書籍",
+        "cover": "📈",
+        "explanation": "不断提升自我的意愿。日本社会重视的品质。",
+        "synonyms": [
+          "成長意欲",
+          "野心"
+        ],
+        "example": "向上心を持ち続ける。",
+        "status": "approved",
+        "createdAt": "2026-05-15",
+        "updatedAt": "2026-05-15",
+        "sourceType": "manual",
+        "verified": false
+      }
+    },
+    {
+      "kanji": "自由",
+      "reason": "太普通、太教材，不适合小红书日语选题，抽象难配图。",
+      "deletedAt": "2026-05-30T15:36:21.011Z",
+      "original": {
+        "kanji": "自由",
+        "reading": "じゆう",
+        "meaning": "自由",
+        "category": "その他",
+        "popularity": 74,
+        "source": "SNS総合",
+        "cover": "🕊️",
+        "explanation": "近年日本年轻人追求自由生活方式。",
+        "synonyms": [
+          "フリーダム",
+          "自立"
+        ],
+        "example": "自由に生きたい。",
+        "status": "approved",
+        "createdAt": "2026-05-15",
+        "updatedAt": "2026-05-15",
+        "sourceType": "manual",
+        "verified": false
+      }
+    },
+    {
+      "kanji": "平和",
+      "reason": "太普通，教材化，抽象，不适合。",
+      "deletedAt": "2026-05-30T15:36:21.011Z",
+      "original": {
+        "kanji": "平和",
+        "reading": "へいわ",
+        "meaning": "和平",
+        "category": "その他",
+        "popularity": 70,
+        "source": "NHK",
+        "cover": "☮️",
+        "explanation": "日本宪法第九条的精神。和平主义深入人心。",
+        "synonyms": [
+          "ピース",
+          "安らぎ"
+        ],
+        "example": "平和が一番。",
+        "status": "approved",
+        "createdAt": "2026-05-15",
+        "updatedAt": "2026-05-15",
+        "sourceType": "manual",
+        "verified": false
+      }
+    },
+    {
+      "kanji": "買い物",
+      "reason": "太普通、太教材，不适合小红书日语选题，重复且价值更低。",
+      "deletedAt": "2026-05-30T15:36:21.011Z",
+      "original": {
+        "kanji": "買い物",
+        "reading": "かいもの",
+        "meaning": "购物",
+        "category": "日常",
+        "popularity": 70,
+        "source": "Instagram",
+        "cover": "🛒",
+        "explanation": "日本消费文化。買い物シェア是SNS热门内容。",
+        "synonyms": [
+          "ショッピング",
+          "お買い物"
+        ],
+        "example": "買い物でストレス発散。",
+        "status": "approved",
+        "createdAt": "2026-05-15",
+        "updatedAt": "2026-05-15",
+        "sourceType": "manual",
+        "verified": false
+      }
+    },
+    {
+      "kanji": "こってり",
+      "reason": "太普通，不是核心选题，重复且价值低。",
+      "deletedAt": "2026-05-30T15:36:21.011Z",
+      "original": {
+        "kanji": "こってり",
+        "reading": "こってり",
+        "meaning": "浓厚、油腻",
+        "category": "食",
+        "popularity": 62,
+        "source": "YouTube",
+        "cover": "🍜",
+        "explanation": "形容味道浓厚的食物。拉面评价常用。",
+        "synonyms": [
+          "濃厚",
+          "こってり系"
+        ],
+        "example": "こってりラーメン食べたい。",
+        "status": "approved",
+        "createdAt": "2026-05-15",
+        "updatedAt": "2026-05-15",
+        "sourceType": "manual",
+        "verified": false
+      }
+    },
+    {
+      "kanji": "焦り",
+      "reason": "太教材，重复，不如「モヤる」「しんどい」有趣。",
+      "deletedAt": "2026-05-30T15:36:21.011Z",
+      "original": {
+        "kanji": "焦り",
+        "reading": "あせり",
+        "meaning": "焦虑",
+        "category": "感情",
+        "popularity": 68,
+        "source": "SNS総合",
+        "cover": "😰",
+        "explanation": "日本年轻人普遍的同辈压力焦虑。",
+        "synonyms": [
+          "不安",
+          "プレッシャー"
+        ],
+        "example": "焦らず自分のペースで。",
+        "status": "approved",
+        "createdAt": "2026-05-15",
+        "updatedAt": "2026-05-15",
+        "sourceType": "manual",
+        "verified": false
+      }
+    },
+    {
+      "kanji": "懐かしさ",
+      "reason": "重复，太普遍，不如「ノスタルジー」有品位。",
+      "deletedAt": "2026-05-30T15:36:21.011Z",
+      "original": {
+        "kanji": "懐かしさ",
+        "reading": "なつかしさ",
+        "meaning": "怀念",
+        "category": "感情",
+        "popularity": 66,
+        "source": "SNS総合",
+        "cover": "📻",
+        "explanation": "对过去的怀念感。昭和复古流行的心理基础。",
+        "synonyms": [
+          "ノスタルジー",
+          "思い出"
+        ],
+        "example": "懐かしい曲で泣く。",
+        "status": "approved",
+        "createdAt": "2026-05-15",
+        "updatedAt": "2026-05-15",
+        "sourceType": "manual",
+        "verified": false
+      }
+    },
+    {
+      "kanji": "サプリ",
+      "reason": "重复，且不如「サプリメント」等有深意。",
+      "deletedAt": "2026-05-30T15:36:21.011Z",
+      "original": {
+        "kanji": "サプリ",
+        "reading": "さぷり",
+        "meaning": "保健品",
+        "category": "健康",
+        "popularity": 66,
+        "source": "Instagram",
+        "cover": "💊",
+        "explanation": "日本保健品市场巨大。サプリ文化盛行。",
+        "synonyms": [
+          "サプリメント",
+          "栄養補助食品"
+        ],
+        "example": "サプリ飲んで健康管理。",
+        "status": "approved",
+        "createdAt": "2026-05-15",
+        "updatedAt": "2026-05-15",
+        "sourceType": "manual",
+        "verified": false
+      }
+    },
+    {
+      "kanji": "水分補給",
+      "reason": "过于普通和教材化，缺乏画面感，不适合单独作为小红书日语选题。",
+      "deletedAt": "2026-05-30T15:36:21.011Z",
+      "original": {
+        "kanji": "水分補給",
+        "reading": "すいぶんほきゅう",
+        "meaning": "补水",
+        "category": "健康",
+        "popularity": 56,
+        "source": "NHK",
+        "cover": "💧",
+        "explanation": "日本夏季健康提醒的定番。",
+        "synonyms": [
+          "ハイドレーション",
+          "給水"
+        ],
+        "example": "こまめに水分補給して。",
+        "status": "approved",
+        "createdAt": "2026-05-15",
+        "updatedAt": "2026-05-15",
+        "sourceType": "manual",
+        "verified": false
+      }
+    },
+    {
+      "kanji": "在宅",
+      "reason": "表达过于宽泛和教材化，独立选题配图困难，不适合小红书方向。",
+      "deletedAt": "2026-05-30T15:36:21.011Z",
+      "original": {
+        "kanji": "在宅",
+        "reading": "ざいたく",
+        "meaning": "居家",
+        "category": "ビジネス",
+        "popularity": 66,
+        "source": "ビジネス",
+        "cover": "🏠",
+        "explanation": "在家办公。疫情后普及的工作方式。",
+        "synonyms": [
+          "テレワーク",
+          "リモート"
+        ],
+        "example": "在宅勤務が増えた。",
+        "status": "approved",
+        "createdAt": "2026-05-15",
+        "updatedAt": "2026-05-15",
+        "sourceType": "manual",
+        "verified": false
+      }
+    },
+    {
+      "kanji": "有給",
+      "reason": "教材化，社会话题但缺乏画面感，标题吸引力低。",
+      "deletedAt": "2026-05-30T15:36:21.011Z",
+      "original": {
+        "kanji": "有給",
+        "reading": "ゆうきゅう",
+        "meaning": "带薪休假",
+        "category": "ビジネス",
+        "popularity": 64,
+        "source": "ビジネス",
+        "cover": "🏖️",
+        "explanation": "日本有给取得率低是长期社会问题。",
+        "synonyms": [
+          "有給休暇",
+          "バケーション"
+        ],
+        "example": "有給取って旅行行く。",
+        "status": "approved",
+        "createdAt": "2026-05-15",
+        "updatedAt": "2026-05-15",
+        "sourceType": "manual",
+        "verified": false
+      }
+    },
+    {
+      "kanji": "暗記",
+      "reason": "过于教材化，配图无聊，不适合小红书选题。",
+      "deletedAt": "2026-05-30T15:36:21.011Z",
+      "original": {
+        "kanji": "暗記",
+        "reading": "あんき",
+        "meaning": "背诵",
+        "category": "学習",
+        "popularity": 60,
+        "source": "学習",
+        "cover": "🧠",
+        "explanation": "日本教育中的基本功。暗記術是热门话题。",
+        "synonyms": [
+          "記憶",
+          "丸暗記"
+        ],
+        "example": "暗記のコツを知りたい。",
+        "status": "approved",
+        "createdAt": "2026-05-15",
+        "updatedAt": "2026-05-15",
+        "sourceType": "manual",
+        "verified": false
+      }
+    }
+  ],
+  "runs": [
+    {
+      "deletedAt": "2026-05-30T10:52:45.459Z",
+      "model": "deepseek-v4-flash",
+      "deletedCount": 22,
+      "words": [
+        "日常",
+        "選択肢",
+        "効率",
+        "改善",
+        "優先",
+        "卍",
+        "AI",
+        "蜩",
+        "英語学習",
+        "オンライン",
+        "スマホ",
+        "消費",
+        "洗濯",
+        "マネジメント",
+        "感動",
+        "資格",
+        "語学",
+        "スマート家電",
+        "インボイス",
+        "Z会",
+        "最適化",
+        "ペーパーレス"
+      ]
+    },
+    {
+      "deletedAt": "2026-05-30T15:36:21.011Z",
+      "model": "deepseek-v4-flash",
+      "deletedCount": 34,
+      "words": [
+        "りょ",
+        "うp",
+        "働き方改革",
+        "プレゼン",
+        "DX",
+        "美食",
+        "カフェ",
+        "タピオカ",
+        "読書",
+        "生成AI",
+        "メタバース",
+        "Web3",
+        "ノーコード",
+        "器",
+        "奥深い",
+        "挑戦",
+        "サンダル",
+        "TOEIC",
+        "SDGs",
+        "ChatGPT",
+        "プログラミング",
+        "感謝",
+        "向上心",
+        "自由",
+        "平和",
+        "買い物",
+        "こってり",
+        "焦り",
+        "懐かしさ",
+        "サプリ",
+        "水分補給",
+        "在宅",
+        "有給",
+        "暗記"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,114 @@
+{
+  "schemaVersion": 1,
+  "updated": "2026-06-09T00:00:00.000Z",
+  "words": ["こなれ", "小確幸"],
+  "statuses": {
+    "こなれ": "pending",
+    "小確幸": "none"
+  },
+  "feedback": {
+    "祭り": {
+      "reasons": {
+        "too_basic": 1
+      },
+      "lastReason": "too_basic",
+      "updatedAt": "2026-06-09T00:00:00.000Z",
+      "needsReview": false
+    }
+  },
+  "publishedRecords": [
+    {
+      "id": "sample-published-001",
+      "word": "こなれ",
+      "title": "日本人说「こなれ」，不是普通熟练",
+      "link": "https://example.com/xhs/sample",
+      "description": "脱敏示例发布记录",
+      "contentType": "word_card",
+      "authorName": "sample",
+      "publishedAt": "2026-06-01",
+      "latestStats": {
+        "views": 1200,
+        "likes": 80,
+        "saves": 45,
+        "comments": 8
+      },
+      "snapshots": [],
+      "updatedAt": "2026-06-09T00:00:00.000Z",
+      "rating": "A",
+      "performanceReason": "收藏率较好",
+      "performanceNote": "适合继续做语感类内容",
+      "remarks": "sample data only",
+      "sourceStatus": "manual",
+      "autoRefresh": false
+    }
+  ],
+  "candidatePool": {
+    "こなれ": {
+      "kanji": "こなれ",
+      "kana": "こなれ",
+      "romaji": "konare",
+      "meaning": "自然熟练、毫不费力的精致感",
+      "category": "审美氛围",
+      "sourceType": "deepseek_reviewed",
+      "displayBucket": "today",
+      "riskLevel": "low",
+      "confidenceLevel": "high",
+      "evidenceType": "common_usage",
+      "xhsFitScore": 90,
+      "aiCard": {
+        "cardStatus": "ready",
+        "cardSource": "deepseek_api",
+        "cardModel": "deepseek-v4-flash",
+        "cardVersion": 1,
+        "generatedAt": "2026-06-09T00:00:00.000Z",
+        "summary": "适合解释日系穿搭和生活方式里的自然精致感。",
+        "explanation": "不是刻意用力，而是看起来自然熟练的状态。",
+        "usageScenes": ["穿搭", "妆容", "生活方式"],
+        "examples": [
+          {
+            "jp": "こなれ感のあるコーデ。",
+            "kana": "こなれかんのあるこーで。",
+            "romaji": "konarekan no aru kode.",
+            "cn": "有自然精致感的穿搭。",
+            "note": "适合穿搭内容。"
+          }
+        ],
+        "suggestedTitles": ["日本人说「こなれ感」，不是随便穿穿"],
+        "coverSuggestion": {
+          "coverText": "こなれ感",
+          "mainVisual": "自然松弛的穿搭细节",
+          "style": "干净、日系、生活感",
+          "avoid": "不要做成夸张奢华风"
+        },
+        "contentAngles": ["不是精心打扮，而是自然好看"],
+        "targetAudience": "喜欢日系穿搭和生活方式的用户",
+        "referenceDirection": "穿搭、家居、妆容都可延展",
+        "riskWarning": "",
+        "wrongUsage": "不适合正式商务评价。",
+        "similarWords": [],
+        "interactionPrompts": ["你觉得什么穿搭最有こなれ感？"]
+      }
+    }
+  },
+  "aiBatches": [
+    {
+      "id": "sample-batch-001",
+      "action": "generate_candidates",
+      "model": "deepseek-v4-flash",
+      "createdAt": "2026-06-09T00:00:00.000Z",
+      "itemCount": 20,
+      "importedCount": 12,
+      "skippedCount": 8,
+      "promptSummary": "sample batch",
+      "trendNotes": "脱敏示例"
+    }
+  ],
+  "todaySnapshot": {
+    "dateKey": "2026-06-09",
+    "words": ["こなれ", "小確幸"],
+    "generatedAt": "2026-06-09T00:00:00.000Z",
+    "source": "candidatePool",
+    "batchIds": ["sample-batch-001"],
+    "version": 1
+  }
+}
