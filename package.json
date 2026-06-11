@@ -1,0 +1,14 @@
+{
+  "name": "japanese-words",
+  "private": true,
+  "scripts": {
+    "build:words": "node scripts/build-words-data.mjs",
+    "build": "npm run build:words",
+    "test:workflow": "node scripts/test-workflow-schema.mjs",
+    "audit:library-delete": "node scripts/audit-library-delete.mjs",
+    "audit:library-delete:strict": "node scripts/audit-library-delete.mjs --strict",
+    "deploy": "npm run build && node scripts/deploy-pages.mjs",
+    "deploy:pages": "npm run deploy",
+    "deploy:worker": "node scripts/deploy-worker.mjs"
+  }
+}

@@ -1,0 +1,343 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>记忆面包 — 每日日语热词口袋站</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Noto+Serif+JP:wght@400;700;900&family=Zen+Kaku+Gothic+New:wght@300;400;500;700&family=Shippori+Mincho:wght@400;600;800&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<div class="app-layout">
+  <button class="mobile-toggle" onclick="toggleSidebar()" aria-label="菜单">☰</button>
+  <aside class="sidebar" id="sidebar">
+    <div class="sidebar-header">
+      <div class="sidebar-brand">
+        <div class="sidebar-logo"><span class="sidebar-logo-accent">记忆</span>面包</div>
+        <div class="sidebar-tagline">× 哆啦A梦口袋道具</div>
+        <div class="sidebar-logo-sub">Daily Japanese Trending Words</div>
+      </div>
+      <div class="sidebar-illustration sidebar-illustration-top" aria-hidden="true">
+        <img class="design-asset design-asset-sidebar-top" src="assets/illustrations/doraemon-propeller.png" alt="" onerror="this.parentElement.classList.add('asset-missing');this.remove()">
+      </div>
+    </div>
+    <nav class="sidebar-nav">
+      <div class="nav-item active" data-tab="today" onclick="switchTab('today')">
+        <span class="nav-icon"><img src="assets/illustrations/memory-bread.png" alt=""></span>
+        <span class="nav-label">每日热门</span>
+        <span class="nav-badge" id="todayBadge">20</span>
+      </div>
+      <div class="nav-item" data-tab="favorites" onclick="switchTab('favorites')">
+        <span class="nav-icon"><img src="assets/illustrations/anywhere-door.png" alt=""></span>
+        <span class="nav-label">我的收藏 / 选题池</span>
+        <span class="nav-badge" id="favBadge" style="display:none">0</span>
+      </div>
+      <div class="nav-item" data-tab="candidate" onclick="switchTab('candidate')">
+        <span class="nav-icon"><img src="assets/illustrations/propeller.png" alt=""></span>
+        <span class="nav-label">候选池后台</span>
+        <span class="nav-badge" id="candidateBadge" style="display:none">0</span>
+      </div>
+      <div class="nav-item" data-tab="published" onclick="switchTab('published')">
+        <span class="nav-icon"><img src="assets/illustrations/time-machine.png" alt=""></span>
+        <span class="nav-label">已发布</span>
+        <span class="nav-badge" id="publishedBadge" style="display:none">0</span>
+      </div>
+    </nav>
+    <div class="sidebar-footer">
+      <div class="sidebar-illustration sidebar-illustration-bottom" aria-hidden="true">
+        <img class="design-asset design-asset-sidebar-bottom" src="assets/illustrations/doraemon-door-bread.png" alt="" onerror="this.parentElement.classList.add('asset-missing');this.remove()">
+      </div>
+      <button class="settings-btn" onclick="openSettingsModal()" title="设置">⚙️ 设置</button>
+      记忆面包 × 热门日语口袋道具<br>© 2026 每日灵感，为你而来
+    </div>
+  </aside>
+  <main class="main-content">
+    <div class="page page-today active" id="page-today">
+      <div class="page-header">
+        <div class="page-header-inner">
+          <div class="page-heading">
+            <div class="page-title-icon"><img src="assets/illustrations/memory-bread.png" alt="" onerror="this.parentElement.textContent='🍞'"></div>
+            <div>
+              <h1 class="page-title">每日热门</h1>
+              <p class="page-date" id="todayDate">按日期查看系统推荐的日语热门词，从中收藏适合进入团队选题池的内容。</p>
+            </div>
+          </div>
+          <div class="page-actions">
+            <div class="page-actions-deco" aria-hidden="true">✦ ✦</div>
+            <label class="daily-date-field">
+              <span>查看日期</span>
+              <select class="filter-select" id="dailyHotDateSelect" onchange="setDailyHotDate(this.value)" aria-label="查看日期"></select>
+            </label>
+            <select class="filter-select" id="todaySourceFilter" onchange="setSourceFilter('today', this.value)" aria-label="按来源筛选每日热门"></select>
+            <button class="btn btn-ghost" onclick="refreshData()">🔄 刷新</button>
+            <div class="action-menu">
+              <button class="btn btn-ghost" id="dailyManageBtn" data-today-action onclick="toggleDailyManageMenu(event)">管理今日推荐</button>
+              <div class="action-menu-panel" id="dailyManageMenu">
+                <button onclick="handleDailyManageAction('audit')">推荐审计</button>
+                <button onclick="handleDailyManageAction('exportAudit')">导出推荐审计</button>
+                <button onclick="handleDailyManageAction('generate')">从 AI 候选库生成今日 20 个</button>
+                <button onclick="handleDailyManageAction('fill')">补满今日推荐</button>
+                <button onclick="handleDailyManageAction('regenerate')">重新生成今日推荐</button>
+              </div>
+            </div>
+            <button class="btn btn-primary" onclick="exportSelected()">📤 导出选词</button>
+          </div>
+        </div>
+      </div>
+      <div class="word-grid" id="todayGrid"></div>
+      <div class="page-scene">
+        <div class="scene-assets" aria-hidden="true">
+          <img class="design-asset design-asset-scene-small" src="assets/illustrations/propeller.png" alt="" onerror="this.remove()">
+          <img class="design-asset design-asset-scene-small" src="assets/illustrations/dorayaki.png" alt="" onerror="this.remove()">
+          <img class="design-asset design-asset-scene-small" src="assets/illustrations/memory-bread.png" alt="" onerror="this.remove()">
+        </div>
+        <div class="scene-trail" aria-hidden="true">✦　🍞　✦　✦</div>
+        <div class="scene-bubble">系统会把新词和历史候选词统一评分，再把最值得做成小红书内容的词放到这里。</div>
+      </div>
+    </div>
+    <div class="page page-history" id="page-history">
+      <div class="page-header">
+        <div class="page-header-inner">
+          <div class="page-heading">
+            <div class="page-title-icon"><img src="assets/illustrations/propeller.png" alt="" onerror="this.parentElement.textContent='📚'"></div>
+            <div>
+              <h1 class="page-title">每日热门归档</h1>
+              <p class="page-date">历史推荐已合并到每日热门页面的日期选择</p>
+            </div>
+          </div>
+          <div class="page-actions history-actions">
+            <div class="page-actions-deco" aria-hidden="true">✦ ✦</div>
+            <select class="filter-select" id="historySourceFilter" onchange="setSourceFilter('history', this.value)" aria-label="按来源筛选每日热门归档"></select>
+            <button class="btn btn-ghost" id="historyPrevBtn" onclick="shiftHistoryDate(1)">← 更早一天</button>
+            <div class="history-date-label" id="historyDateLabel">暂无历史日期</div>
+            <button class="btn btn-ghost" id="historyNextBtn" onclick="shiftHistoryDate(-1)">后一天 →</button>
+          </div>
+        </div>
+      </div>
+      <div class="word-grid" id="historyGrid"></div>
+    </div>
+    <div class="page page-favorites" id="page-favorites">
+      <div class="page-header">
+        <div class="page-header-inner">
+          <div class="page-heading">
+            <div class="page-title-icon page-title-icon-door"><img src="assets/illustrations/anywhere-door.png" alt="" onerror="this.parentElement.textContent='🚪'"></div>
+            <div>
+              <h1 class="page-title">我的收藏 / 选题池</h1>
+              <p class="page-date" id="favCount">保存你感兴趣、准备发布和已进入工作流的词</p>
+            </div>
+          </div>
+          <div class="page-actions">
+            <div class="page-actions-deco" aria-hidden="true">✦</div>
+            <select class="filter-select" id="favoritesSourceFilter" onchange="setSourceFilter('favorites', this.value)" aria-label="按来源筛选选题池"></select>
+            <select class="filter-select" id="favoritesStatusFilter" onchange="setStatusFilter(this.value)" aria-label="按状态筛选选题池">
+              <option value="all">全部状态</option>
+              <option value="none">无</option>
+              <option value="pending">待发布</option>
+            </select>
+            <button class="btn btn-ghost" onclick="openManualWordModal()">＋ 添加单词</button>
+            <button class="btn btn-primary" onclick="exportSelected()">📤 导出选词</button>
+          </div>
+        </div>
+      </div>
+      <div class="word-grid" id="favGrid"></div>
+      <div class="page-scene favorites-scene">
+        <div class="scene-assets" aria-hidden="true">
+          <img class="design-asset design-asset-scene-medium" src="assets/illustrations/doraemon-peek.png" alt="" onerror="this.remove()">
+          <img class="design-asset design-asset-scene-small" src="assets/illustrations/memory-bread.png" alt="" onerror="this.remove()">
+        </div>
+        <div class="scene-bubble">这里是你的选题池：先收藏，确定要做时标记待发布，发出后再补数据。</div>
+        <div class="scene-trail" aria-hidden="true">🍞　✦　💗　✦</div>
+      </div>
+      <div class="empty-state" id="favEmpty" style="display:none">
+        <div class="empty-icon">🎐</div>
+        <div class="empty-title">还没有进入选题池的词</div>
+        <div class="empty-desc">先从每日热门里收藏，或者把词标记为待发布</div>
+      </div>
+    </div>
+    <div class="page page-candidate" id="page-candidate">
+      <div class="page-header">
+        <div class="page-header-inner">
+          <div class="page-heading">
+            <div class="page-title-icon"><img src="assets/illustrations/propeller.png" alt="" onerror="this.parentElement.textContent='🗂'"></div>
+            <div>
+              <h1 class="page-title">候选池后台</h1>
+              <p class="page-date" id="candidateCount">查看系统内部候选词，管理晋级、观察和复核状态</p>
+            </div>
+          </div>
+          <div class="page-actions">
+            <div class="page-actions-deco" aria-hidden="true">✦</div>
+            <select class="filter-select" id="candidateSourceFilter" onchange="setSourceFilter('candidate', this.value)" aria-label="按来源筛选候选池"></select>
+            <select class="filter-select" id="candidateReviewFilter" onchange="setCandidateReviewFilter(this.value)" aria-label="按内部状态筛选候选池">
+              <option value="all">全部状态</option>
+              <option value="ready">可直接上首页</option>
+              <option value="watch">值得继续观察</option>
+              <option value="review">需复核</option>
+            </select>
+            <select class="filter-select" id="candidateTypeFilter" onchange="setCandidateTypeFilter(this.value)" aria-label="按候选类型筛选">
+              <option value="all">全部类型</option>
+              <option value="稳定候选">稳定候选</option>
+              <option value="新鲜梗词">新鲜梗词</option>
+              <option value="审美氛围词">审美氛围词</option>
+              <option value="美妆穿搭词">美妆穿搭词</option>
+              <option value="追星兴趣词">追星兴趣词</option>
+              <option value="生活方式词">生活方式词</option>
+              <option value="网络口语词">网络口语词</option>
+              <option value="圈层词">圈层词</option>
+              <option value="高风险话题词">高风险话题词</option>
+            </select>
+            <select class="filter-select" id="candidateFreshnessFilter" onchange="setCandidateFreshnessFilter(this.value)" aria-label="按时效性筛选">
+              <option value="all">全部时效</option>
+              <option value="长期">长期</option>
+              <option value="中期">中期</option>
+              <option value="短期">短期</option>
+              <option value="需要尽快判断">需要尽快判断</option>
+            </select>
+            <select class="filter-select" id="candidateOriginFilter" onchange="setCandidateOriginFilter(this.value)" aria-label="按候选来源筛选">
+              <option value="all">全部来源</option>
+              <option value="deepseek_generated">DeepSeek 生成词</option>
+              <option value="deepseek_reviewed">DeepSeek 审核词</option>
+              <option value="manual_keep">手动保留词</option>
+            </select>
+            <select class="filter-select" id="candidateSortSelect" onchange="setCandidateSort(this.value)" aria-label="候选池排序">
+              <option value="score">按最终分</option>
+              <option value="recent">按最近评分</option>
+              <option value="ignored">按被忽略次数</option>
+            </select>
+            <button class="btn btn-primary" onclick="renderCandidatePool()">🔄 刷新候选池</button>
+          </div>
+        </div>
+      </div>
+      <section class="ai-workbench">
+        <div class="ai-workbench-head">
+          <div>
+            <h2>AI 候选词主脑</h2>
+            <p id="aiMeta">尚未生成 AI 候选</p>
+          </div>
+          <div class="ai-status" id="aiStatus" data-tone="muted">待生成</div>
+        </div>
+        <div class="ai-controls">
+          <label class="form-field"><span>模式</span><select class="form-input" id="aiAction">
+            <option value="stable_today">稳定今日候选</option>
+            <option value="wild_ideas" selected>野生灵感扩词</option>
+            <option value="extract_from_materials">从素材提词</option>
+            <option value="enrich_words">给定词生成词卡</option>
+            <option value="rerank_candidates">根据反馈重新推荐</option>
+          </select></label>
+          <label class="form-field"><span>生成数量</span><select class="form-input" id="aiCount">
+            <option value="20">20</option>
+            <option value="30">30</option>
+            <option value="40" selected>40</option>
+            <option value="50">50</option>
+          </select></label>
+          <label class="tag-check ai-toggle"><input type="checkbox" id="aiIncludeMemes" checked><span>包含梗化词</span></label>
+          <label class="form-field"><span>高风险词策略</span><select class="form-input" id="aiHighRiskStrategy">
+            <option value="review_only">仅进入复核池</option>
+            <option value="exclude">不生成</option>
+          </select></label>
+        </div>
+        <textarea class="form-input form-textarea ai-input" id="aiInput" maxlength="12000" placeholder="粘贴素材、输入方向或给定词列表。留空时，AI 会结合收藏、负反馈、已发布和候选池扩词。"></textarea>
+        <div class="ai-actions">
+          <button class="btn btn-primary" id="aiGenerateBtn" onclick="generateAiCandidates(false)">生成候选词</button>
+          <button class="btn btn-ghost" onclick="generateAiCandidates(true)">重新生成</button>
+          <button class="btn btn-ghost" onclick="selectAllAiPreview()">全选可导入</button>
+          <button class="btn btn-ghost" onclick="importSelectedAiCandidates()">导入选中候选</button>
+          <button class="btn btn-ghost" onclick="importAllAiCandidates()">全部导入候选池</button>
+        </div>
+        <div id="aiPreview" class="ai-preview"></div>
+      </section>
+      <div class="candidate-admin-panel">
+        <div class="candidate-stats" id="candidateStats"></div>
+        <div class="candidate-batch-toolbar">
+          <div class="candidate-selection-copy" id="candidateSelectionCopy">当前未选中候选词</div>
+          <div class="candidate-batch-actions">
+            <button class="btn btn-ghost" onclick="selectAllVisibleCandidates()">☑️ 全选当前</button>
+            <button class="btn btn-ghost" onclick="clearCandidateSelection()">🧹 清空选择</button>
+            <button class="btn btn-ghost" onclick="applyBatchCandidateState('ready')">⬆️ 批量直推</button>
+            <button class="btn btn-ghost" onclick="applyBatchCandidateState('watch')">👀 批量观察</button>
+            <button class="btn btn-ghost" onclick="applyBatchCandidateState('review')">🛠 批量复核</button>
+            <button class="btn btn-ghost" onclick="generateSelectedDeepSeekCards()">批量生成选中词卡</button>
+            <button class="btn btn-ghost" onclick="openLibraryCleanupModal()">AI 清洗历史种子数据并删除不合适词</button>
+            <button class="btn btn-ghost" onclick="applyBatchCandidateState('')">↩️ 清除覆盖</button>
+            <label class="tag-check candidate-blocked-toggle"><input type="checkbox" id="showBlockedCandidates" onchange="setShowBlockedCandidates(this.checked)"><span>显示不建议词</span></label>
+          </div>
+        </div>
+      </div>
+      <div class="published-grid" id="candidateGrid"></div>
+      <div class="empty-state" id="candidateEmpty" style="display:none">
+        <div class="empty-icon">🗂</div>
+        <div class="empty-title">当前没有可看的候选词</div>
+        <div class="empty-desc">可以先从每日热门、AI 候选生成或已发布延展里继续积累候选词</div>
+      </div>
+    </div>
+    <div class="page page-published" id="page-published">
+      <div class="page-header">
+        <div class="page-header-inner">
+          <div class="page-heading">
+            <div class="page-title-icon"><img src="assets/illustrations/time-machine.png" alt="" onerror="this.parentElement.textContent='📝'"></div>
+            <div>
+              <h1 class="page-title">已发布</h1>
+              <p class="page-date" id="publishedCount">管理已经发到小红书的内容和表现</p>
+            </div>
+          </div>
+          <div class="page-actions">
+            <div class="page-actions-deco" aria-hidden="true">✦</div>
+            <button class="btn btn-ghost" onclick="openPublishedRecordModal()">➕ 添加已发布记录</button>
+            <button class="btn btn-ghost" onclick="refreshPublishedMetrics()">🛰 更新数据</button>
+            <button class="btn btn-primary" onclick="renderPublished()">🔄 刷新列表</button>
+          </div>
+        </div>
+      </div>
+      <div class="published-grid" id="publishedGrid"></div>
+      <div class="page-scene">
+        <div class="scene-assets" aria-hidden="true">
+          <img class="design-asset design-asset-scene-medium" src="assets/illustrations/time-machine.png" alt="" onerror="this.remove()">
+          <img class="design-asset design-asset-scene-small" src="assets/illustrations/propeller.png" alt="" onerror="this.remove()">
+        </div>
+        <div class="scene-bubble">每条发布记录都可以补 1h / 2h / 4h / 24h / 72h 数据；系统也会在每天早上 9 点自动尝试更新一次。</div>
+      </div>
+      <div class="empty-state" id="publishedEmpty" style="display:none">
+        <div class="empty-icon">📝</div>
+        <div class="empty-title">还没有已发布记录</div>
+        <div class="empty-desc">发布小红书后，把链接和数据补进来，系统后面就能更聪明</div>
+      </div>
+    </div>
+  </main>
+</div>
+<div class="modal-overlay" id="modalOverlay" onclick="closeModalOutside(event)">
+  <div class="modal-container" id="modalContainer"></div>
+</div>
+<div class="modal-overlay" id="settingsOverlay" onclick="if(event.target===this)closeSettingsModal()">
+  <div class="modal-container settings-modal">
+    <div class="settings-decor" aria-hidden="true">
+      <img class="design-asset design-asset-settings-left" src="assets/illustrations/doraemon-door-bread.png" alt="" onerror="this.remove()">
+      <img class="design-asset design-asset-settings-door" src="assets/illustrations/anywhere-door.png" alt="" onerror="this.remove()">
+      <img class="design-asset design-asset-settings-bread" src="assets/illustrations/memory-bread.png" alt="" onerror="this.remove()">
+      <span class="settings-star star-a">✦</span>
+      <span class="settings-star star-b">💗</span>
+      <span class="settings-star star-c">✦</span>
+    </div>
+    <div class="modal-header settings-header">
+      <h2 class="modal-title">公共收藏</h2>
+      <button class="modal-close" onclick="closeSettingsModal()">×</button>
+    </div>
+    <div class="modal-body settings-body">
+      <p id="syncIntro" class="settings-copy">
+        你的收藏、待发布、已发布记录都会优先保存在本地，并尽量同步到 Cloudflare KV。
+      </p>
+      <div class="settings-divider" aria-hidden="true">🍞</div>
+      <div id="tokenStatus" class="settings-status"></div>
+      <div class="settings-actions">
+        <button class="btn btn-ghost" onclick="exportWorkflowBackup()">导出全部选题数据</button>
+        <button class="btn btn-primary" onclick="closeSettingsModal()">知道了 ✓</button>
+      </div>
+    </div>
+  </div>
+</div>
+<div class="toast" id="toast"></div>
+<script src="words-data.js"></script>
+<script src="sync-config.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

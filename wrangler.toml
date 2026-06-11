@@ -1,0 +1,7 @@
+name = "jiyimianbao"
+compatibility_date = "2026-04-29"
+pages_build_output_dir = "."
+
+[[kv_namespaces]]
+binding = "FAVORITES"
+id = "969904de6cf24fe6982d2b8ee01c9b1a"
