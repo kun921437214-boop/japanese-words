@@ -1,5 +1,5 @@
-import { dateKey } from '../shared/rankings.mjs';
-import { cleanStoredWorkflow, generateTodaySnapshot } from '../shared/today-snapshot.mjs';
+import { addDays, buildRankingForDate, cleanStoredRanking, dateKey } from '../shared/rankings.mjs';
+import { cleanStoredWorkflow, generateTodaySnapshot, isCurrentGeneratorSnapshot } from '../shared/today-snapshot.mjs';
 import { getAccountLearningSummary } from '../shared/account-learning.mjs';
 
 const CORS_HEADERS = {
@@ -101,6 +101,42 @@ function uniqueWords(words) {
 function getStorageKey(url) {
   const code = String(url.searchParams.get('code') || '').trim().replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 64);
   return code.length >= 8 ? `favorites:${code}` : 'favorites:global';
+}
+
+function getRankingStorageKey(dateKeyValue) {
+  return `rankings:${dateKeyValue}`;
+}
+
+async function readRankingHistoryWords(env, todayDateKey, days = 30) {
+  const earliestDateKey = addDays(todayDateKey, -days);
+  const generationStartDateKey = addDays(earliestDateKey, -15);
+  const cachedSelections = new Map();
+  let cursor = generationStartDateKey;
+
+  while (cursor) {
+    const stored = await env.FAVORITES.get(getRankingStorageKey(cursor), 'json');
+    const ranking = cleanStoredRanking(stored, cursor);
+    if (ranking.words.length === 20) cachedSelections.set(cursor, ranking.words);
+    if (cursor === todayDateKey) break;
+    cursor = addDays(cursor, 1);
+  }
+
+  const rankingHistoryWords = {};
+  cursor = generationStartDateKey;
+  while (cursor) {
+    let words = cachedSelections.get(cursor);
+    if (!words || words.length !== 20) {
+      words = buildRankingForDate(cursor, cachedSelections);
+      cachedSelections.set(cursor, words);
+    }
+    if (cursor >= earliestDateKey && cursor < todayDateKey) {
+      rankingHistoryWords[cursor] = words;
+    }
+    if (cursor === todayDateKey) break;
+    cursor = addDays(cursor, 1);
+  }
+
+  return rankingHistoryWords;
 }
 
 function getPublishedWords(workflow) {
@@ -269,7 +305,8 @@ async function generateCandidates(origin, workflow) {
   const data = await callJsonEndpoint(origin, '/ai-candidates', payload);
   const batchId = `daily_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
   const trace = getAiTraceFromUsage(data.usage || {}, payload);
-  const items = safeArray(data.items).map(item => ({
+  const rawItems = safeArray(data.items);
+  const items = rawItems.map(item => ({
     ...item,
     sourceType: 'deepseek_generated',
     sourcePromptType: 'stable_today',
@@ -279,14 +316,40 @@ async function generateCandidates(origin, workflow) {
     aiBatchId: batchId,
     updatedAt: nowIso()
   }));
+  const normalizedByKanji = new Map(items.map(item => [cleanText(item.kanji, 80), item]));
+  const batchItems = rawItems.map((item, index) => {
+    const kanji = cleanText(item.kanji || item.word, 80);
+    const normalized = normalizedByKanji.get(kanji) || {};
+    return {
+      kanji,
+      kana: cleanText(normalized.kana || item.kana, 80),
+      romaji: cleanText(normalized.romaji || item.romaji, 120),
+      meaning: cleanText(normalized.meaning || item.meaning, 240),
+      candidateType: cleanText(normalized.candidateType || item.candidateType, 80),
+      displayBucket: cleanText(normalized.displayBucket || item.displayBucket, 40),
+      riskLevel: cleanText(normalized.riskLevel || item.riskLevel, 20),
+      confidenceLevel: cleanText(normalized.confidenceLevel || item.confidenceLevel, 20),
+      sourceAction: 'stable_today',
+      sourceBatchId: batchId,
+      rawRank: index + 1,
+      rejectedReason: normalized.blocked ? 'blocked' : (!kanji ? 'missing_kanji' : ''),
+      selectedForToday: false
+    };
+  }).filter(item => item.kanji).slice(0, 200);
   const batch = {
     id: batchId,
     action: 'stable_today',
     model: data.usage?.model || 'deepseek-v4-flash',
     createdAt: data.usage?.createdAt || nowIso(),
     itemCount: items.length,
+    promptType: 'stable_today',
+    rawCount: rawItems.length,
+    normalizedCount: items.length,
+    acceptedCount: 0,
+    rejectedCount: Math.max(0, rawItems.length - items.length),
     importedCount: 0,
     skippedCount: 0,
+    items: batchItems,
     ...trace,
     promptSummary: '后台自动日更',
     trendNotes: data.summary?.trendNotes || ''
@@ -451,7 +514,7 @@ async function generateCardsAndSave(origin, workflow, env, key) {
 async function runDailyRefreshJob({ origin, env, key, today }) {
   try {
     const stored = cleanStoredWorkflow(await env.FAVORITES.get(key, 'json'));
-    if (stored.todaySnapshot?.dateKey === today && safeArray(stored.todaySnapshot.words).length > 0) {
+    if (isCurrentGeneratorSnapshot(stored.todaySnapshot, new Date())) {
       return writeRefreshRunState(env, today, {
         status: 'success',
         startedAt: nowIso(),
@@ -465,12 +528,29 @@ async function runDailyRefreshJob({ origin, env, key, today }) {
     }
 
     const generated = await generateCandidates(origin, stored);
+    let totalGenerated = generated.items.length;
     const workflowWithBatch = cleanStoredWorkflow({
       ...stored,
       aiBatches: [generated.batch, ...safeArray(stored.aiBatches)].slice(0, 100)
     });
-    const imported = importAiCandidates(workflowWithBatch, generated.items, generated.batch);
-    const snapshot = generateTodaySnapshot(imported.workflow, { mode: 'create' });
+    let imported = importAiCandidates(workflowWithBatch, generated.items, generated.batch);
+    let totalImported = imported.stats.imported;
+    const rankingHistoryWords = await readRankingHistoryWords(env, today, 30);
+    let snapshot = generateTodaySnapshot({ ...imported.workflow, rankingHistoryWords }, { mode: 'create', createdBy: 'server' });
+
+    for (let round = 0; snapshot.result.shortage && round < 2; round += 1) {
+      const extraGenerated = await generateCandidates(origin, snapshot.workflow);
+      totalGenerated += extraGenerated.items.length;
+      const workflowWithExtraBatch = cleanStoredWorkflow({
+        ...snapshot.workflow,
+        aiBatches: [extraGenerated.batch, ...safeArray(snapshot.workflow.aiBatches)].slice(0, 100)
+      });
+      imported = importAiCandidates(workflowWithExtraBatch, extraGenerated.items, extraGenerated.batch);
+      totalImported += imported.stats.imported;
+      snapshot = generateTodaySnapshot({ ...imported.workflow, rankingHistoryWords }, { mode: 'fill', createdBy: 'server' });
+      if (!imported.stats.imported) break;
+    }
+
     const finalWorkflow = cleanStoredWorkflow({ ...snapshot.workflow, updated: nowIso() });
 
     await env.FAVORITES.put(key, JSON.stringify(finalWorkflow));
@@ -483,8 +563,8 @@ async function runDailyRefreshJob({ origin, env, key, today }) {
       status: 'success',
       startedAt: nowIso(),
       finishedAt: nowIso(),
-      generatedCandidates: generated.items.length,
-      importedCandidates: imported.stats.imported,
+      generatedCandidates: totalGenerated,
+      importedCandidates: totalImported,
       todayCount: finalWorkflow.todaySnapshot.words.length,
       generatedCards,
       queuedCards: cardTargets.length
@@ -522,7 +602,7 @@ export async function onRequest(context) {
 
   try {
     const stored = cleanStoredWorkflow(await env.FAVORITES.get(key, 'json'));
-    if (stored.todaySnapshot?.dateKey === today && safeArray(stored.todaySnapshot.words).length > 0) {
+    if (isCurrentGeneratorSnapshot(stored.todaySnapshot, new Date())) {
       return jsonResponse({
         ok: true,
         status: 'skipped',

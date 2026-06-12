@@ -57,7 +57,7 @@ const CANDIDATE_POOL_BOOTSTRAP_SIZE = 300;
 const CANDIDATE_POOL_DAILY_INTAKE = 50;
 const CANDIDATE_POOL_MIN_SCORE = 60;
 const TODAY_HISTORY_DEDUP_DAYS = 30;
-const TODAY_HISTORY_DEDUP_RELAX_STEPS = [TODAY_HISTORY_DEDUP_DAYS, 14, 7, 0];
+const TODAY_HISTORY_DEDUP_RELAX_STEPS = [TODAY_HISTORY_DEDUP_DAYS];
 const TODAY_SNAPSHOT_HISTORY_LIMIT = 45;
 const ACTIVE_TAB_STORAGE_KEY = 'kotoba_active_tab';
 const SOURCE_FILTER_STORAGE_PREFIX = 'kotoba_source_filter_';
@@ -66,11 +66,12 @@ const HISTORY_DATE_STORAGE_KEY = 'kotoba_history_date';
 const DAILY_HOT_DATE_STORAGE_KEY = 'kotoba_daily_hot_date';
 const TODAY_DISMISSED_STORAGE_KEY = 'kotoba_today_dismissed';
 const TODAY_SNAPSHOT_VERSION = 1;
+const TODAY_SNAPSHOT_GENERATOR_VERSION = 'daily-v4-dedup30-server';
 const AUTO_DAILY_REFRESH_RUNNING_TTL_MS = 3 * 60 * 1000;
 const LEGACY_SYNC_CODE_STORAGE_KEY = 'kotoba_sync_code';
 const SYNC_API_URL = normalizeSyncApiUrl(window.KOTOBA_SYNC_API_URL);
 const APP_TIME_ZONE = 'Asia/Shanghai';
-const RANKINGS_DAYS = 8;
+const RANKINGS_DAYS = 30;
 const WORDS_PER_DAY = 20;
 const AI_CARD_AUTO_MAX_ATTEMPTS_PER_DAY = 2;
 const FAVORITE_STATUS_ORDER = ['none', 'pending', 'published'];
@@ -109,6 +110,21 @@ const AI_ACTION_LABELS = {
   rerank_candidates: '根据反馈重新推荐',
   audit_library_for_delete: 'AI 清洗历史种子数据',
   audit_missing_library_words: '历史种子复核'
+};
+const RECOMMENDATION_ORIGIN_LABELS = {
+  deepseek_new: 'DeepSeek 新生成',
+  candidate_pool: 'AI 候选池旧词',
+  history_fallback: '历史热门回流',
+  local_word_bank: '本地词库兜底',
+  manual_added: '手动添加',
+  today_backfill: '补位词',
+  dedup_relaxed: '去重放宽回流',
+  unknown: '来源未知'
+};
+const RECOMMENDATION_ORIGIN_TYPES = Object.keys(RECOMMENDATION_ORIGIN_LABELS);
+const AUDIT_SPELLING_SUGGESTIONS = {
+  '痛バック': '建议修正为「痛バッグ」',
+  'オーバサイズ': '建议修正为「オーバーサイズ」'
 };
 const PROMPT_VERSION_BY_ACTION = {
   stable_today: 'candidate-v3',
@@ -1302,6 +1318,168 @@ function getExpressionValueScore(entry = {}) {
   return clamp(score, 0, 100);
 }
 
+function getChineseTransparencyScore(entry = {}) {
+  const kanji = normalizeKanjiSpelling(entry.kanji);
+  const text = `${kanji} ${cleanShortText(entry.meaning, 160)} ${cleanShortText(entry.category, 80)}`;
+  if (!kanji) return 0;
+  let score = 20;
+  if (/^[\u4e00-\u9fff]{2,}$/.test(kanji)) score += 52;
+  if (/^[\u4e00-\u9fffぁ-んァ-ンー]+$/.test(kanji) && /副業|通勤|睡眠|免疫|入浴|絶景|資格|自己|承認|欲求|習慣|化|高揚|感|清潔|感/.test(kanji)) score += 26;
+  if (/中文|一眼懂|普通名词|普通名詞|话题|話題|分类|分類|标签|標籤/.test(text)) score += 16;
+  if (EXPRESSION_VALUE_STRONG_RE.test(text)) score -= 16;
+  if (AI_FANDOM_TONE_PATTERN.test(text) || AI_NEGATIVE_TONE_PATTERN.test(text)) score -= 8;
+  return clamp(score, 0, 100);
+}
+
+function getFreshAiBatchIdsForDate(dateKeyValue = todayKey()) {
+  return new Set(cleanAiBatches(aiBatches)
+    .filter(batch => {
+      if (!batch.id || !batch.createdAt) return false;
+      const created = new Date(batch.createdAt);
+      if (Number.isNaN(created.getTime())) return false;
+      return dateKey(created) === dateKeyValue && ['stable_today', 'generate_candidates', 'wild_ideas'].includes(batch.action);
+    })
+    .map(batch => batch.id));
+}
+
+function getLatestBatchItemsForIds(batchIds = []) {
+  const batchIdSet = new Set(safeArray(batchIds).filter(Boolean));
+  return cleanAiBatches(aiBatches)
+    .filter(batch => !batchIdSet.size || batchIdSet.has(batch.id))
+    .flatMap(batch => safeArray(batch.items));
+}
+
+function getRecommendationAuditTrace(entry = {}, context = {}) {
+  const cleanEntry = entry.candidateMeta || entry || {};
+  const freshBatchIds = context.freshBatchIds || new Set();
+  const existingWords = context.existingWords || new Set();
+  const sourceType = cleanShortText(cleanEntry.sourceType, 80);
+  const sourceBatchId = cleanEntry.aiBatchId || cleanEntry.sourceBatchId || '';
+  const fromDeepSeekNew = sourceType === 'deepseek_generated' && sourceBatchId && freshBatchIds.has(sourceBatchId);
+  const fromManual = sourceType === 'manual_keep' || sourceType === 'manual';
+  const fromHistoryFallback = Boolean(cleanEntry.historicalBackfill);
+  const fromLocalFallback = Boolean(cleanEntry.fromLocalFallback || cleanEntry.lastOrigin === 'local' || sourceType === 'original' || sourceType === 'audit_missing');
+  const fromCandidatePool = !fromDeepSeekNew && !fromManual && !fromHistoryFallback && !fromLocalFallback;
+  const isBackfill = Boolean(cleanEntry.historicalBackfill)
+    || (context.mode === 'fill' && cleanEntry.kanji && !existingWords.has(cleanEntry.kanji))
+    || (cleanEntry.displayBucket && cleanEntry.displayBucket !== 'today');
+  const isDedupRelaxed = Boolean(cleanEntry.historicalBackfill || context.relaxedDedup || (context.dedupDaysUsed && context.dedupDaysUsed < TODAY_HISTORY_DEDUP_DAYS));
+  let originType = 'candidate_pool';
+  if (fromDeepSeekNew) originType = 'deepseek_new';
+  else if (fromHistoryFallback) originType = 'history_fallback';
+  else if (fromLocalFallback) originType = 'local_word_bank';
+  else if (fromManual) originType = 'manual_added';
+  else if (!cleanEntry.kanji) originType = 'unknown';
+  if (isBackfill) originType = 'today_backfill';
+  if (isDedupRelaxed) originType = 'dedup_relaxed';
+  const finalScore = clamp(toInt(cleanEntry.finalScore || cleanEntry.lastScore || cleanEntry.xhsFitScore, 0), 0, 100);
+  return cleanRecommendationAuditTrace({
+    originType,
+    originLabel: RECOMMENDATION_ORIGIN_LABELS[originType] || RECOMMENDATION_ORIGIN_LABELS.unknown,
+    sourceAction: cleanEntry.sourcePromptType || cleanEntry.sourceAction || context.sourceAction || '',
+    sourceBatchId,
+    fromDeepSeekNew,
+    fromCandidatePool,
+    fromHistoryFallback,
+    fromLocalFallback,
+    fromManual,
+    isBackfill,
+    isDedupRelaxed,
+    dedupDaysUsed: context.dedupDaysUsed || cleanEntry.dedupDaysUsed || TODAY_HISTORY_DEDUP_DAYS,
+    selectedReason: [
+      `分桶 ${cleanEntry.displayBucket || 'unknown'}`,
+      `最终分 ${finalScore}`,
+      `表达价值 ${getExpressionValueScore(cleanEntry)}`,
+      isBackfill ? '用于补足今日推荐' : '',
+      isDedupRelaxed ? `去重放宽到 ${context.dedupDaysUsed || cleanEntry.dedupDaysUsed || 0} 天` : ''
+    ].filter(Boolean).join('；'),
+    selectedAt: context.generatedAt || nowIso()
+  });
+}
+
+function buildRecommendationAuditItem(wordOrEntry = {}, context = {}) {
+  const entry = wordOrEntry.candidateMeta || wordOrEntry || {};
+  const audit = cleanRecommendationAuditTrace(entry.recommendationAudit || getRecommendationAuditTrace(entry, context));
+  const expressionValueScore = getExpressionValueScore(entry);
+  const chineseTransparencyScore = getChineseTransparencyScore(entry);
+  const genericTopic = isGenericTopicWord(entry);
+  const diagnosis = [];
+  if (genericTopic) diagnosis.push('泛话题词，适合候选池观察，不宜默认强推');
+  if (chineseTransparencyScore >= 80) diagnosis.push('中文透明度高，可能缺少日语语感解释价值');
+  if (expressionValueScore < 55) diagnosis.push('表达价值偏低');
+  if (audit.isBackfill) diagnosis.push('补位入选，需要关注候选池是否不足');
+  if (audit.isDedupRelaxed) diagnosis.push('去重放宽后入选');
+  if (AUDIT_SPELLING_SUGGESTIONS[entry.kanji]) diagnosis.push(AUDIT_SPELLING_SUGGESTIONS[entry.kanji]);
+  if (entry.kanji === 'レイヤー') diagnosis.push('需明确 cosplay / 创作者语境');
+  if (entry.kanji === '乙') diagnosis.push('网络语语境依赖，需标注使用场景');
+  return cleanRecommendationAuditItem({
+    kanji: entry.kanji || wordOrEntry.kanji || '',
+    meaning: entry.meaning || wordOrEntry.meaning || '',
+    recommendationLevel: getRecommendationGrade(wordOrEntry),
+    riskLevel: entry.riskLevel || wordOrEntry.riskLevel || '',
+    ...audit,
+    finalScore: clamp(toInt(wordOrEntry.finalScore || entry.lastScore || entry.xhsFitScore, 0), 0, 100),
+    accountLearningBonus: clamp(toInt(entry.accountLearningBonus || wordOrEntry.accountLearningBonus || 0), -50, 50),
+    accountLearningPenalty: Math.max(0, -clamp(toInt(entry.accountLearningBonus || wordOrEntry.accountLearningBonus || 0), -50, 50)),
+    expressionValueScore,
+    chineseTransparencyScore,
+    genericTopicPenalty: genericTopic ? 18 : 0,
+    selectedReason: audit.selectedReason,
+    diagnosis
+  });
+}
+
+function averageNumber(values = []) {
+  const numbers = safeArray(values).map(value => Number(value) || 0);
+  if (!numbers.length) return 0;
+  return Math.round(numbers.reduce((sum, value) => sum + value, 0) / numbers.length);
+}
+
+function buildTodayRecommendationAudit(words = [], context = {}) {
+  const items = safeArray(words).map(word => buildRecommendationAuditItem(word, context));
+  const sourceSummary = RECOMMENDATION_ORIGIN_TYPES.reduce((result, key) => ({ ...result, [key]: 0 }), {});
+  items.forEach(item => {
+    sourceSummary[item.originType] = (sourceSummary[item.originType] || 0) + 1;
+    if (item.fromDeepSeekNew && item.originType !== 'deepseek_new') sourceSummary.deepseek_new += 1;
+    if (item.fromCandidatePool && item.originType !== 'candidate_pool') sourceSummary.candidate_pool += 1;
+    if (item.fromLocalFallback && item.originType !== 'local_word_bank') sourceSummary.local_word_bank += 1;
+    if (item.isBackfill && item.originType !== 'today_backfill') sourceSummary.today_backfill += 1;
+    if (item.isDedupRelaxed && item.originType !== 'dedup_relaxed') sourceSummary.dedup_relaxed += 1;
+  });
+  const qualitySummary = {
+    averageFinalScore: averageNumber(items.map(item => item.finalScore)),
+    averageExpressionValueScore: averageNumber(items.map(item => item.expressionValueScore)),
+    averageChineseTransparencyScore: averageNumber(items.map(item => item.chineseTransparencyScore)),
+    genericTopicCount: items.filter(item => item.genericTopicPenalty > 0).length,
+    highTransparencyCount: items.filter(item => item.chineseTransparencyScore >= 80).length,
+    sLevelCount: items.filter(item => item.recommendationLevel === 'S').length,
+    aLevelCount: items.filter(item => item.recommendationLevel === 'A').length,
+    bLevelCount: items.filter(item => item.recommendationLevel === 'B').length,
+    cLevelCount: items.filter(item => item.recommendationLevel === 'C').length
+  };
+  const total = items.length || 1;
+  const latestBatchItems = safeArray(context.latestBatchItems);
+  const rawGenericCount = latestBatchItems.filter(item => isGenericTopicWord(item)).length;
+  const diagnosis = [];
+  if ((sourceSummary.deepseek_new / total) >= 0.5 && qualitySummary.genericTopicCount >= 5) diagnosis.push('问题主要来自 DeepSeek 找词方向，需要优化生成 prompt。');
+  if (latestBatchItems.length && rawGenericCount <= 3 && qualitySummary.genericTopicCount >= 5) diagnosis.push('问题主要来自筛选 / 排序 / 补位策略。');
+  if ((sourceSummary.today_backfill / total) > 0.3) diagnosis.push('今日推荐候选不足，补位比例过高，建议不要硬凑满 20 个。');
+  if ((sourceSummary.local_word_bank / total) > 0.2) diagnosis.push('本地词库兜底过多，说明候选池有效词不足或去重规则过滤太多。');
+  if ((sourceSummary.dedup_relaxed / total) > 0.2) diagnosis.push('30 天去重后候选不足，需要扩大候选池，而不是频繁放宽去重。');
+  if (qualitySummary.sLevelCount > 10) diagnosis.push('推荐等级过松，需要收紧 S/A 评分标准。');
+  if (qualitySummary.highTransparencyCount > 6) diagnosis.push('首页中文一眼懂的词偏多，会影响点击率，需要提高表达价值筛选。');
+  if (!diagnosis.length) diagnosis.push('未发现单一明显来源，建议结合逐词审计继续观察。');
+  return cleanRecommendationAuditSummary({
+    date: context.date || todayKey(),
+    total: items.length,
+    sourceSummary,
+    qualitySummary,
+    diagnosis,
+    items,
+    createdAt: context.generatedAt || nowIso()
+  });
+}
+
 function getAccountLearningTone(entry = {}) {
   const text = `${normalizeKanjiSpelling(entry.kanji)} ${getEntryContextText(entry)}`;
   if (ACCOUNT_LEARNING_EMOTION_SOCIAL_RE.test(text)) return 'emotion_social';
@@ -1858,6 +2036,77 @@ function cleanCandidateScoreBreakdown(breakdown = {}) {
   };
 }
 
+function cleanRecommendationAuditTrace(trace = {}) {
+  const originType = RECOMMENDATION_ORIGIN_TYPES.includes(trace.originType) ? trace.originType : 'unknown';
+  return {
+    originType,
+    originLabel: cleanShortText(trace.originLabel || RECOMMENDATION_ORIGIN_LABELS[originType] || RECOMMENDATION_ORIGIN_LABELS.unknown, 80),
+    sourceAction: cleanShortText(trace.sourceAction, 120),
+    sourceBatchId: cleanShortText(trace.sourceBatchId, 120),
+    fromDeepSeekNew: Boolean(trace.fromDeepSeekNew),
+    fromCandidatePool: Boolean(trace.fromCandidatePool),
+    fromHistoryFallback: Boolean(trace.fromHistoryFallback),
+    fromLocalFallback: Boolean(trace.fromLocalFallback),
+    fromManual: Boolean(trace.fromManual),
+    isBackfill: Boolean(trace.isBackfill),
+    isDedupRelaxed: Boolean(trace.isDedupRelaxed),
+    dedupDaysUsed: clamp(toInt(trace.dedupDaysUsed, TODAY_HISTORY_DEDUP_DAYS), 0, 365),
+    selectedReason: cleanShortText(trace.selectedReason, 1000),
+    selectedAt: typeof trace.selectedAt === 'string' ? trace.selectedAt : ''
+  };
+}
+
+function cleanRecommendationAuditItem(item = {}) {
+  const trace = cleanRecommendationAuditTrace(item);
+  return {
+    kanji: cleanShortText(item.kanji, 80),
+    meaning: cleanShortText(item.meaning, 240),
+    recommendationLevel: ['S', 'A', 'B', 'C'].includes(item.recommendationLevel) ? item.recommendationLevel : 'C',
+    riskLevel: normalizeEnumValue(item.riskLevel, RISK_LEVEL_OPTIONS, 'low'),
+    ...trace,
+    finalScore: clamp(toInt(item.finalScore, 0), 0, 100),
+    accountLearningBonus: clamp(toInt(item.accountLearningBonus, 0), -50, 50),
+    accountLearningPenalty: clamp(toInt(item.accountLearningPenalty, 0), 0, 50),
+    expressionValueScore: clamp(toInt(item.expressionValueScore, 0), 0, 100),
+    chineseTransparencyScore: clamp(toInt(item.chineseTransparencyScore, 0), 0, 100),
+    genericTopicPenalty: clamp(toInt(item.genericTopicPenalty, 0), 0, 100),
+    selectedReason: cleanShortText(item.selectedReason || trace.selectedReason, 1000),
+    diagnosis: safeArray(item.diagnosis).map(text => cleanShortText(text, 300)).filter(Boolean).slice(0, 8)
+  };
+}
+
+function cleanRecommendationAuditSummary(audit = {}) {
+  const emptySourceSummary = RECOMMENDATION_ORIGIN_TYPES.reduce((result, key) => ({ ...result, [key]: 0 }), {});
+  const sourceSummary = Object.entries(audit.sourceSummary || {}).reduce((result, [key, value]) => {
+    if (RECOMMENDATION_ORIGIN_TYPES.includes(key)) result[key] = clamp(toInt(value, 0), 0, 1000);
+    return result;
+  }, { ...emptySourceSummary });
+  const qualityKeys = [
+    'averageFinalScore',
+    'averageExpressionValueScore',
+    'averageChineseTransparencyScore',
+    'genericTopicCount',
+    'highTransparencyCount',
+    'sLevelCount',
+    'aLevelCount',
+    'bLevelCount',
+    'cLevelCount'
+  ];
+  const qualitySummary = qualityKeys.reduce((result, key) => ({
+    ...result,
+    [key]: clamp(toInt(audit.qualitySummary?.[key], 0), 0, 1000)
+  }), {});
+  return {
+    date: cleanShortText(audit.date, 20),
+    total: clamp(toInt(audit.total, 0), 0, 1000),
+    sourceSummary,
+    qualitySummary,
+    diagnosis: safeArray(audit.diagnosis).map(text => cleanShortText(text, 500)).filter(Boolean).slice(0, 12),
+    items: safeArray(audit.items).map(cleanRecommendationAuditItem).filter(item => item.kanji).slice(0, 100),
+    createdAt: typeof audit.createdAt === 'string' ? audit.createdAt : ''
+  };
+}
+
 function cleanCandidatePoolEntry(kanji, entry = {}) {
   const rawKanji = String(kanji || entry.kanji || '').trim();
   const cleanKanji = normalizeKanjiSpelling(rawKanji);
@@ -1949,6 +2198,7 @@ function cleanCandidatePoolEntry(kanji, entry = {}) {
     lastScore: clamp(toInt(entry.lastScore, 0), 0, 100),
     recommendationCount: clamp(toInt(entry.recommendationCount, 0), 0, 9999),
     ignoredCount: clamp(toInt(entry.ignoredCount, 0), 0, 9999),
+    recommendationAudit: cleanRecommendationAuditTrace(entry.recommendationAudit || {}),
     wasRecommended: Boolean(entry.wasRecommended),
     historicalBackfill: Boolean(entry.historicalBackfill),
     lastDecayAt: typeof entry.lastDecayAt === 'string' ? entry.lastDecayAt : '',
@@ -2343,24 +2593,51 @@ function cleanStoredWorkflow(data = {}) {
   };
 }
 
+function cleanAiBatchItem(item = {}, index = 0, fallbackAction = '', fallbackBatchId = '') {
+  const kanji = cleanShortText(item.kanji, 80);
+  if (!kanji) return null;
+  return {
+    kanji,
+    kana: cleanShortText(item.kana || item.reading, 120),
+    romaji: cleanShortText(item.romaji, 120),
+    meaning: cleanShortText(item.meaning, 240),
+    candidateType: normalizeEnumValue(item.candidateType, CANDIDATE_TYPE_OPTIONS, '稳定候选'),
+    displayBucket: normalizeEnumValue(item.displayBucket, DISPLAY_BUCKET_OPTIONS, 'long_term'),
+    riskLevel: normalizeEnumValue(item.riskLevel, RISK_LEVEL_OPTIONS, 'low'),
+    confidenceLevel: normalizeEnumValue(item.confidenceLevel, CONFIDENCE_LEVEL_OPTIONS, 'medium'),
+    sourceAction: cleanShortText(item.sourceAction || fallbackAction, 120),
+    sourceBatchId: cleanShortText(item.sourceBatchId || fallbackBatchId, 120),
+    rawRank: clamp(toInt(item.rawRank, index + 1), 0, 9999),
+    rejectedReason: cleanShortText(item.rejectedReason, 500),
+    selectedForToday: Boolean(item.selectedForToday)
+  };
+}
+
 function cleanAiBatch(batch = {}, index = 0) {
+  const action = Object.keys(AI_ACTION_LABELS).includes(batch.action) ? batch.action : 'generate_candidates';
   const id = cleanShortText(batch.id || `batch_${index}`, 120);
   if (!id) return null;
   return {
     id,
-    action: Object.keys(AI_ACTION_LABELS).includes(batch.action) ? batch.action : 'generate_candidates',
+    action,
+    promptType: cleanShortText(batch.promptType || action, 120),
     model: cleanShortText(batch.model, 120),
     createdAt: typeof batch.createdAt === 'string' ? batch.createdAt : nowIso(),
-    promptVersion: cleanShortText(batch.promptVersion || getPromptVersion(batch.action), 80),
+    promptVersion: cleanShortText(batch.promptVersion || getPromptVersion(action), 80),
     inputHash: cleanShortText(batch.inputHash, 120),
     rawOutput: cleanTraceText(batch.rawOutput, 8000),
     normalizedOutput: cleanTraceText(batch.normalizedOutput, 8000),
     reviewResult: ['accepted', 'rejected', 'edited'].includes(batch.reviewResult) ? batch.reviewResult : '',
-    itemCount: clamp(toInt(batch.itemCount, 0), 0, 100),
-    importedCount: clamp(toInt(batch.importedCount, 0), 0, 100),
-    skippedCount: clamp(toInt(batch.skippedCount, 0), 0, 100),
+    rawCount: clamp(toInt(batch.rawCount ?? batch.itemCount, 0), 0, 1000),
+    normalizedCount: clamp(toInt(batch.normalizedCount ?? batch.itemCount, 0), 0, 1000),
+    acceptedCount: clamp(toInt(batch.acceptedCount ?? batch.importedCount, 0), 0, 1000),
+    rejectedCount: clamp(toInt(batch.rejectedCount ?? batch.skippedCount, 0), 0, 1000),
+    itemCount: clamp(toInt(batch.itemCount, 0), 0, 1000),
+    importedCount: clamp(toInt(batch.importedCount, 0), 0, 1000),
+    skippedCount: clamp(toInt(batch.skippedCount, 0), 0, 1000),
     promptSummary: cleanShortText(batch.promptSummary, 500),
-    trendNotes: cleanShortText(batch.trendNotes, 1000)
+    trendNotes: cleanShortText(batch.trendNotes, 1000),
+    items: safeArray(batch.items).map((item, itemIndex) => cleanAiBatchItem(item, itemIndex, action, id)).filter(Boolean).slice(0, 200)
   };
 }
 
@@ -2369,6 +2646,24 @@ function cleanAiBatches(batches) {
     .map((batch, index) => cleanAiBatch(batch, index))
     .filter(Boolean)
     .slice(0, 100);
+}
+
+function buildAiBatchItems(rawItems = [], normalizedItems = [], batchId = '', action = '') {
+  const normalizedByKanji = new Map(safeArray(normalizedItems).map(item => [item.kanji, item]));
+  return safeArray(rawItems).map((rawItem, index) => {
+    const kanji = normalizeKanjiSpelling(rawItem?.kanji || rawItem?.word || '');
+    const normalized = normalizedByKanji.get(kanji) || {};
+    return cleanAiBatchItem({
+      ...rawItem,
+      ...normalized,
+      kanji,
+      sourceAction: normalized.sourcePromptType || rawItem?.sourceAction || action,
+      sourceBatchId: batchId,
+      rawRank: index + 1,
+      rejectedReason: normalized.blocked ? 'blocked' : (!normalized.kanji ? 'missing_kanji' : ''),
+      selectedForToday: Boolean(normalized.selectedForToday)
+    }, index, action, batchId);
+  }).filter(Boolean).slice(0, 200);
 }
 
 function mergeFeedback(localFeedback, remoteFeedback) {
@@ -2468,7 +2763,23 @@ function mergeAiBatches(localBatches, remoteBatches) {
   const merged = new Map();
   [...cleanAiBatches(remoteBatches), ...cleanAiBatches(localBatches)].forEach(batch => {
     const current = merged.get(batch.id);
-    if (!current || String(batch.createdAt || '') >= String(current.createdAt || '')) merged.set(batch.id, batch);
+    if (!current) {
+      merged.set(batch.id, batch);
+      return;
+    }
+    const winner = String(batch.createdAt || '') >= String(current.createdAt || '') ? batch : current;
+    const fallback = winner === batch ? current : batch;
+    merged.set(batch.id, cleanAiBatch({
+      ...fallback,
+      ...winner,
+      rawCount: Math.max(toInt(fallback.rawCount, 0), toInt(winner.rawCount, 0)),
+      normalizedCount: Math.max(toInt(fallback.normalizedCount, 0), toInt(winner.normalizedCount, 0)),
+      acceptedCount: Math.max(toInt(fallback.acceptedCount, 0), toInt(winner.acceptedCount, 0)),
+      rejectedCount: Math.max(toInt(fallback.rejectedCount, 0), toInt(winner.rejectedCount, 0)),
+      importedCount: Math.max(toInt(fallback.importedCount, 0), toInt(winner.importedCount, 0)),
+      skippedCount: Math.max(toInt(fallback.skippedCount, 0), toInt(winner.skippedCount, 0)),
+      items: safeArray(winner.items).length >= safeArray(fallback.items).length ? winner.items : fallback.items
+    }));
   });
   return [...merged.values()]
     .sort((left, right) => String(right.createdAt || '').localeCompare(String(left.createdAt || '')))
@@ -2485,7 +2796,15 @@ function cleanTodaySnapshot(snapshot = {}) {
     generatedAt: typeof snapshot.generatedAt === 'string' ? snapshot.generatedAt : '',
     source: snapshot.source === 'candidatePool' ? 'candidatePool' : 'candidatePool',
     batchIds: getUniqueWords(snapshot.batchIds || []).slice(0, 30),
-    version: clamp(toInt(snapshot.version, 0), 0, 999)
+    version: clamp(toInt(snapshot.version, 0), 0, 999),
+    generatorVersion: cleanShortText(snapshot.generatorVersion, 80),
+    createdBy: ['server', 'frontend', 'worker', 'manual'].includes(snapshot.createdBy) ? snapshot.createdBy : '',
+    dedupDaysUsed: clamp(toInt(snapshot.dedupDaysUsed, 0), 0, 365),
+    relaxedDedup: Boolean(snapshot.relaxedDedup),
+    shortage: Boolean(snapshot.shortage),
+    repeated30Count: clamp(toInt(snapshot.repeated30Count, 0), 0, WORDS_PER_DAY),
+    repeated30Words: getUniqueWords(snapshot.repeated30Words || []).slice(0, WORDS_PER_DAY),
+    recommendationAudit: cleanRecommendationAuditSummary(snapshot.recommendationAudit || {})
   };
 }
 
@@ -2501,8 +2820,16 @@ function cleanHistorySnapshot(snapshot = {}, fallbackDateKey = '') {
     source: record.source === 'todaySnapshot' ? 'todaySnapshot' : 'todaySnapshot',
     batchIds: getUniqueWords(record.batchIds || []).slice(0, 30),
     version: clamp(toInt(record.version, 1), 1, 999),
+    generatorVersion: cleanShortText(record.generatorVersion, 80),
+    createdBy: ['server', 'frontend', 'worker', 'manual'].includes(record.createdBy) ? record.createdBy : '',
+    dedupDaysUsed: clamp(toInt(record.dedupDaysUsed, 0), 0, 365),
+    relaxedDedup: Boolean(record.relaxedDedup),
+    shortage: Boolean(record.shortage),
+    repeated30Count: clamp(toInt(record.repeated30Count, 0), 0, WORDS_PER_DAY),
+    repeated30Words: getUniqueWords(record.repeated30Words || []).slice(0, WORDS_PER_DAY),
     archivedAt: typeof record.archivedAt === 'string' ? record.archivedAt : '',
-    title: cleanShortText(record.title || '每日热门归档', 120)
+    title: cleanShortText(record.title || '每日热门归档', 120),
+    recommendationAudit: cleanRecommendationAuditSummary(record.recommendationAudit || {})
   };
 }
 
@@ -2570,6 +2897,14 @@ function archiveTodaySnapshotHistory(snapshot = todaySnapshot) {
       source: 'todaySnapshot',
       batchIds: cleanSnapshot.batchIds,
       version: cleanSnapshot.version || TODAY_SNAPSHOT_VERSION,
+      generatorVersion: cleanSnapshot.generatorVersion,
+      createdBy: cleanSnapshot.createdBy,
+      dedupDaysUsed: cleanSnapshot.dedupDaysUsed,
+      relaxedDedup: cleanSnapshot.relaxedDedup,
+      shortage: cleanSnapshot.shortage,
+      repeated30Count: cleanSnapshot.repeated30Count,
+      repeated30Words: cleanSnapshot.repeated30Words,
+      recommendationAudit: cleanSnapshot.recommendationAudit,
       archivedAt: nowIso(),
       title: '每日热门归档'
     },
@@ -2592,6 +2927,14 @@ function archiveTodaySnapshot(snapshot = todaySnapshot) {
       source: 'todaySnapshot',
       batchIds: cleanSnapshot.batchIds,
       version: Math.max(toInt(cleanSnapshot.version, 1), toInt(existing.version, 0)),
+      generatorVersion: cleanSnapshot.generatorVersion,
+      createdBy: cleanSnapshot.createdBy,
+      dedupDaysUsed: cleanSnapshot.dedupDaysUsed,
+      relaxedDedup: cleanSnapshot.relaxedDedup,
+      shortage: cleanSnapshot.shortage,
+      repeated30Count: cleanSnapshot.repeated30Count,
+      repeated30Words: cleanSnapshot.repeated30Words,
+      recommendationAudit: cleanSnapshot.recommendationAudit,
       archivedAt: nowIso(),
       title: '每日热门归档'
     }
@@ -2621,7 +2964,9 @@ function mergeTodaySnapshot(localSnapshot, remoteSnapshot) {
 
 function hasTodaySnapshotForToday(snapshot = todaySnapshot) {
   const cleanSnapshot = cleanTodaySnapshot(snapshot);
-  return cleanSnapshot.dateKey === todayKey() && cleanSnapshot.words.length > 0;
+  return cleanSnapshot.dateKey === todayKey()
+    && cleanSnapshot.words.length > 0
+    && cleanSnapshot.generatorVersion === TODAY_SNAPSHOT_GENERATOR_VERSION;
 }
 
 function cleanAutoDailyRefreshState(state = {}) {
@@ -2691,7 +3036,7 @@ function shouldRunDailyAutoRefresh(options = {}) {
   if (options.force) return true;
   if (hasTodaySnapshotForToday(todaySnapshot)) return false;
   const state = getRenderableAutoDailyRefreshState();
-  if (state.dateKey === todayKey() && state.status === 'success') return false;
+  if (state.dateKey === todayKey() && state.status === 'success' && hasTodaySnapshotForToday(todaySnapshot)) return false;
   if (state.dateKey === todayKey() && state.status === 'failed' && state.attempts >= 3) return false;
   if (state.dateKey === todayKey() && isAutoDailyRunningFresh(state)) return false;
   return true;
@@ -5062,6 +5407,7 @@ function updateCandidatePoolAfterTodaySnapshot(selectedWords, previousWords = []
       lastReviewState: word.reviewState,
       lastReviewNote: word.reviewNote,
       lastBreakdown: word.scoreBreakdown,
+      recommendationAudit: word.recommendationAudit || word.candidateMeta?.recommendationAudit || entry.recommendationAudit || {},
       updatedAt: nowIso()
     });
   });
@@ -5073,11 +5419,34 @@ function hydrateTodayWordsFromSnapshot() {
     todayWords = [];
     return false;
   }
+  const auditByKanji = new Map(safeArray(snapshot.recommendationAudit?.items).map(item => [item.kanji, item]));
   const words = snapshot.words
-    .map(kanji => buildTodayWordFromCandidateEntry(candidatePool[kanji] || { kanji }, { snapshotDisplay: true }))
+    .map(kanji => {
+      const auditItem = auditByKanji.get(kanji);
+      const sourceEntry = candidatePool[kanji] || { kanji };
+      const word = buildTodayWordFromCandidateEntry({
+        ...sourceEntry,
+        recommendationAudit: sourceEntry.recommendationAudit || auditItem || {}
+      }, { snapshotDisplay: true });
+      if (!word) return null;
+      const audit = word.candidateMeta?.recommendationAudit || auditItem || {};
+      return {
+        ...word,
+        recommendationAudit: audit,
+        candidateMeta: {
+          ...(word.candidateMeta || {}),
+          recommendationAudit: audit
+        }
+      };
+    })
     .filter(Boolean);
   todayWords = words;
   return todayWords.length > 0;
+}
+
+function getTodaySnapshotRepeatedWords(words = []) {
+  const blocked = getRecentDailyHotBlockedWords(TODAY_HISTORY_DEDUP_DAYS, { dateKey: todayKey() });
+  return getUniqueWords(words).filter(word => blocked.has(word));
 }
 
 function generateTodayFromCandidatePool(mode = 'create') {
@@ -5088,34 +5457,73 @@ function generateTodayFromCandidatePool(mode = 'create') {
     ? previousWords.map(kanji => buildTodayWordFromCandidateEntry(candidatePool[kanji] || { kanji })).filter(Boolean)
     : [];
   const excluded = mode === 'fill' ? existingWords.map(word => word.kanji) : previousWords;
-  const historicalBackfillWords = getRecentDailyHotBlockedWords(TODAY_HISTORY_DEDUP_DAYS, { dateKey: todayKey() });
   let candidates = [];
   let selected = [];
   let dedupDaysUsed = TODAY_HISTORY_DEDUP_DAYS;
   let relaxedDedup = false;
   for (const dedupDays of TODAY_HISTORY_DEDUP_RELAX_STEPS) {
-    const recentBlockedWords = dedupDays > 0
-      ? getRecentDailyHotBlockedWords(dedupDays, { dateKey: todayKey() })
-      : new Set();
+    const recentBlockedWords = getRecentDailyHotBlockedWords(dedupDays, { dateKey: todayKey() });
     candidates = getTodayCandidateWordsFromPool(excluded, {
       recentBlockedWords,
-      historicalBackfillWords: dedupDays === 0 ? historicalBackfillWords : new Set()
+      historicalBackfillWords: new Set()
     });
     selected = selectTodaySnapshotWords(candidates, existingWords);
     dedupDaysUsed = dedupDays;
     relaxedDedup = dedupDays !== TODAY_HISTORY_DEDUP_DAYS;
     if (selected.length >= WORDS_PER_DAY || dedupDays === 0) break;
   }
+  const generatedAt = nowIso();
+  const freshBatchIds = getFreshAiBatchIdsForDate(todayKey());
+  const latestBatchItems = getLatestBatchItemsForIds([...freshBatchIds]);
+  const auditContext = {
+    date: todayKey(),
+    generatedAt,
+    mode,
+    dedupDaysUsed,
+    relaxedDedup,
+    freshBatchIds,
+    existingWords: new Set(previousWords),
+    latestBatchItems
+  };
+  selected = selected.map(word => {
+    const audit = getRecommendationAuditTrace(word.candidateMeta || word, auditContext);
+    return {
+      ...word,
+      recommendationAudit: audit,
+      candidateMeta: {
+        ...(word.candidateMeta || {}),
+        recommendationAudit: audit
+      }
+    };
+  });
+  const recommendationAudit = buildTodayRecommendationAudit(selected, auditContext);
   const nextWords = selected.map(word => word.kanji);
+  const selectedSet = new Set(nextWords);
+  aiBatches = cleanAiBatches(aiBatches).map(batch => cleanAiBatch({
+    ...batch,
+    items: safeArray(batch.items).map(item => ({
+      ...item,
+      selectedForToday: selectedSet.has(item.kanji)
+    }))
+  }));
+  const repeated30Words = getTodaySnapshotRepeatedWords(nextWords);
   const batchIds = getUniqueWords(selected.map(word => word.candidateMeta?.aiBatchId).filter(Boolean));
   const sameDay = currentSnapshot.dateKey === todayKey();
   todaySnapshot = cleanTodaySnapshot({
     dateKey: todayKey(),
     words: nextWords,
-    generatedAt: nowIso(),
+    generatedAt,
     source: 'candidatePool',
     batchIds,
-    version: sameDay ? toInt(currentSnapshot.version, 0) + 1 : 1
+    version: sameDay ? toInt(currentSnapshot.version, 0) + 1 : 1,
+    generatorVersion: TODAY_SNAPSHOT_GENERATOR_VERSION,
+    createdBy: 'frontend',
+    dedupDaysUsed,
+    relaxedDedup,
+    shortage: selected.length < WORDS_PER_DAY,
+    repeated30Count: repeated30Words.length,
+    repeated30Words,
+    recommendationAudit
   });
   todayWords = selected;
   archiveTodaySnapshotHistory(todaySnapshot);
@@ -5515,7 +5923,8 @@ async function generateAiCandidates(forceRegenerate = false) {
     if (!response.ok || data.error) throw new Error(data.error?.message || data.error || `HTTP ${response.status}`);
     const batchId = `ai_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
     const trace = getAiTraceFromUsage(data.usage || {}, payload);
-    aiPreviewItems = safeArray(data.items)
+    const rawItems = safeArray(data.items);
+    aiPreviewItems = rawItems
       .map(item => normalizeAiPreviewItem(item, batchId, payload.input, payload.action))
       .filter(Boolean);
     aiPreviewSelected = aiPreviewItems
@@ -5527,8 +5936,14 @@ async function generateAiCandidates(forceRegenerate = false) {
       model: data.usage?.model || 'deepseek-v4-flash',
       createdAt: data.usage?.createdAt || nowIso(),
       itemCount: aiPreviewItems.length,
+      promptType: payload.action,
+      rawCount: rawItems.length,
+      normalizedCount: aiPreviewItems.length,
+      acceptedCount: aiPreviewSelected.length,
+      rejectedCount: Math.max(0, rawItems.length - aiPreviewItems.length),
       importedCount: 0,
       skippedCount: 0,
+      items: buildAiBatchItems(rawItems, aiPreviewItems, batchId, payload.action),
       ...trace,
       promptSummary: getPromptSummary(payload.input),
       trendNotes: data.summary?.trendNotes || ''
@@ -5668,7 +6083,8 @@ async function autoGenerateAiCandidates() {
   if (!response.ok || data.error) throw new Error(data.error?.message || data.error || `HTTP ${response.status}`);
   const batchId = `auto_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
   const trace = getAiTraceFromUsage(data.usage || {}, payload);
-  const items = safeArray(data.items)
+  const rawItems = safeArray(data.items);
+  const items = rawItems
     .map(item => normalizeAiPreviewItem(item, batchId, payload.input, payload.action))
     .filter(Boolean);
   const batch = cleanAiBatch({
@@ -5677,8 +6093,14 @@ async function autoGenerateAiCandidates() {
     model: data.usage?.model || 'deepseek-v4-flash',
     createdAt: data.usage?.createdAt || nowIso(),
     itemCount: items.length,
+    promptType: payload.action,
+    rawCount: rawItems.length,
+    normalizedCount: items.length,
+    acceptedCount: 0,
+    rejectedCount: Math.max(0, rawItems.length - items.length),
     importedCount: 0,
     skippedCount: 0,
+    items: buildAiBatchItems(rawItems, items, batchId, payload.action),
     ...trace,
     promptSummary: '自动日更生成',
     trendNotes: data.summary?.trendNotes || ''
@@ -5776,21 +6198,8 @@ async function runDailyAutoRefreshIfNeeded(options = {}) {
       return { status: 'skipped', reason: 'cloud_snapshot_exists' };
     }
 
-    let importStats = { generated: 0, imported: 0, skipped: 0, review: 0, blocked: 0 };
-    let todayResult = generateTodayFromCandidatePool('create');
-    if (!todayResult.selectedCount) {
-      const generated = await autoGenerateAiCandidates();
-      importStats = autoImportAiCandidates(generated.items, generated.batch);
-      saveLocalWorkflow();
-      const cloudPrepared = await saveCloudWorkflow(false);
-      try {
-        if (!cloudPrepared) throw new Error('Cloud workflow is not ready');
-        todayResult = await generateTodaySnapshotOnServer('create');
-      } catch (error) {
-        console.warn('自动日更服务端生成今日快照失败，回退本地生成', error);
-        todayResult = generateTodayFromCandidatePool('create');
-      }
-    }
+    const todayResult = await generateTodaySnapshotOnServerWithAiSupplement('create');
+    const importStats = todayResult.aiSupplementStats || { generated: 0, imported: 0, skipped: 0, review: 0, blocked: 0 };
     hydrateTodayWordsFromSnapshot();
     saveLocalWorkflow();
     await saveCloudWorkflow(false);
@@ -6967,6 +7376,8 @@ function renderPublished() {
 }
 
 function buildHistoryArchivedWord(kanji, dateKeyValue, index) {
+  const archivedSnapshot = cleanHistorySnapshot(historySnapshots[dateKeyValue] || {}, dateKeyValue);
+  const auditItem = safeArray(archivedSnapshot.recommendationAudit?.items).find(item => item.kanji === kanji) || null;
   const displayWord = getDisplayWordByKanji(kanji) || {
     kanji,
     reading: kanji,
@@ -6985,7 +7396,19 @@ function buildHistoryArchivedWord(kanji, dateKeyValue, index) {
     id: `history_snapshot_${dateKeyValue}_${index}`,
     imageUrl: getImageUrl(kanji, index)
   }], `history_snapshot_${dateKeyValue}`)[0];
-  return buildRecommendedWord(enriched, 'history', candidateMeta);
+  const recommended = buildRecommendedWord(enriched, 'history', {
+    ...(candidateMeta || {}),
+    recommendationAudit: candidateMeta?.recommendationAudit || auditItem || {}
+  });
+  const audit = recommended.candidateMeta?.recommendationAudit || auditItem || {};
+  return {
+    ...recommended,
+    recommendationAudit: audit,
+    candidateMeta: {
+      ...(recommended.candidateMeta || {}),
+      recommendationAudit: audit
+    }
+  };
 }
 
 function getHistorySourceLabel(dateKeyValue) {
@@ -7016,15 +7439,168 @@ function closeDailyManageMenu() {
 
 function toggleDailyManageMenu(event) {
   event?.stopPropagation?.();
-  if (!isViewingTodayDailyHot()) {
-    showToast('历史推荐不能重新生成，请切回今天。');
-    return;
-  }
   document.querySelector('.action-menu')?.classList.toggle('open');
+}
+
+function getCurrentDailyHotAudit() {
+  const isTodayView = isViewingTodayDailyHot();
+  const dateKeyValue = isTodayView ? todayKey() : currentDailyHotDateKey;
+  const snapshot = isTodayView
+    ? cleanTodaySnapshot(todaySnapshot)
+    : cleanHistorySnapshot(historySnapshots[dateKeyValue] || {}, dateKeyValue);
+  const words = getCurrentDailyHotWords();
+  const batchIds = getUniqueWords(snapshot.batchIds || []);
+  const freshBatchIds = new Set(batchIds.length ? batchIds : [...getFreshAiBatchIdsForDate(dateKeyValue)]);
+  const context = {
+    date: dateKeyValue,
+    generatedAt: snapshot.generatedAt || nowIso(),
+    dedupDaysUsed: snapshot.dedupDaysUsed || TODAY_HISTORY_DEDUP_DAYS,
+    relaxedDedup: snapshot.relaxedDedup,
+    freshBatchIds,
+    existingWords: new Set(snapshot.words || []),
+    latestBatchItems: getLatestBatchItemsForIds([...freshBatchIds])
+  };
+  return buildTodayRecommendationAudit(words, context);
+}
+
+function renderAuditMetric(label, value, tone = '') {
+  return `<div class="audit-metric ${tone ? `audit-metric-${escapeHTML(tone)}` : ''}"><span>${escapeHTML(label)}</span><strong>${escapeHTML(value)}</strong></div>`;
+}
+
+function openTodayRecommendationAuditModal() {
+  const audit = getCurrentDailyHotAudit();
+  const sourceRows = RECOMMENDATION_ORIGIN_TYPES
+    .map(type => renderAuditMetric(RECOMMENDATION_ORIGIN_LABELS[type] || type, audit.sourceSummary?.[type] || 0))
+    .join('');
+  const quality = audit.qualitySummary || {};
+  const qualityRows = [
+    renderAuditMetric('平均最终分', quality.averageFinalScore || 0),
+    renderAuditMetric('平均表达价值', quality.averageExpressionValueScore || 0),
+    renderAuditMetric('平均中文透明度', quality.averageChineseTransparencyScore || 0),
+    renderAuditMetric('泛话题词', quality.genericTopicCount || 0, quality.genericTopicCount ? 'warn' : ''),
+    renderAuditMetric('中文透明度高', quality.highTransparencyCount || 0, quality.highTransparencyCount ? 'warn' : ''),
+    renderAuditMetric('S/A/B/C', `${quality.sLevelCount || 0}/${quality.aLevelCount || 0}/${quality.bLevelCount || 0}/${quality.cLevelCount || 0}`)
+  ].join('');
+  const rows = safeArray(audit.items).map(item => `
+    <tr>
+      <td>${escapeHTML(item.kanji)}</td>
+      <td>${escapeHTML(item.meaning)}</td>
+      <td>${escapeHTML(item.recommendationLevel)}</td>
+      <td>${escapeHTML(item.riskLevel || 'low')}</td>
+      <td>${escapeHTML(item.originLabel)}</td>
+      <td>${item.isBackfill ? '是' : '否'}</td>
+      <td>${item.isDedupRelaxed ? `是 · ${item.dedupDaysUsed}天` : '否'}</td>
+      <td>${escapeHTML(item.finalScore)}</td>
+      <td>${escapeHTML(item.expressionValueScore)}</td>
+      <td>${escapeHTML(item.chineseTransparencyScore)}</td>
+      <td>${item.genericTopicPenalty ? '是' : '否'}</td>
+      <td>${escapeHTML(safeArray(item.diagnosis).join('；') || '—')}</td>
+    </tr>`).join('');
+  document.getElementById('modalContainer').innerHTML = `
+    <div class="modal-shell audit-shell">
+      <div class="modal-header settings-header">
+        <h2 class="modal-title">推荐审计 · ${escapeHTML(audit.date || todayKey())}</h2>
+        <button class="modal-close" onclick="closeModal()">×</button>
+      </div>
+      <div class="modal-body form-modal-body">
+        <div class="modal-section compact-section">
+          <div class="modal-section-title">来源比例</div>
+          <div class="audit-metric-grid">${sourceRows}</div>
+        </div>
+        <div class="modal-section compact-section">
+          <div class="modal-section-title">质量摘要</div>
+          <div class="audit-metric-grid">${qualityRows}</div>
+        </div>
+        <div class="modal-section compact-section">
+          <div class="modal-section-title">自动诊断</div>
+          <div class="audit-diagnosis-list">${safeArray(audit.diagnosis).map(text => `<div>${escapeHTML(text)}</div>`).join('')}</div>
+        </div>
+        <div class="modal-section compact-section">
+          <div class="modal-section-title">逐词审计</div>
+          <div class="audit-table-wrap">
+            <table class="audit-table">
+              <thead><tr><th>词</th><th>意思</th><th>等级</th><th>风险</th><th>来源</th><th>补位</th><th>去重放宽</th><th>最终分</th><th>表达价值</th><th>中文透明度</th><th>泛话题</th><th>诊断</th></tr></thead>
+              <tbody>${rows || '<tr><td colspan="12">暂无可审计的今日推荐。</td></tr>'}</tbody>
+            </table>
+          </div>
+        </div>
+        <div class="modal-footer-actions form-actions">
+          <button class="btn btn-ghost" onclick="exportTodayRecommendationAudit()">导出推荐审计</button>
+          <button class="btn btn-primary" onclick="closeModal()">知道了</button>
+        </div>
+      </div>
+    </div>`;
+  document.getElementById('modalOverlay').classList.add('open');
+}
+
+function csvCell(value) {
+  const text = safeArray(value).join('；') || String(value ?? '');
+  return `"${text.replace(/"/g, '""')}"`;
+}
+
+function downloadTextFile(filename, text, type = 'text/plain;charset=utf-8') {
+  const blob = new Blob([text], { type });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
+}
+
+function exportTodayRecommendationAudit() {
+  const audit = getCurrentDailyHotAudit();
+  const headers = [
+    '日期', '日语词', '读音', '中文意思', '推荐等级', '风险状态', '来源类型', '来源说明',
+    '是否 DeepSeek 新生成', '是否候选池旧词', '是否补位', '是否本地兜底', '是否去重放宽',
+    '使用的去重天数', '最终分', '账号学习加分', '账号学习扣分', '表达价值分', '中文透明度',
+    '是否泛话题词', '入选原因', '诊断结论'
+  ];
+  const wordsByKanji = new Map(getCurrentDailyHotWords().map(word => [word.kanji, word]));
+  const lines = [headers.map(csvCell).join(',')];
+  safeArray(audit.items).forEach(item => {
+    const word = wordsByKanji.get(item.kanji) || {};
+    lines.push([
+      audit.date,
+      item.kanji,
+      word.reading || word.kana || word.romaji || '',
+      item.meaning || word.meaning || '',
+      item.recommendationLevel,
+      getRiskStateLabel(word.candidateMeta ? word : { candidateMeta: item }),
+      item.originType,
+      item.originLabel,
+      item.fromDeepSeekNew ? '是' : '否',
+      item.fromCandidatePool ? '是' : '否',
+      item.isBackfill ? '是' : '否',
+      item.fromLocalFallback ? '是' : '否',
+      item.isDedupRelaxed ? '是' : '否',
+      item.dedupDaysUsed,
+      item.finalScore,
+      item.accountLearningBonus,
+      item.accountLearningPenalty,
+      item.expressionValueScore,
+      item.chineseTransparencyScore,
+      item.genericTopicPenalty ? '是' : '否',
+      item.selectedReason,
+      safeArray(item.diagnosis).join('；')
+    ].map(csvCell).join(','));
+  });
+  downloadTextFile(`daily-hot-audit-${audit.date || todayKey()}.csv`, lines.join('\n'), 'text/csv;charset=utf-8');
+  showToast('✅ 已导出推荐审计 CSV');
 }
 
 function handleDailyManageAction(action) {
   closeDailyManageMenu();
+  if (action === 'audit') {
+    openTodayRecommendationAuditModal();
+    return;
+  }
+  if (action === 'exportAudit') {
+    exportTodayRecommendationAudit();
+    return;
+  }
   if (!isViewingTodayDailyHot()) {
     showToast('历史推荐不能重新生成，请切回今天。');
     return;
@@ -7084,14 +7660,16 @@ async function finishTodaySnapshotGeneration(result, actionLabel, options = {}) 
   updateAllBadges();
   renderToday();
   await saveCloudWorkflow(false);
-  const shortageHint = result.shortage ? '备选池可用词不足，建议先生成更多 AI 候选。' : '';
+  const supplementStats = result.aiSupplementStats || {};
+  const supplementHint = supplementStats.attempts
+    ? ` DeepSeek 已补充候选 ${supplementStats.imported || 0} 个。`
+    : '';
+  const shortageHint = result.shortage ? ' 备选池可用词不足，已尝试 DeepSeek 补充后仍不足 20 个。' : '';
   const dedupHint = result.relaxedDedup
-    ? (result.dedupDaysUsed > 0
-      ? ` 候选池可用词不足，已放宽到最近 ${result.dedupDaysUsed} 天去重。`
-      : ' 候选池可用词不足，已允许历史高分词回流。')
+    ? ' 注意：本次结果启用了去重放宽。'
     : '';
   const cardHint = result.selectedCount ? ' DeepSeek 词卡后台生成中。' : '';
-  showToast(`${actionLabel}：${result.selectedCount} 个今日候选。${dedupHint}${cardHint}${shortageHint}`);
+  showToast(`${actionLabel}：${result.selectedCount} 个今日候选。${dedupHint}${supplementHint}${cardHint}${shortageHint}`);
   if (result.selectedCount) void queueAutoGenerateCardsForToday();
 }
 
@@ -7110,6 +7688,29 @@ async function generateTodaySnapshotOnServer(mode) {
   return data;
 }
 
+async function generateTodaySnapshotOnServerWithAiSupplement(mode) {
+  let result = await generateTodaySnapshotOnServer(mode);
+  const importStats = { generated: 0, imported: 0, skipped: 0, review: 0, blocked: 0 };
+  for (let round = 0; result.shortage && round < 2; round += 1) {
+    const generated = await autoGenerateAiCandidates();
+    const stats = autoImportAiCandidates(generated.items, generated.batch);
+    importStats.generated += stats.generated;
+    importStats.imported += stats.imported;
+    importStats.skipped += stats.skipped;
+    importStats.review += stats.review;
+    importStats.blocked += stats.blocked;
+    saveLocalWorkflow();
+    const cloudSaved = await saveCloudWorkflow(false);
+    if (!cloudSaved) throw new Error('团队同步失败，DeepSeek 补充候选未保存');
+    result = await generateTodaySnapshotOnServer(result.selectedCount ? 'fill' : mode);
+    if (!stats.imported) break;
+  }
+  return {
+    ...result,
+    aiSupplementStats: importStats
+  };
+}
+
 async function handleGenerateTodaySnapshot() {
   if (isAutoDailyRefreshRunning) {
     showToast('自动日更正在运行，稍等一下');
@@ -7122,12 +7723,11 @@ async function handleGenerateTodaySnapshot() {
     return;
   }
   try {
-    const result = await generateTodaySnapshotOnServer('create');
+    const result = await generateTodaySnapshotOnServerWithAiSupplement('create');
     await finishTodaySnapshotGeneration(result, '已生成今日 20 个', { cloudSaved: true });
   } catch (error) {
-    console.warn('服务端生成今日候选失败，回退到本地生成', error);
-    const result = generateTodayFromCandidatePool('create');
-    await finishTodaySnapshotGeneration(result, '已生成今日 20 个');
+    console.warn('服务端生成今日候选失败', error);
+    showToast(`服务端生成失败，未写入团队后台：${error.message || '请稍后重试'}`);
   }
 }
 
@@ -7141,12 +7741,11 @@ async function handleFillTodaySnapshot() {
     return;
   }
   try {
-    const result = await generateTodaySnapshotOnServer('fill');
+    const result = await generateTodaySnapshotOnServerWithAiSupplement('fill');
     await finishTodaySnapshotGeneration(result, '已补满今日候选', { cloudSaved: true });
   } catch (error) {
-    console.warn('服务端补满今日候选失败，回退到本地生成', error);
-    const result = generateTodayFromCandidatePool('fill');
-    await finishTodaySnapshotGeneration(result, '已补满今日候选');
+    console.warn('服务端补满今日候选失败', error);
+    showToast(`服务端补满失败，未写入团队后台：${error.message || '请稍后重试'}`);
   }
 }
 
@@ -7157,18 +7756,11 @@ async function handleRegenerateTodaySnapshot() {
   }
   if (!window.confirm('确定要重新生成今日 20 个吗？这会替换今天当前首页候选。')) return;
   try {
-    const result = await generateTodaySnapshotOnServer('regenerate');
+    const result = await generateTodaySnapshotOnServerWithAiSupplement('regenerate');
     await finishTodaySnapshotGeneration(result, '已重新生成今日候选', { cloudSaved: true });
   } catch (error) {
-    console.warn('服务端重新生成今日候选失败，回退到本地生成', error);
-    todaySnapshot = cleanTodaySnapshot({
-      ...todaySnapshot,
-      dateKey: todayKey(),
-      words: []
-    });
-    todayWords = [];
-    const result = generateTodayFromCandidatePool('regenerate');
-    await finishTodaySnapshotGeneration(result, '已重新生成今日候选');
+    console.warn('服务端重新生成今日候选失败', error);
+    showToast(`服务端重新生成失败，未写入团队后台：${error.message || '请稍后重试'}`);
   }
 }
 

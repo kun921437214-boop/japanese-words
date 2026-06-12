@@ -2,8 +2,11 @@ import { ALL_WORDS } from './words-data.mjs';
 import { APP_TIME_ZONE, WORDS_PER_DAY, dateKey } from './rankings.mjs';
 import {
   archiveTodaySnapshotIntoSnapshotHistory,
-  cleanStoredWorkflow as cleanWorkflowSchema
+  cleanStoredWorkflow as cleanWorkflowSchema,
+  TODAY_SNAPSHOT_GENERATOR_VERSION
 } from './workflow-schema.mjs';
+
+export { TODAY_SNAPSHOT_GENERATOR_VERSION };
 
 const PURE_KANJI_RE = /^[\u3400-\u9fff々ヶ]+$/;
 const RISK_LEVEL_OPTIONS = ['low', 'medium', 'high'];
@@ -13,7 +16,7 @@ const DISPLAY_BUCKET_OPTIONS = ['today', 'meme_fast', 'long_term', 'seasonal', '
 const EMOTION_TONE_OPTIONS = ['positive', 'neutral', 'negative', 'aesthetic', 'lifestyle', 'fandom'];
 const TODAY_SNAPSHOT_VERSION = 1;
 export const TODAY_HISTORY_DEDUP_DAYS = 30;
-const TODAY_HISTORY_DEDUP_RELAX_STEPS = [TODAY_HISTORY_DEDUP_DAYS, 14, 7, 0];
+const TODAY_HISTORY_DEDUP_RELAX_STEPS = [TODAY_HISTORY_DEDUP_DAYS];
 const PROMPT_VERSION_BY_ACTION = {
   stable_today: 'candidate-v3',
   wild_ideas: 'candidate-v3',
@@ -88,6 +91,20 @@ const FANDOM_WORD_RE = /推し|オタ|痛バ|グッズ|聖地巡礼|自担|同�
 const NEGATIVE_WORD_RE = /イライラ|うざい|キレる|グチる|めんどい|イチャモン|ムカつく|キモい|しんどい/;
 const EMOTION_SOCIAL_RE = /大正解|小確幸|自己肯定感|気まずい|モヤる|距離感|気を遣う|空気読む|しんどい|刺さる|だるい|わかりみ|塩対応|すれ違い|共感|情绪|情緒|人际|人際|社交|语感|語感|関係|关系|關係|気持ち|心情/;
 const SEASONAL_PATTERN = /バレンタイン|ホワイトデー|お盆|クリスマス|正月|花見|桜|ハロウィン|七夕|節分|祭り|紅葉|季節|节日|節日|季节|文化/;
+const RECOMMENDATION_ORIGIN_LABELS = {
+  deepseek_new: 'DeepSeek 新生成',
+  candidate_pool: 'AI 候选池旧词',
+  history_fallback: '历史热门回流',
+  local_word_bank: '本地词库兜底',
+  manual_added: '手动添加',
+  today_backfill: '补位词',
+  dedup_relaxed: '去重放宽回流',
+  unknown: '来源未知'
+};
+const AUDIT_SPELLING_SUGGESTIONS = {
+  '痛バック': '建议修正为「痛バッグ」',
+  'オーバサイズ': '建议修正为「オーバーサイズ」'
+};
 
 const KNOWN_WORDS = new Map(
   ALL_WORDS
@@ -181,6 +198,179 @@ function isChineseReadableLowValueTodayWord(entry = {}) {
     entry.reviewReason
   ].map(value => cleanText(value, 240)).join(' ');
   return CHINESE_READABLE_LOW_VALUE_CONTEXT_RE.test(`${kanji} ${context}`);
+}
+
+function getChineseTransparencyScore(entry = {}) {
+  const kanji = normalizeKanjiSpelling(entry.kanji);
+  if (!kanji) return 0;
+  if (CHINESE_READABLE_LOW_VALUE_TODAY_WORDS.has(kanji) || CHINESE_READABLE_LOW_VALUE_CONTEXT_RE.test(getEntryContextText(entry))) return 92;
+  if (PURE_KANJI_RE.test(kanji)) {
+    const expressionValueScore = getExpressionValueScore(entry);
+    return expressionValueScore >= 82 ? 58 : expressionValueScore >= 70 ? 70 : 84;
+  }
+  if (isGenericTopicWord(entry)) return 72;
+  return 35;
+}
+
+function getRecommendationLevel(entry = {}) {
+  const score = toInt(entry.finalScore || entry.lastScore || entry.xhsFitScore, 0);
+  if (entry.riskLevel === 'high' || entry.lastReviewState === 'review' || entry.confidenceLevel === 'review') return 'B';
+  if (score >= 90) return 'S';
+  if (score >= 80) return 'A';
+  if (score >= 70) return 'B';
+  return 'C';
+}
+
+function getFreshBatchIds(workflow = {}, today = '') {
+  return new Set(safeArray(workflow.aiBatches)
+    .filter(batch => {
+      if (!batch?.id || !batch.createdAt) return false;
+      const created = new Date(batch.createdAt);
+      if (Number.isNaN(created.getTime())) return false;
+      return dateKey(created) === today && ['stable_today', 'generate_candidates', 'wild_ideas'].includes(batch.action);
+    })
+    .map(batch => cleanText(batch.id, 120))
+    .filter(Boolean));
+}
+
+function getRecommendationAuditTrace(entry = {}, context = {}) {
+  const freshBatchIds = context.freshBatchIds || new Set();
+  const existingWords = context.existingWords || new Set();
+  const sourceType = cleanText(entry.sourceType, 80);
+  const fromDeepSeekNew = sourceType === 'deepseek_generated' && entry.aiBatchId && freshBatchIds.has(entry.aiBatchId);
+  const fromManual = sourceType === 'manual_keep';
+  const fromLocalFallback = Boolean(entry.fromLocalFallback || entry.lastOrigin === 'local' || sourceType === 'original' || sourceType === 'audit_missing');
+  const fromHistoryFallback = Boolean(entry.historicalBackfill);
+  const fromCandidatePool = !fromDeepSeekNew && !fromManual && !fromLocalFallback && !fromHistoryFallback;
+  const isBackfill = Boolean(entry.historicalBackfill)
+    || (context.mode === 'fill' && !existingWords.has(entry.kanji))
+    || (entry.displayBucket && entry.displayBucket !== 'today');
+  const isDedupRelaxed = Boolean(entry.historicalBackfill || context.relaxedDedup || context.dedupDaysUsed < TODAY_HISTORY_DEDUP_DAYS);
+  let originType = 'candidate_pool';
+  if (fromDeepSeekNew) originType = 'deepseek_new';
+  else if (fromHistoryFallback) originType = 'history_fallback';
+  else if (fromLocalFallback) originType = 'local_word_bank';
+  else if (fromManual) originType = 'manual_added';
+  else if (!entry.kanji) originType = 'unknown';
+  if (isBackfill) originType = 'today_backfill';
+  if (isDedupRelaxed) originType = 'dedup_relaxed';
+  return {
+    originType,
+    originLabel: RECOMMENDATION_ORIGIN_LABELS[originType] || RECOMMENDATION_ORIGIN_LABELS.unknown,
+    sourceAction: entry.sourcePromptType || entry.sourceAction || '',
+    sourceBatchId: entry.aiBatchId || '',
+    fromDeepSeekNew,
+    fromCandidatePool,
+    fromHistoryFallback,
+    fromLocalFallback,
+    fromManual,
+    isBackfill,
+    isDedupRelaxed,
+    dedupDaysUsed: context.dedupDaysUsed,
+    selectedReason: [
+      `分桶 ${entry.displayBucket || 'unknown'}`,
+      `最终分 ${toInt(entry.finalScore || entry.lastScore || entry.xhsFitScore, 0)}`,
+      `表达价值 ${getExpressionValueScore(entry)}`,
+      isBackfill ? '用于补足今日推荐' : '',
+      isDedupRelaxed ? `去重放宽到 ${context.dedupDaysUsed} 天` : ''
+    ].filter(Boolean).join('；'),
+    selectedAt: context.generatedAt || ''
+  };
+}
+
+function buildAuditItem(entry = {}, context = {}) {
+  const audit = getRecommendationAuditTrace(entry, context);
+  const expressionValueScore = getExpressionValueScore(entry);
+  const chineseTransparencyScore = getChineseTransparencyScore(entry);
+  const genericTopic = isGenericTopicWord(entry);
+  const diagnosis = [];
+  if (genericTopic) diagnosis.push('泛话题词，适合候选池观察，不宜默认强推');
+  if (chineseTransparencyScore >= 80) diagnosis.push('中文透明度高，可能缺少日语语感解释价值');
+  if (expressionValueScore < 55) diagnosis.push('表达价值偏低');
+  if (audit.isBackfill) diagnosis.push('补位入选，需要关注候选池是否不足');
+  if (audit.isDedupRelaxed) diagnosis.push('去重放宽后入选');
+  if (AUDIT_SPELLING_SUGGESTIONS[entry.kanji]) diagnosis.push(AUDIT_SPELLING_SUGGESTIONS[entry.kanji]);
+  if (entry.kanji === 'レイヤー') diagnosis.push('需明确 cosplay / 创作者语境');
+  if (entry.kanji === '乙') diagnosis.push('网络语语境依赖，需标注使用场景');
+  return {
+    kanji: entry.kanji,
+    meaning: entry.meaning || '',
+    recommendationLevel: getRecommendationLevel(entry),
+    riskLevel: entry.riskLevel || '',
+    ...audit,
+    finalScore: clamp(toInt(entry.finalScore || entry.lastScore || entry.xhsFitScore, 0), 0, 100),
+    accountLearningBonus: clamp(toInt(entry.accountLearningBonus || 0), -50, 50),
+    accountLearningPenalty: Math.max(0, -clamp(toInt(entry.accountLearningBonus || 0), -50, 50)),
+    expressionValueScore,
+    chineseTransparencyScore,
+    genericTopicPenalty: genericTopic ? 18 : 0,
+    selectedReason: audit.selectedReason,
+    diagnosis
+  };
+}
+
+function average(items = []) {
+  if (!items.length) return 0;
+  return Math.round(items.reduce((sum, value) => sum + (Number(value) || 0), 0) / items.length);
+}
+
+export function buildTodayRecommendationAudit(todayEntries = [], context = {}) {
+  const items = safeArray(todayEntries).map(entry => buildAuditItem(entry.candidateMeta || entry, context));
+  const sourceSummary = Object.keys(RECOMMENDATION_ORIGIN_LABELS).reduce((result, key) => ({ ...result, [key]: 0 }), {});
+  items.forEach(item => {
+    sourceSummary[item.originType] = (sourceSummary[item.originType] || 0) + 1;
+    if (item.fromDeepSeekNew) sourceSummary.deepseek_new += item.originType === 'deepseek_new' ? 0 : 1;
+    if (item.fromCandidatePool) sourceSummary.candidate_pool += item.originType === 'candidate_pool' ? 0 : 1;
+    if (item.fromLocalFallback) sourceSummary.local_word_bank += item.originType === 'local_word_bank' ? 0 : 1;
+    if (item.isBackfill) sourceSummary.today_backfill += item.originType === 'today_backfill' ? 0 : 1;
+    if (item.isDedupRelaxed) sourceSummary.dedup_relaxed += item.originType === 'dedup_relaxed' ? 0 : 1;
+  });
+  const qualitySummary = {
+    averageFinalScore: average(items.map(item => item.finalScore)),
+    averageExpressionValueScore: average(items.map(item => item.expressionValueScore)),
+    averageChineseTransparencyScore: average(items.map(item => item.chineseTransparencyScore)),
+    genericTopicCount: items.filter(item => item.genericTopicPenalty > 0).length,
+    highTransparencyCount: items.filter(item => item.chineseTransparencyScore >= 80).length,
+    sLevelCount: items.filter(item => item.recommendationLevel === 'S').length,
+    aLevelCount: items.filter(item => item.recommendationLevel === 'A').length,
+    bLevelCount: items.filter(item => item.recommendationLevel === 'B').length,
+    cLevelCount: items.filter(item => item.recommendationLevel === 'C').length
+  };
+  const total = items.length || 1;
+  const diagnosis = [];
+  const rawLatestBatchItems = safeArray(context.latestBatchItems);
+  const rawGenericCount = rawLatestBatchItems.filter(item => isGenericTopicWord(item)).length;
+  if ((sourceSummary.deepseek_new / total) >= 0.5 && qualitySummary.genericTopicCount >= 5) {
+    diagnosis.push('问题主要来自 DeepSeek 找词方向，需要优化生成 prompt。');
+  }
+  if (rawLatestBatchItems.length && rawGenericCount <= 3 && qualitySummary.genericTopicCount >= 5) {
+    diagnosis.push('问题主要来自筛选 / 排序 / 补位策略。');
+  }
+  if ((sourceSummary.today_backfill / total) > 0.3) {
+    diagnosis.push('今日推荐候选不足，补位比例过高，建议不要硬凑满 20 个。');
+  }
+  if ((sourceSummary.local_word_bank / total) > 0.2) {
+    diagnosis.push('本地词库兜底过多，说明候选池有效词不足或去重规则过滤太多。');
+  }
+  if ((sourceSummary.dedup_relaxed / total) > 0.2) {
+    diagnosis.push('30 天去重后候选不足，需要扩大候选池，而不是频繁放宽去重。');
+  }
+  if (qualitySummary.sLevelCount > 10) {
+    diagnosis.push('推荐等级过松，需要收紧 S/A 评分标准。');
+  }
+  if (qualitySummary.highTransparencyCount > 6) {
+    diagnosis.push('首页中文一眼懂的词偏多，会影响点击率，需要提高表达价值筛选。');
+  }
+  if (!diagnosis.length) diagnosis.push('未发现单一明显来源，建议结合逐词审计继续观察。');
+  return {
+    date: context.date || '',
+    total: items.length,
+    sourceSummary,
+    qualitySummary,
+    diagnosis,
+    items,
+    createdAt: context.generatedAt || new Date().toISOString()
+  };
 }
 
 function getPromptVersion(action) {
@@ -362,8 +552,23 @@ export function cleanTodaySnapshot(snapshot = {}) {
     generatedAt: typeof snapshot?.generatedAt === 'string' ? snapshot.generatedAt : '',
     source: 'candidatePool',
     batchIds: uniqueWords(snapshot?.batchIds).slice(0, 30),
-    version: clamp(toInt(snapshot?.version, words.length ? TODAY_SNAPSHOT_VERSION : 0), 0, 999)
+    version: clamp(toInt(snapshot?.version, words.length ? TODAY_SNAPSHOT_VERSION : 0), 0, 999),
+    generatorVersion: cleanText(snapshot?.generatorVersion, 80),
+    createdBy: ['server', 'frontend', 'worker', 'manual'].includes(snapshot?.createdBy) ? snapshot.createdBy : '',
+    dedupDaysUsed: clamp(toInt(snapshot?.dedupDaysUsed, 0), 0, 365),
+    relaxedDedup: Boolean(snapshot?.relaxedDedup),
+    shortage: Boolean(snapshot?.shortage),
+    repeated30Count: clamp(toInt(snapshot?.repeated30Count, 0), 0, WORDS_PER_DAY),
+    repeated30Words: uniqueWords(snapshot?.repeated30Words).slice(0, WORDS_PER_DAY),
+    recommendationAudit: snapshot?.recommendationAudit || {}
   };
+}
+
+export function isCurrentGeneratorSnapshot(snapshot = {}, now = new Date()) {
+  const cleanSnapshot = cleanTodaySnapshot(snapshot);
+  return cleanSnapshot.dateKey === dateKey(now)
+    && cleanSnapshot.words.length > 0
+    && cleanSnapshot.generatorVersion === TODAY_SNAPSHOT_GENERATOR_VERSION;
 }
 
 export function cleanHistorySnapshot(snapshot = {}, fallbackDateKey = '') {
@@ -377,8 +582,16 @@ export function cleanHistorySnapshot(snapshot = {}, fallbackDateKey = '') {
     source: 'todaySnapshot',
     batchIds: uniqueWords(record?.batchIds).slice(0, 30),
     version: clamp(toInt(record?.version, words.length ? TODAY_SNAPSHOT_VERSION : 1), 1, 999),
+    generatorVersion: cleanText(record?.generatorVersion, 80),
+    createdBy: ['server', 'frontend', 'worker', 'manual'].includes(record?.createdBy) ? record.createdBy : '',
+    dedupDaysUsed: clamp(toInt(record?.dedupDaysUsed, 0), 0, 365),
+    relaxedDedup: Boolean(record?.relaxedDedup),
+    shortage: Boolean(record?.shortage),
+    repeated30Count: clamp(toInt(record?.repeated30Count, 0), 0, WORDS_PER_DAY),
+    repeated30Words: uniqueWords(record?.repeated30Words).slice(0, WORDS_PER_DAY),
     archivedAt: typeof record?.archivedAt === 'string' ? record.archivedAt : '',
-    title: cleanText(record?.title || '今日 AI 候选归档', 120)
+    title: cleanText(record?.title || '今日 AI 候选归档', 120),
+    recommendationAudit: record?.recommendationAudit || {}
   };
 }
 
@@ -402,6 +615,14 @@ export function archiveTodaySnapshotIntoHistory(historySnapshots = {}, snapshot 
       source: 'todaySnapshot',
       batchIds: cleanSnapshot.batchIds,
       version: cleanSnapshot.version || TODAY_SNAPSHOT_VERSION,
+      generatorVersion: cleanSnapshot.generatorVersion,
+      createdBy: cleanSnapshot.createdBy,
+      dedupDaysUsed: cleanSnapshot.dedupDaysUsed,
+      relaxedDedup: cleanSnapshot.relaxedDedup,
+      shortage: cleanSnapshot.shortage,
+      repeated30Count: cleanSnapshot.repeated30Count,
+      repeated30Words: cleanSnapshot.repeated30Words,
+      recommendationAudit: cleanSnapshot.recommendationAudit,
       archivedAt: new Date().toISOString(),
       title: '今日 AI 候选归档'
     }
@@ -618,12 +839,12 @@ function selectBalancedCandidates(candidates) {
   return selected.slice(0, WORDS_PER_DAY);
 }
 
-function buildCandidatesForDedupDays(poolEntries, workflow, excluded, now, dedupDays) {
+function buildCandidatesForDedupDays(poolEntries, workflow, excluded, now, dedupDays, workflowForHistory = workflow) {
   const recentBlockedWords = dedupDays > 0
-    ? getRecentDailyHotBlockedWords(workflow, dedupDays, { now, today: dateKey(now), includeToday: false })
+    ? getRecentDailyHotBlockedWords(workflowForHistory, dedupDays, { now, today: dateKey(now), includeToday: false })
     : new Set();
   const historicalBackfillWords = dedupDays === 0
-    ? getRecentDailyHotBlockedWords(workflow, TODAY_HISTORY_DEDUP_DAYS, { now, today: dateKey(now), includeToday: false })
+    ? getRecentDailyHotBlockedWords(workflowForHistory, TODAY_HISTORY_DEDUP_DAYS, { now, today: dateKey(now), includeToday: false })
     : new Set();
   return poolEntries
     .filter(entry => isEligible(entry, workflow, excluded, now, recentBlockedWords))
@@ -642,8 +863,17 @@ function buildCandidatesForDedupDays(poolEntries, workflow, excluded, now, dedup
     });
 }
 
+function getRepeatedWords(words = [], workflowForHistory = {}, now = new Date()) {
+  const blocked = getRecentDailyHotBlockedWords(workflowForHistory, TODAY_HISTORY_DEDUP_DAYS, { now, today: dateKey(now), includeToday: false });
+  return uniqueWords(words).filter(word => blocked.has(word));
+}
+
 export function generateTodaySnapshot(workflowInput = {}, options = {}) {
   const workflow = cleanStoredWorkflow(workflowInput);
+  const workflowForHistory = {
+    ...workflow,
+    rankingHistoryWords: workflowInput?.rankingHistoryWords || {}
+  };
   const mode = ['create', 'fill', 'regenerate'].includes(options.mode) ? options.mode : 'create';
   const now = options.now || new Date();
   const today = dateKey(now);
@@ -652,6 +882,10 @@ export function generateTodaySnapshot(workflowInput = {}, options = {}) {
   const existingWords = mode === 'fill' ? previousWords : [];
   const excluded = new Set(mode === 'fill' ? existingWords : previousWords);
   const poolEntries = Object.values(cleanCandidatePool(workflow.candidatePool));
+  const freshBatchIds = getFreshBatchIds(workflow, today);
+  const latestBatchItems = safeArray(workflow.aiBatches)
+    .filter(batch => freshBatchIds.has(batch.id))
+    .flatMap(batch => safeArray(batch.items));
   const existingEntries = existingWords
     .map(kanji => cleanCandidateEntry(kanji, workflow.candidatePool[kanji] || { kanji }))
     .filter(entry => isEligible(entry, workflow, new Set(), now, new Set()))
@@ -662,18 +896,34 @@ export function generateTodaySnapshot(workflowInput = {}, options = {}) {
   let dedupDaysUsed = TODAY_HISTORY_DEDUP_DAYS;
   let relaxedDedup = false;
   for (const dedupDays of TODAY_HISTORY_DEDUP_RELAX_STEPS) {
-    candidates = buildCandidatesForDedupDays(poolEntries, workflow, excluded, now, dedupDays);
+    candidates = buildCandidatesForDedupDays(poolEntries, workflow, excluded, now, dedupDays, workflowForHistory);
     selected = selectBalancedCandidates([...existingEntries, ...candidates]);
     dedupDaysUsed = dedupDays;
     relaxedDedup = dedupDays !== TODAY_HISTORY_DEDUP_DAYS;
     if (selected.length >= WORDS_PER_DAY || dedupDays === 0) break;
   }
-  const selectedWords = selected.map(entry => entry.kanji);
-  const batchIds = uniqueWords(selected.map(entry => entry.aiBatchId).filter(Boolean)).slice(0, 30);
   const sameDay = currentSnapshot.dateKey === today;
   const generatedAt = new Date().toISOString();
+  const auditContext = {
+    date: today,
+    mode,
+    generatedAt,
+    dedupDaysUsed,
+    relaxedDedup,
+    freshBatchIds,
+    existingWords: new Set(existingWords),
+    latestBatchItems
+  };
+  const auditedSelected = selected.map(entry => ({
+    ...entry,
+    recommendationAudit: getRecommendationAuditTrace(entry, auditContext)
+  }));
+  const selectedWords = auditedSelected.map(entry => entry.kanji);
+  const selectedWordSet = new Set(selectedWords);
+  const batchIds = uniqueWords(auditedSelected.map(entry => entry.aiBatchId).filter(Boolean)).slice(0, 30);
+  const recommendationAudit = buildTodayRecommendationAudit(auditedSelected, auditContext);
   const nextCandidatePool = { ...(workflowInput.candidatePool || {}) };
-  selected.forEach(entry => {
+  auditedSelected.forEach(entry => {
     const original = nextCandidatePool[entry.kanji] || workflow.candidatePool[entry.kanji] || {};
     nextCandidatePool[entry.kanji] = {
       ...original,
@@ -689,16 +939,33 @@ export function generateTodaySnapshot(workflowInput = {}, options = {}) {
       expressionValueScore: entry.expressionValueScore,
       accountLearningTone: entry.accountLearningTone,
       accountLearningBonus: entry.accountLearningBonus,
+      recommendationAudit: entry.recommendationAudit,
       updatedAt: generatedAt
     };
   });
+  const nextAiBatches = safeArray(workflow.aiBatches).map(batch => ({
+    ...batch,
+    items: safeArray(batch.items).map(item => ({
+      ...item,
+      selectedForToday: Boolean(item.selectedForToday || selectedWordSet.has(item.kanji)),
+      rejectedReason: selectedWordSet.has(item.kanji) ? '' : item.rejectedReason
+    }))
+  }));
   const todaySnapshot = cleanTodaySnapshot({
     dateKey: today,
     words: selectedWords,
     generatedAt,
     source: 'candidatePool',
     batchIds,
-    version: sameDay ? toInt(currentSnapshot.version, 0) + 1 : 1
+    version: sameDay ? toInt(currentSnapshot.version, 0) + 1 : 1,
+    generatorVersion: TODAY_SNAPSHOT_GENERATOR_VERSION,
+    createdBy: options.createdBy || 'server',
+    dedupDaysUsed,
+    relaxedDedup,
+    shortage: selectedWords.length < WORDS_PER_DAY,
+    repeated30Count: getRepeatedWords(selectedWords, workflowForHistory, now).length,
+    repeated30Words: getRepeatedWords(selectedWords, workflowForHistory, now),
+    recommendationAudit
   });
   return {
     workflow: cleanWorkflowSchema({
@@ -708,7 +975,7 @@ export function generateTodaySnapshot(workflowInput = {}, options = {}) {
       feedback: workflow.feedback,
       publishedRecords: workflow.publishedRecords,
       candidatePool: nextCandidatePool,
-      aiBatches: workflow.aiBatches,
+      aiBatches: nextAiBatches,
       todaySnapshot,
       todaySnapshotHistory: archiveTodaySnapshotIntoSnapshotHistory(workflow.todaySnapshotHistory, todaySnapshot),
       historySnapshots: archiveTodaySnapshotIntoHistory(workflow.historySnapshots, todaySnapshot),
@@ -722,7 +989,8 @@ export function generateTodaySnapshot(workflowInput = {}, options = {}) {
       relaxedDedup,
       shortage: selectedWords.length < WORDS_PER_DAY,
       todaySnapshot,
-      words: selected.map(entry => ({
+      recommendationAudit,
+      words: auditedSelected.map(entry => ({
         kanji: entry.kanji,
         meaning: entry.meaning,
         displayBucket: entry.displayBucket,
@@ -731,7 +999,8 @@ export function generateTodaySnapshot(workflowInput = {}, options = {}) {
         accountLearningTone: entry.accountLearningTone,
         accountLearningBonus: entry.accountLearningBonus,
         finalScore: entry.finalScore,
-        historicalBackfill: Boolean(entry.historicalBackfill)
+        historicalBackfill: Boolean(entry.historicalBackfill),
+        recommendationAudit: entry.recommendationAudit
       }))
     }
   };

@@ -1,4 +1,5 @@
 import { cleanStoredWorkflow, generateTodaySnapshot } from '../shared/today-snapshot.mjs';
+import { addDays, buildRankingForDate, cleanStoredRanking, dateKey } from '../shared/rankings.mjs';
 
 const CORS_HEADERS = {
   'Access-Control-Allow-Origin': '*',
@@ -24,6 +25,42 @@ function cleanSyncCode(value) {
 function getStorageKey(url) {
   const code = cleanSyncCode(url.searchParams.get('code'));
   return code.length >= 8 ? `favorites:${code}` : 'favorites:global';
+}
+
+function getRankingStorageKey(dateKeyValue) {
+  return `rankings:${dateKeyValue}`;
+}
+
+async function readRankingHistoryWords(env, todayDateKey, days = 30) {
+  const earliestDateKey = addDays(todayDateKey, -days);
+  const generationStartDateKey = addDays(earliestDateKey, -15);
+  const cachedSelections = new Map();
+  let cursor = generationStartDateKey;
+
+  while (cursor) {
+    const stored = await env.FAVORITES.get(getRankingStorageKey(cursor), 'json');
+    const ranking = cleanStoredRanking(stored, cursor);
+    if (ranking.words.length === 20) cachedSelections.set(cursor, ranking.words);
+    if (cursor === todayDateKey) break;
+    cursor = addDays(cursor, 1);
+  }
+
+  const rankingHistoryWords = {};
+  cursor = generationStartDateKey;
+  while (cursor) {
+    let words = cachedSelections.get(cursor);
+    if (!words || words.length !== 20) {
+      words = buildRankingForDate(cursor, cachedSelections);
+      cachedSelections.set(cursor, words);
+    }
+    if (cursor >= earliestDateKey && cursor < todayDateKey) {
+      rankingHistoryWords[cursor] = words;
+    }
+    if (cursor === todayDateKey) break;
+    cursor = addDays(cursor, 1);
+  }
+
+  return rankingHistoryWords;
 }
 
 async function readJson(request) {
@@ -74,7 +111,8 @@ export async function onRequest({ request, env }) {
 
   const body = await readJson(request);
   const mode = ['create', 'fill', 'regenerate'].includes(body?.mode) ? body.mode : 'create';
-  const { workflow, result } = generateTodaySnapshot(stored, { mode });
+  const rankingHistoryWords = await readRankingHistoryWords(env, dateKey(), 30);
+  const { workflow, result } = generateTodaySnapshot({ ...stored, rankingHistoryWords }, { mode, createdBy: 'server' });
 
   await env.FAVORITES.put(key, JSON.stringify(workflow));
   return jsonResponse(result);

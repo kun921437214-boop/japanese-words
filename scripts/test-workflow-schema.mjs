@@ -2,12 +2,15 @@ import assert from 'node:assert/strict';
 import {
   cleanStoredWorkflow,
   mergeWorkflow,
-  mergeWorkflowForFullSave
+  mergeWorkflowForFullSave,
+  stripInvalidCurrentTodaySnapshot
 } from '../shared/workflow-schema.mjs';
 import {
   generateTodaySnapshot,
   getRecentDailyHotBlockedWords,
-  TODAY_HISTORY_DEDUP_DAYS
+  TODAY_HISTORY_DEDUP_DAYS,
+  TODAY_SNAPSHOT_GENERATOR_VERSION,
+  isCurrentGeneratorSnapshot
 } from '../shared/today-snapshot.mjs';
 import { getAccountLearningSummary } from '../shared/account-learning.mjs';
 
@@ -400,6 +403,8 @@ test('generateTodaySnapshot 硬排除最近 30 天历史词', () => {
   const words = result.todaySnapshot.words;
   assert.equal(result.dedupDaysUsed, 30);
   assert.equal(result.relaxedDedup, false);
+  assert.equal(result.todaySnapshot.generatorVersion, TODAY_SNAPSHOT_GENERATOR_VERSION);
+  assert.equal(isCurrentGeneratorSnapshot(result.todaySnapshot, new Date('2026-06-08T01:00:00.000Z')), true);
   assert.equal(words.length, 20);
   assert.equal(words.some(word => word.startsWith('回流词')), false);
 });
@@ -479,7 +484,7 @@ test('generateTodaySnapshot 降级泛话题词并优先表达价值高的词', (
   });
 });
 
-test('generateTodaySnapshot 候选不足时放宽并标记历史高分回流', () => {
+test('generateTodaySnapshot 候选不足时不再回流 30 天内历史词', () => {
   const candidatePool = {};
   Array.from({ length: 20 }, (_, index) => `历史高分${index + 1}`).forEach((word, index) => {
     candidatePool[word] = makeTodayCandidate(word, index + 1, { xhsFitScore: 92 });
@@ -490,10 +495,36 @@ test('generateTodaySnapshot 候选不足时放宽并标记历史高分回流', (
       '2026-06-03': { dateKey: '2026-06-03', words: Object.keys(candidatePool), generatedAt: '2026-06-03T00:00:00.000Z', version: 1 }
     }
   }, { mode: 'create', now: new Date('2026-06-08T01:00:00.000Z') });
-  assert.equal(result.dedupDaysUsed, 0);
-  assert.equal(result.relaxedDedup, true);
-  assert.equal(result.shortage, false);
-  assert.equal(result.words.every(word => word.historicalBackfill), true);
+  assert.equal(result.dedupDaysUsed, 30);
+  assert.equal(result.relaxedDedup, false);
+  assert.equal(result.shortage, true);
+  assert.equal(result.todaySnapshot.words.length, 0);
+  assert.equal(result.words.some(word => word.historicalBackfill), false);
+});
+
+test('isCurrentGeneratorSnapshot 拒绝旧逻辑快照', () => {
+  const legacySnapshot = {
+    dateKey: '2026-06-08',
+    words: ['旧词'],
+    generatedAt: '2026-06-08T00:00:00.000Z',
+    source: 'candidatePool',
+    version: 1
+  };
+  assert.equal(isCurrentGeneratorSnapshot(legacySnapshot, new Date('2026-06-08T01:00:00.000Z')), false);
+});
+
+test('stripInvalidCurrentTodaySnapshot 清除当天旧逻辑快照但保留归档', () => {
+  const cleaned = stripInvalidCurrentTodaySnapshot({
+    todaySnapshot: {
+      dateKey: '2026-06-08',
+      words: ['旧逻辑词'],
+      generatedAt: '2026-06-08T00:00:00.000Z',
+      source: 'candidatePool',
+      version: 1
+    }
+  }, new Date('2026-06-08T01:00:00.000Z'));
+  assert.equal(cleaned.todaySnapshot.words.length, 0);
+  assert.deepEqual(cleaned.historySnapshots['2026-06-08'].words, ['旧逻辑词']);
 });
 
 console.log('workflow schema smoke tests passed');
