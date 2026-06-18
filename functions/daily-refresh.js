@@ -1,10 +1,10 @@
-import { addDays, buildRankingForDate, cleanStoredRanking, dateKey } from '../shared/rankings.mjs';
+import { addDays, buildRankingForDate, cleanDateKey, cleanStoredRanking, dateKey } from '../shared/rankings.mjs';
 import { cleanStoredWorkflow, generateTodaySnapshot, isCurrentGeneratorSnapshot } from '../shared/today-snapshot.mjs';
 import { getAccountLearningSummary } from '../shared/account-learning.mjs';
 
 const CORS_HEADERS = {
   'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Methods': 'POST, OPTIONS',
+  'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
   'Access-Control-Allow-Headers': 'Content-Type, Authorization',
   'Access-Control-Max-Age': '86400'
 };
@@ -19,6 +19,35 @@ const PROMPT_VERSION_BY_ACTION = {
   audit_library_for_delete: 'library-audit-v2',
   audit_missing_library_words: 'library-audit-v2'
 };
+const DEFAULT_CANDIDATE_COUNT = 50;
+const PREVIEW_TEST_CANDIDATE_COUNT = 10;
+const DEFAULT_MAX_TOP_UP_ROUNDS = 2;
+const PREVIEW_TEST_MAX_TOP_UP_ROUNDS = 1;
+const STALE_RUNNING_MS = 15 * 60 * 1000;
+const AI_ENDPOINT_TIMEOUT_MS = 90 * 1000;
+const RUN_STATE_TTL_SECONDS = 3 * 24 * 60 * 60;
+const REFRESH_STEPS = [
+  'started',
+  'load_workflow',
+  'generate_candidates_start',
+  'generate_candidates_done',
+  'import_candidates_start',
+  'import_candidates_done',
+  'select_today_start',
+  'select_today_done',
+  'top_up_generate_start',
+  'top_up_generate_done',
+  'top_up_import_start',
+  'top_up_import_done',
+  'top_up_select_done',
+  'save_workflow_start',
+  'save_workflow_done',
+  'completed',
+  'generate_cards_start',
+  'generate_cards_done',
+  'generate_cards_failed',
+  'failed'
+];
 
 function jsonResponse(body, status = 200) {
   return new Response(JSON.stringify(body), {
@@ -36,6 +65,60 @@ function nowIso() {
 
 function cleanText(value, maxLength = 240) {
   return String(value || '').trim().slice(0, maxLength);
+}
+
+function cleanInteger(value, fallback = 0, min = 0, max = Number.MAX_SAFE_INTEGER) {
+  const parsed = Number.parseInt(value, 10);
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.min(max, Math.max(min, parsed));
+}
+
+function cleanBoolean(value, fallback = false) {
+  if (typeof value === 'boolean') return value;
+  const text = String(value ?? '').trim().toLowerCase();
+  if (['true', '1', 'yes', 'y', 'on'].includes(text)) return true;
+  if (['false', '0', 'no', 'n', 'off'].includes(text)) return false;
+  return fallback;
+}
+
+async function readJsonBody(request) {
+  const contentType = request.headers.get('Content-Type') || '';
+  if (!contentType.includes('application/json')) return {};
+  try {
+    return await request.json();
+  } catch (error) {
+    return {};
+  }
+}
+
+function getRequestOption(url, body, name) {
+  if (body && Object.prototype.hasOwnProperty.call(body, name)) return body[name];
+  return url.searchParams.get(name);
+}
+
+function getRefreshOptions(url, body = {}) {
+  const mode = cleanText(getRequestOption(url, body, 'mode'), 40);
+  const isPreviewTest = ['preview-test', 'test'].includes(mode);
+  const defaultCount = isPreviewTest ? PREVIEW_TEST_CANDIDATE_COUNT : DEFAULT_CANDIDATE_COUNT;
+  const defaultTopUpRounds = isPreviewTest ? PREVIEW_TEST_MAX_TOP_UP_ROUNDS : DEFAULT_MAX_TOP_UP_ROUNDS;
+  const countMax = isPreviewTest ? 20 : 100;
+  const topUpMax = isPreviewTest ? PREVIEW_TEST_MAX_TOP_UP_ROUNDS : DEFAULT_MAX_TOP_UP_ROUNDS;
+  return {
+    mode: isPreviewTest ? 'preview-test' : 'default',
+    isPreviewTest,
+    count: cleanInteger(getRequestOption(url, body, 'count'), defaultCount, 1, countMax),
+    skipCards: cleanBoolean(getRequestOption(url, body, 'skipCards'), isPreviewTest),
+    maxTopUpRounds: cleanInteger(getRequestOption(url, body, 'maxTopUpRounds'), defaultTopUpRounds, 0, topUpMax)
+  };
+}
+
+function getStepIndex(step) {
+  const index = REFRESH_STEPS.indexOf(step);
+  return index >= 0 ? index + 1 : 0;
+}
+
+function createRequestId() {
+  return `daily_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
 }
 
 function getPromptVersion(action) {
@@ -223,11 +306,11 @@ function importAiCandidates(workflow, items = [], batch = {}) {
   };
 }
 
-function buildCandidatePayload(workflow) {
+function buildCandidatePayload(workflow, options = {}) {
   return {
     action: 'stable_today',
     input: '',
-    count: 50,
+    count: cleanInteger(options.count, DEFAULT_CANDIDATE_COUNT, 1, 100),
     preferences: {
       includeMemes: true,
       includeHighRisk: 'review_only',
@@ -286,22 +369,35 @@ function buildWordCardPayloadItems(workflow, kanjis) {
   }).filter(Boolean);
 }
 
-async function callJsonEndpoint(origin, path, payload) {
-  const response = await fetch(`${origin}${path}`, {
-    method: 'POST',
-    headers: {
-      Accept: 'application/json',
-      'Content-Type': 'application/json'
-    },
-    body: JSON.stringify(payload)
-  });
-  const data = await response.json().catch(() => ({}));
-  if (!response.ok || data.error) throw new Error(data.error?.message || data.error || `HTTP ${response.status}`);
-  return data;
+async function callJsonEndpoint(origin, path, payload, options = {}) {
+  const timeoutMs = cleanInteger(options.timeoutMs, AI_ENDPOINT_TIMEOUT_MS, 1000, AI_ENDPOINT_TIMEOUT_MS);
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetch(`${origin}${path}`, {
+      method: 'POST',
+      headers: {
+        Accept: 'application/json',
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify(payload),
+      signal: controller.signal
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok || data.error) throw new Error(data.error?.message || data.error || `HTTP ${response.status}`);
+    return data;
+  } catch (error) {
+    if (error?.name === 'AbortError') {
+      throw new Error(`${path} timed out after ${timeoutMs}ms`);
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeoutId);
+  }
 }
 
-async function generateCandidates(origin, workflow) {
-  const payload = buildCandidatePayload(workflow);
+async function generateCandidates(origin, workflow, options = {}) {
+  const payload = buildCandidatePayload(workflow, options);
   const data = await callJsonEndpoint(origin, '/ai-candidates', payload);
   const batchId = `daily_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
   const trace = getAiTraceFromUsage(data.usage || {}, payload);
@@ -454,17 +550,36 @@ function getRefreshStateKey(today) {
 
 function cleanRefreshRunState(state = {}) {
   const record = state || {};
+  const rawStatus = cleanText(record.status, 40);
+  const status = rawStatus === 'success' ? 'completed' : rawStatus;
   return {
     dateKey: /^\d{4}-\d{2}-\d{2}$/.test(String(record.dateKey || '')) ? String(record.dateKey) : '',
-    status: ['running', 'success', 'failed'].includes(record.status) ? record.status : '',
+    status: ['running', 'completed', 'failed'].includes(status) ? status : '',
     startedAt: typeof record.startedAt === 'string' ? record.startedAt : '',
+    updatedAt: typeof record.updatedAt === 'string' ? record.updatedAt : '',
     finishedAt: typeof record.finishedAt === 'string' ? record.finishedAt : '',
+    lastStep: cleanText(record.lastStep, 80),
+    stepIndex: cleanInteger(record.stepIndex, 0, 0, REFRESH_STEPS.length),
+    totalSteps: cleanInteger(record.totalSteps, REFRESH_STEPS.length, 0, REFRESH_STEPS.length),
     error: cleanText(record.error, 500),
-    generatedCandidates: Number.parseInt(record.generatedCandidates, 10) || 0,
-    importedCandidates: Number.parseInt(record.importedCandidates, 10) || 0,
-    todayCount: Number.parseInt(record.todayCount, 10) || 0,
-    generatedCards: Number.parseInt(record.generatedCards, 10) || 0,
-    queuedCards: Number.parseInt(record.queuedCards, 10) || 0
+    errorStack: cleanText(record.errorStack, 3000),
+    generatedCandidates: cleanInteger(record.generatedCandidates, 0, 0, 10000),
+    importedCandidates: cleanInteger(record.importedCandidates, 0, 0, 10000),
+    todayCount: cleanInteger(record.todayCount, 0, 0, 1000),
+    generatedCards: cleanInteger(record.generatedCards, 0, 0, 1000),
+    queuedCards: cleanInteger(record.queuedCards, 0, 0, 1000),
+    topUpTriggered: Boolean(record.topUpTriggered),
+    topUpRoundsUsed: cleanInteger(record.topUpRoundsUsed, 0, 0, 20),
+    requestId: cleanText(record.requestId, 120),
+    mode: cleanText(record.mode, 40),
+    count: cleanInteger(record.count, 0, 0, 100),
+    skipCards: Boolean(record.skipCards),
+    maxTopUpRounds: cleanInteger(record.maxTopUpRounds, 0, 0, 20),
+    previousRunStale: Boolean(record.previousRunStale),
+    previousRunStartedAt: typeof record.previousRunStartedAt === 'string' ? record.previousRunStartedAt : '',
+    previousRunUpdatedAt: typeof record.previousRunUpdatedAt === 'string' ? record.previousRunUpdatedAt : '',
+    cardGenerationSkipped: Boolean(record.cardGenerationSkipped),
+    cardError: cleanText(record.cardError, 500)
   };
 }
 
@@ -473,18 +588,36 @@ async function readRefreshRunState(env, today) {
 }
 
 async function writeRefreshRunState(env, today, state) {
+  const existing = cleanRefreshRunState(await env.FAVORITES.get(getRefreshStateKey(today), 'json'));
   const cleanState = cleanRefreshRunState({
+    ...existing,
     ...state,
-    dateKey: today
+    dateKey: today,
+    updatedAt: state.updatedAt || nowIso()
   });
-  await env.FAVORITES.put(getRefreshStateKey(today), JSON.stringify(cleanState), { expirationTtl: 3 * 24 * 60 * 60 });
+  await env.FAVORITES.put(getRefreshStateKey(today), JSON.stringify(cleanState), { expirationTtl: RUN_STATE_TTL_SECONDS });
   return cleanState;
 }
 
+function getRunningStaleInfo(state) {
+  if (state.status !== 'running') {
+    return { isRunning: false, isStale: false, ageMs: 0 };
+  }
+  const referenceTime = Date.parse(state.updatedAt || state.startedAt || '');
+  if (!Number.isFinite(referenceTime)) {
+    return { isRunning: true, isStale: true, ageMs: Number.POSITIVE_INFINITY };
+  }
+  const ageMs = Date.now() - referenceTime;
+  return {
+    isRunning: true,
+    isStale: ageMs > STALE_RUNNING_MS,
+    ageMs
+  };
+}
+
 function isFreshRunningState(state) {
-  if (state.status !== 'running' || !state.startedAt) return false;
-  const startedAt = Date.parse(state.startedAt);
-  return Number.isFinite(startedAt) && Date.now() - startedAt < 20 * 60 * 1000;
+  const staleInfo = getRunningStaleInfo(state);
+  return staleInfo.isRunning && !staleInfo.isStale;
 }
 
 async function generateCardsAndSave(origin, workflow, env, key) {
@@ -511,13 +644,51 @@ async function generateCardsAndSave(origin, workflow, env, key) {
   return cardResult.generatedCards;
 }
 
-async function runDailyRefreshJob({ origin, env, key, today }) {
+async function runDailyRefreshJob({ origin, env, key, today, options = {}, requestId = '', startedAt = '', previousRun = {} }) {
+  const runState = {
+    status: 'running',
+    dateKey: today,
+    startedAt: startedAt || nowIso(),
+    finishedAt: '',
+    lastStep: 'started',
+    stepIndex: getStepIndex('started'),
+    totalSteps: REFRESH_STEPS.length,
+    generatedCandidates: 0,
+    importedCandidates: 0,
+    todayCount: 0,
+    generatedCards: 0,
+    queuedCards: 0,
+    topUpTriggered: false,
+    topUpRoundsUsed: 0,
+    error: '',
+    errorStack: '',
+    requestId,
+    mode: options.mode || 'default',
+    count: cleanInteger(options.count, DEFAULT_CANDIDATE_COUNT, 1, 100),
+    skipCards: Boolean(options.skipCards),
+    maxTopUpRounds: cleanInteger(options.maxTopUpRounds, DEFAULT_MAX_TOP_UP_ROUNDS, 0, DEFAULT_MAX_TOP_UP_ROUNDS),
+    previousRunStale: Boolean(previousRun.stale),
+    previousRunStartedAt: cleanText(previousRun.startedAt, 80),
+    previousRunUpdatedAt: cleanText(previousRun.updatedAt, 80),
+    cardGenerationSkipped: false,
+    cardError: ''
+  };
+  let lastStep = 'started';
+  const writeStep = async (step, patch = {}) => {
+    lastStep = step;
+    Object.assign(runState, patch, {
+      lastStep: step,
+      stepIndex: getStepIndex(step)
+    });
+    return writeRefreshRunState(env, today, runState);
+  };
+
   try {
+    await writeStep('load_workflow');
     const stored = cleanStoredWorkflow(await env.FAVORITES.get(key, 'json'));
     if (isCurrentGeneratorSnapshot(stored.todaySnapshot, new Date())) {
-      return writeRefreshRunState(env, today, {
-        status: 'success',
-        startedAt: nowIso(),
+      return writeStep('completed', {
+        status: 'completed',
         finishedAt: nowIso(),
         generatedCandidates: 0,
         importedCandidates: 0,
@@ -527,55 +698,146 @@ async function runDailyRefreshJob({ origin, env, key, today }) {
       });
     }
 
-    const generated = await generateCandidates(origin, stored);
+    await writeStep('generate_candidates_start');
+    const generated = await generateCandidates(origin, stored, { count: runState.count });
     let totalGenerated = generated.items.length;
+    await writeStep('generate_candidates_done', { generatedCandidates: totalGenerated });
     const workflowWithBatch = cleanStoredWorkflow({
       ...stored,
       aiBatches: [generated.batch, ...safeArray(stored.aiBatches)].slice(0, 100)
     });
+    await writeStep('import_candidates_start', { generatedCandidates: totalGenerated });
     let imported = importAiCandidates(workflowWithBatch, generated.items, generated.batch);
     let totalImported = imported.stats.imported;
+    await writeStep('import_candidates_done', {
+      generatedCandidates: totalGenerated,
+      importedCandidates: totalImported
+    });
+    await writeStep('select_today_start', {
+      generatedCandidates: totalGenerated,
+      importedCandidates: totalImported
+    });
     const rankingHistoryWords = await readRankingHistoryWords(env, today, 30);
     let snapshot = generateTodaySnapshot({ ...imported.workflow, rankingHistoryWords }, { mode: 'create', createdBy: 'server' });
+    await writeStep('select_today_done', {
+      generatedCandidates: totalGenerated,
+      importedCandidates: totalImported,
+      todayCount: safeArray(snapshot.workflow.todaySnapshot?.words).length
+    });
 
-    for (let round = 0; snapshot.result.shortage && round < 2; round += 1) {
-      const extraGenerated = await generateCandidates(origin, snapshot.workflow);
+    for (let round = 0; snapshot.result.shortage && round < runState.maxTopUpRounds; round += 1) {
+      await writeStep('top_up_generate_start', {
+        topUpTriggered: true,
+        topUpRoundsUsed: round,
+        generatedCandidates: totalGenerated,
+        importedCandidates: totalImported,
+        todayCount: safeArray(snapshot.workflow.todaySnapshot?.words).length
+      });
+      const extraGenerated = await generateCandidates(origin, snapshot.workflow, { count: runState.count });
       totalGenerated += extraGenerated.items.length;
+      await writeStep('top_up_generate_done', {
+        topUpTriggered: true,
+        topUpRoundsUsed: round + 1,
+        generatedCandidates: totalGenerated,
+        importedCandidates: totalImported,
+        todayCount: safeArray(snapshot.workflow.todaySnapshot?.words).length
+      });
       const workflowWithExtraBatch = cleanStoredWorkflow({
         ...snapshot.workflow,
         aiBatches: [extraGenerated.batch, ...safeArray(snapshot.workflow.aiBatches)].slice(0, 100)
       });
+      await writeStep('top_up_import_start', {
+        topUpTriggered: true,
+        topUpRoundsUsed: round + 1,
+        generatedCandidates: totalGenerated,
+        importedCandidates: totalImported,
+        todayCount: safeArray(snapshot.workflow.todaySnapshot?.words).length
+      });
       imported = importAiCandidates(workflowWithExtraBatch, extraGenerated.items, extraGenerated.batch);
       totalImported += imported.stats.imported;
+      await writeStep('top_up_import_done', {
+        topUpTriggered: true,
+        topUpRoundsUsed: round + 1,
+        generatedCandidates: totalGenerated,
+        importedCandidates: totalImported,
+        todayCount: safeArray(snapshot.workflow.todaySnapshot?.words).length
+      });
       snapshot = generateTodaySnapshot({ ...imported.workflow, rankingHistoryWords }, { mode: 'fill', createdBy: 'server' });
+      await writeStep('top_up_select_done', {
+        topUpTriggered: true,
+        topUpRoundsUsed: round + 1,
+        generatedCandidates: totalGenerated,
+        importedCandidates: totalImported,
+        todayCount: safeArray(snapshot.workflow.todaySnapshot?.words).length
+      });
       if (!imported.stats.imported) break;
     }
 
     const finalWorkflow = cleanStoredWorkflow({ ...snapshot.workflow, updated: nowIso() });
 
+    await writeStep('save_workflow_start', {
+      generatedCandidates: totalGenerated,
+      importedCandidates: totalImported,
+      todayCount: safeArray(finalWorkflow.todaySnapshot?.words).length
+    });
     await env.FAVORITES.put(key, JSON.stringify(finalWorkflow));
-    const cardTargets = safeArray(finalWorkflow.todaySnapshot.words).filter(kanji => cleanAiCard(finalWorkflow.candidatePool?.[kanji]?.aiCard || {}).cardStatus !== 'ready');
-    let generatedCards = 0;
-    if (cardTargets.length) {
-      generatedCards = await generateCardsAndSave(origin, finalWorkflow, env, key);
-    }
-    return writeRefreshRunState(env, today, {
-      status: 'success',
-      startedAt: nowIso(),
+    const todayWords = safeArray(finalWorkflow.todaySnapshot?.words);
+    const cardTargets = todayWords.filter(kanji => cleanAiCard(finalWorkflow.candidatePool?.[kanji]?.aiCard || {}).cardStatus !== 'ready');
+    await writeStep('save_workflow_done', {
+      generatedCandidates: totalGenerated,
+      importedCandidates: totalImported,
+      todayCount: todayWords.length,
+      queuedCards: cardTargets.length
+    });
+
+    await writeStep('completed', {
+      status: 'completed',
       finishedAt: nowIso(),
       generatedCandidates: totalGenerated,
       importedCandidates: totalImported,
-      todayCount: finalWorkflow.todaySnapshot.words.length,
-      generatedCards,
-      queuedCards: cardTargets.length
+      todayCount: todayWords.length,
+      generatedCards: 0,
+      queuedCards: cardTargets.length,
+      cardGenerationSkipped: Boolean(runState.skipCards)
     });
+
+    let generatedCards = 0;
+    if (!runState.skipCards && cardTargets.length) {
+      try {
+        await writeStep('generate_cards_start', {
+          status: 'completed',
+          finishedAt: runState.finishedAt || nowIso(),
+          queuedCards: cardTargets.length
+        });
+        generatedCards = await generateCardsAndSave(origin, finalWorkflow, env, key);
+        return writeStep('generate_cards_done', {
+          status: 'completed',
+          finishedAt: runState.finishedAt || nowIso(),
+          generatedCards,
+          queuedCards: cardTargets.length
+        });
+      } catch (cardError) {
+        console.warn('daily-refresh card generation failed', cardError?.message || cardError);
+        return writeStep('generate_cards_failed', {
+          status: 'completed',
+          finishedAt: runState.finishedAt || nowIso(),
+          generatedCards,
+          queuedCards: cardTargets.length,
+          cardError: cleanText(cardError?.message || 'card generation failed', 500)
+        });
+      }
+    }
+    return cleanRefreshRunState(runState);
   } catch (error) {
     console.warn('daily-refresh background job failed', error?.message || error);
     return writeRefreshRunState(env, today, {
+      ...runState,
       status: 'failed',
-      startedAt: nowIso(),
+      lastStep,
+      stepIndex: getStepIndex(lastStep),
       finishedAt: nowIso(),
-      error: error.message || 'daily refresh failed'
+      error: cleanText(error?.message || 'daily refresh failed', 500),
+      errorStack: cleanText(error?.stack || '', 3000)
     });
   }
 }
@@ -585,7 +847,7 @@ export async function onRequest(context) {
   if (request.method === 'OPTIONS') {
     return new Response(null, { headers: CORS_HEADERS });
   }
-  if (request.method !== 'POST') {
+  if (!['GET', 'POST'].includes(request.method)) {
     return jsonResponse({ ok: false, status: 'failed', error: 'Method not allowed' }, 405);
   }
   if (!isAuthorized(request, env)) {
@@ -601,40 +863,104 @@ export async function onRequest(context) {
   const origin = url.origin;
 
   try {
-    const stored = cleanStoredWorkflow(await env.FAVORITES.get(key, 'json'));
-    if (isCurrentGeneratorSnapshot(stored.todaySnapshot, new Date())) {
+    if (request.method === 'GET') {
+      const stateDate = cleanDateKey(url.searchParams.get('date')) || today;
+      const runState = await readRefreshRunState(env, stateDate);
+      const staleInfo = getRunningStaleInfo(runState);
       return jsonResponse({
         ok: true,
-        status: 'skipped',
+        ...runState,
+        dateKey: stateDate,
+        isStale: staleInfo.isStale,
+        staleAfterMs: STALE_RUNNING_MS,
+        runningAgeMs: staleInfo.ageMs
+      });
+    }
+
+    const body = await readJsonBody(request);
+    const options = getRefreshOptions(url, body);
+    const stored = cleanStoredWorkflow(await env.FAVORITES.get(key, 'json'));
+    if (isCurrentGeneratorSnapshot(stored.todaySnapshot, new Date())) {
+      const completedState = await writeRefreshRunState(env, today, {
+        status: 'completed',
+        startedAt: nowIso(),
+        finishedAt: nowIso(),
+        lastStep: 'completed',
+        stepIndex: getStepIndex('completed'),
+        totalSteps: REFRESH_STEPS.length,
         generatedCandidates: 0,
         importedCandidates: 0,
         todayCount: stored.todaySnapshot.words.length,
         generatedCards: 0,
-        dateKey: today
+        queuedCards: 0,
+        requestId: createRequestId(),
+        mode: options.mode,
+        count: options.count,
+        skipCards: options.skipCards,
+        maxTopUpRounds: options.maxTopUpRounds
+      });
+      return jsonResponse({
+        ok: true,
+        skipped: true,
+        ...completedState
       });
     }
 
     const runState = await readRefreshRunState(env, today);
+    const staleInfo = getRunningStaleInfo(runState);
     if (isFreshRunningState(runState)) {
       return jsonResponse({
         ok: true,
-        status: 'running',
-        generatedCandidates: runState.generatedCandidates,
-        importedCandidates: runState.importedCandidates,
-        todayCount: runState.todayCount,
-        generatedCards: runState.generatedCards,
-        queuedCards: runState.queuedCards,
-        dateKey: today
+        ...runState,
+        isStale: false,
+        staleAfterMs: STALE_RUNNING_MS,
+        runningAgeMs: staleInfo.ageMs
       });
     }
-    await writeRefreshRunState(env, today, {
+    const requestId = createRequestId();
+    const startedAt = nowIso();
+    const initialState = await writeRefreshRunState(env, today, {
       status: 'running',
-      startedAt: nowIso(),
+      startedAt,
       finishedAt: '',
-      error: ''
+      lastStep: 'started',
+      stepIndex: getStepIndex('started'),
+      totalSteps: REFRESH_STEPS.length,
+      generatedCandidates: 0,
+      importedCandidates: 0,
+      todayCount: 0,
+      generatedCards: 0,
+      queuedCards: 0,
+      topUpTriggered: false,
+      topUpRoundsUsed: 0,
+      error: '',
+      errorStack: '',
+      requestId,
+      mode: options.mode,
+      count: options.count,
+      skipCards: options.skipCards,
+      maxTopUpRounds: options.maxTopUpRounds,
+      previousRunStale: staleInfo.isStale,
+      previousRunStartedAt: staleInfo.isStale ? runState.startedAt : '',
+      previousRunUpdatedAt: staleInfo.isStale ? runState.updatedAt : '',
+      cardGenerationSkipped: false,
+      cardError: ''
     });
 
-    const job = runDailyRefreshJob({ origin, env, key, today });
+    const job = runDailyRefreshJob({
+      origin,
+      env,
+      key,
+      today,
+      options,
+      requestId,
+      startedAt,
+      previousRun: {
+        stale: staleInfo.isStale,
+        startedAt: runState.startedAt,
+        updatedAt: runState.updatedAt
+      }
+    });
     if (typeof context.waitUntil === 'function') {
       context.waitUntil(job);
     } else {
@@ -642,13 +968,10 @@ export async function onRequest(context) {
     }
     return jsonResponse({
       ok: true,
-      status: 'queued',
-      generatedCandidates: 0,
-      importedCandidates: 0,
-      todayCount: 0,
-      generatedCards: 0,
-      queuedCards: 0,
-      dateKey: today
+      ...initialState,
+      queued: true,
+      isStale: false,
+      staleAfterMs: STALE_RUNNING_MS
     });
   } catch (error) {
     console.warn('daily-refresh failed', error?.message || error);
