@@ -190,23 +190,36 @@ function getRankingStorageKey(dateKeyValue) {
   return `rankings:${dateKeyValue}`;
 }
 
+function getDateRange(startDateKey, endDateKey) {
+  const dates = [];
+  let cursor = startDateKey;
+  while (cursor) {
+    dates.push(cursor);
+    if (cursor === endDateKey) break;
+    cursor = addDays(cursor, 1);
+  }
+  return dates;
+}
+
 async function readRankingHistoryWords(env, todayDateKey, days = 30) {
   const earliestDateKey = addDays(todayDateKey, -days);
   const generationStartDateKey = addDays(earliestDateKey, -15);
   const cachedSelections = new Map();
-  let cursor = generationStartDateKey;
+  const historyDateKeys = getDateRange(generationStartDateKey, todayDateKey);
+  const storedRankings = await Promise.all(historyDateKeys.map(async currentDateKey => {
+    const stored = await env.FAVORITES.get(getRankingStorageKey(currentDateKey), 'json');
+    return {
+      dateKey: currentDateKey,
+      ranking: cleanStoredRanking(stored, currentDateKey)
+    };
+  }));
 
-  while (cursor) {
-    const stored = await env.FAVORITES.get(getRankingStorageKey(cursor), 'json');
-    const ranking = cleanStoredRanking(stored, cursor);
-    if (ranking.words.length === 20) cachedSelections.set(cursor, ranking.words);
-    if (cursor === todayDateKey) break;
-    cursor = addDays(cursor, 1);
-  }
+  storedRankings.forEach(({ dateKey: currentDateKey, ranking }) => {
+    if (ranking.words.length === 20) cachedSelections.set(currentDateKey, ranking.words);
+  });
 
   const rankingHistoryWords = {};
-  cursor = generationStartDateKey;
-  while (cursor) {
+  historyDateKeys.forEach(cursor => {
     let words = cachedSelections.get(cursor);
     if (!words || words.length !== 20) {
       words = buildRankingForDate(cursor, cachedSelections);
@@ -215,9 +228,7 @@ async function readRankingHistoryWords(env, todayDateKey, days = 30) {
     if (cursor >= earliestDateKey && cursor < todayDateKey) {
       rankingHistoryWords[cursor] = words;
     }
-    if (cursor === todayDateKey) break;
-    cursor = addDays(cursor, 1);
-  }
+  });
 
   return rankingHistoryWords;
 }
@@ -961,6 +972,16 @@ export async function onRequest(context) {
         updatedAt: runState.updatedAt
       }
     });
+    if (options.isPreviewTest) {
+      const finalState = await job;
+      return jsonResponse({
+        ok: finalState.status !== 'failed',
+        ...finalState,
+        queued: false,
+        isStale: false,
+        staleAfterMs: STALE_RUNNING_MS
+      }, finalState.status === 'failed' ? 500 : 200);
+    }
     if (typeof context.waitUntil === 'function') {
       context.waitUntil(job);
     } else {
