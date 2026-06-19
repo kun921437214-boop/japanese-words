@@ -21,6 +21,7 @@ const PROMPT_VERSION_BY_ACTION = {
 };
 const DEFAULT_CANDIDATE_COUNT = 50;
 const PREVIEW_TEST_CANDIDATE_COUNT = 10;
+const PREVIEW_TEST_MAX_CANDIDATE_COUNT = 50;
 const DEFAULT_MAX_TOP_UP_ROUNDS = 2;
 const PREVIEW_TEST_MAX_TOP_UP_ROUNDS = 1;
 const STALE_RUNNING_MS = 15 * 60 * 1000;
@@ -101,7 +102,8 @@ function getRefreshOptions(url, body = {}) {
   const isPreviewTest = ['preview-test', 'test'].includes(mode);
   const defaultCount = isPreviewTest ? PREVIEW_TEST_CANDIDATE_COUNT : DEFAULT_CANDIDATE_COUNT;
   const defaultTopUpRounds = isPreviewTest ? PREVIEW_TEST_MAX_TOP_UP_ROUNDS : DEFAULT_MAX_TOP_UP_ROUNDS;
-  const countMax = isPreviewTest ? 20 : 100;
+  // Preview test allows a higher candidate count for controlled validation while keeping production defaults unchanged.
+  const countMax = isPreviewTest ? PREVIEW_TEST_MAX_CANDIDATE_COUNT : 100;
   const topUpMax = isPreviewTest ? PREVIEW_TEST_MAX_TOP_UP_ROUNDS : DEFAULT_MAX_TOP_UP_ROUNDS;
   return {
     mode: isPreviewTest ? 'preview-test' : 'default',
