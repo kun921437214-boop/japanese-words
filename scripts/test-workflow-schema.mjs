@@ -13,6 +13,7 @@ import {
   isCurrentGeneratorSnapshot
 } from '../shared/today-snapshot.mjs';
 import { getAccountLearningSummary } from '../shared/account-learning.mjs';
+import { buildDeepSeekExclusionContext } from '../shared/deepseek-exclusion.mjs';
 
 function test(name, fn) {
   try {
@@ -386,6 +387,26 @@ test('getRecentDailyHotBlockedWords 收集最近 30 天历史词', () => {
   assert.ok(blocked.has('快照历史词'));
 });
 
+test('buildDeepSeekExclusionContext 构建 DeepSeek 避重清单并保留原因', () => {
+  const exclusion = buildDeepSeekExclusionContext({
+    recentHistoryWords: ['モヤる', '抜け感', '清潔感'],
+    favoriteWords: ['しんどい'],
+    pendingWords: ['気を遣う'],
+    publishedWords: ['距離感'],
+    selectedTodayWords: ['空気読む'],
+    currentBatchWords: ['だるい', '気まずい'],
+    protectedWords: ['刺さる'],
+    existingRecentCandidateWords: ['透け感']
+  }, { limit: 20 });
+  ['モヤる', '抜け感', '清潔感', 'しんどい', '気を遣う', '距離感', '空気読む', 'だるい', '気まずい', '刺さる', '透け感'].forEach(word => {
+    assert.ok(exclusion.excludedWords.includes(word), `${word} 应进入 DeepSeek 禁止列表`);
+  });
+  assert.deepEqual(exclusion.excludedReasons.current_batch_duplicate, ['だるい', '気まずい']);
+  assert.deepEqual(exclusion.excludedReasons.favorite_or_pending, ['しんどい', '気を遣う']);
+  assert.deepEqual(exclusion.excludedReasons.published, ['距離感']);
+  assert.deepEqual(exclusion.excludedReasons.selected_today, ['空気読む']);
+});
+
 test('generateTodaySnapshot 硬排除最近 30 天历史词', () => {
   const candidatePool = {};
   ['回流词A', '回流词B', '回流词C'].forEach((word, index) => {
@@ -500,6 +521,34 @@ test('generateTodaySnapshot 候选不足时不再回流 30 天内历史词', () 
   assert.equal(result.shortage, true);
   assert.equal(result.todaySnapshot.words.length, 0);
   assert.equal(result.words.some(word => word.historicalBackfill), false);
+});
+
+test('generateTodaySnapshot 保留 DeepSeek 新鲜度审计统计', () => {
+  const candidatePool = {};
+  Array.from({ length: 20 }, (_, index) => `新鮮かな${index + 1}`).forEach((word, index) => {
+    candidatePool[word] = makeTodayCandidate(word, index + 1);
+  });
+  const { result } = generateTodaySnapshot({
+    candidatePool
+  }, {
+    mode: 'create',
+    now: new Date('2026-06-08T01:00:00.000Z'),
+    noveltySummary: {
+      generatedUniqueCount: 37,
+      importedUniqueCount: 31,
+      recentHistoryRejectedCount: 19,
+      favoriteProtectedRejectedCount: 6,
+      currentBatchDuplicateRejectedCount: 8,
+      reviewRejectedCount: 6,
+      duplicateRate: 35,
+      historyCollisionRate: 51
+    }
+  });
+  assert.equal(result.todaySnapshot.recommendationAudit.noveltySummary.generatedUniqueCount, 37);
+  assert.equal(result.todaySnapshot.recommendationAudit.noveltySummary.importedUniqueCount, 31);
+  assert.equal(result.todaySnapshot.recommendationAudit.noveltySummary.recentHistoryRejectedCount, 19);
+  assert.equal(result.todaySnapshot.recommendationAudit.noveltySummary.duplicateRate, 35);
+  assert.equal(result.todaySnapshot.recommendationAudit.noveltySummary.historyCollisionRate, 51);
 });
 
 test('isCurrentGeneratorSnapshot 拒绝旧逻辑快照', () => {

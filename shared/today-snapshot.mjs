@@ -134,14 +134,14 @@ function getEntryContextText(entry = {}) {
   ].map(value => cleanText(value, 1000)).join(' ');
 }
 
-function isGenericTopicWord(entry = {}) {
+export function isGenericTopicWord(entry = {}) {
   const kanji = normalizeKanjiSpelling(entry.kanji);
   if (!kanji) return false;
   if (GENERIC_TOPIC_WORDS.has(kanji)) return true;
   return GENERIC_TOPIC_CONTEXT_RE.test(`${kanji} ${getEntryContextText(entry)}`);
 }
 
-function getExpressionValueScore(entry = {}) {
+export function getExpressionValueScore(entry = {}) {
   const explicit = Number.parseInt(entry.expressionValueScore, 10);
   if (Number.isFinite(explicit) && explicit > 0) return clamp(explicit, 0, 100);
   const kanji = normalizeKanjiSpelling(entry.kanji);
@@ -200,7 +200,7 @@ function isChineseReadableLowValueTodayWord(entry = {}) {
   return CHINESE_READABLE_LOW_VALUE_CONTEXT_RE.test(`${kanji} ${context}`);
 }
 
-function getChineseTransparencyScore(entry = {}) {
+export function getChineseTransparencyScore(entry = {}) {
   const kanji = normalizeKanjiSpelling(entry.kanji);
   if (!kanji) return 0;
   if (CHINESE_READABLE_LOW_VALUE_TODAY_WORDS.has(kanji) || CHINESE_READABLE_LOW_VALUE_CONTEXT_RE.test(getEntryContextText(entry))) return 92;
@@ -314,6 +314,19 @@ function average(items = []) {
   return Math.round(items.reduce((sum, value) => sum + (Number(value) || 0), 0) / items.length);
 }
 
+function cleanNoveltySummary(summary = {}) {
+  return {
+    generatedUniqueCount: clamp(toInt(summary.generatedUniqueCount, 0), 0, 10000),
+    importedUniqueCount: clamp(toInt(summary.importedUniqueCount, 0), 0, 10000),
+    recentHistoryRejectedCount: clamp(toInt(summary.recentHistoryRejectedCount, 0), 0, 10000),
+    favoriteProtectedRejectedCount: clamp(toInt(summary.favoriteProtectedRejectedCount, 0), 0, 10000),
+    currentBatchDuplicateRejectedCount: clamp(toInt(summary.currentBatchDuplicateRejectedCount, 0), 0, 10000),
+    reviewRejectedCount: clamp(toInt(summary.reviewRejectedCount, 0), 0, 10000),
+    duplicateRate: clamp(toInt(summary.duplicateRate, 0), 0, 100),
+    historyCollisionRate: clamp(toInt(summary.historyCollisionRate, 0), 0, 100)
+  };
+}
+
 export function buildTodayRecommendationAudit(todayEntries = [], context = {}) {
   const items = safeArray(todayEntries).map(entry => buildAuditItem(entry.candidateMeta || entry, context));
   const sourceSummary = Object.keys(RECOMMENDATION_ORIGIN_LABELS).reduce((result, key) => ({ ...result, [key]: 0 }), {});
@@ -367,6 +380,7 @@ export function buildTodayRecommendationAudit(todayEntries = [], context = {}) {
     total: items.length,
     sourceSummary,
     qualitySummary,
+    noveltySummary: cleanNoveltySummary(context.noveltySummary || {}),
     diagnosis,
     items,
     createdAt: context.generatedAt || new Date().toISOString()
@@ -912,7 +926,8 @@ export function generateTodaySnapshot(workflowInput = {}, options = {}) {
     relaxedDedup,
     freshBatchIds,
     existingWords: new Set(existingWords),
-    latestBatchItems
+    latestBatchItems,
+    noveltySummary: options.noveltySummary || {}
   };
   const auditedSelected = selected.map(entry => ({
     ...entry,

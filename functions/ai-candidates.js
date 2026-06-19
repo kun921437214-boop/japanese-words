@@ -451,8 +451,10 @@ function buildSystemPrompt() {
     '每日热门不是日本热词榜，也不是话题标签池；判断标准不是“这个词热不热”，而是“这个词是否值得做成小红书日语表达内容”。',
     '优先生成有语感、有场景、能收藏、能做标题封面的日语表达词，而不是普通话题分类词。',
     '优先方向：情绪状态词、人际关系/社交语感词、生活/学习/工作状态词、中文不好直译的日语表达、可以解释成“不是 A，而是 B”的词、低风险且语义稳定的表达。',
+    '禁止列表优先级最高：如果用户 prompt 里给出禁止生成的词，绝对不要输出这些词，也不要换一个解释继续生成同一个词。',
+    'topUp 补词不是重新问一遍；必须避开首批候选、已选今日词、近 30 天历史词、收藏/待发布/已发布词，补充真正新的方向。',
     '减少生成：ネイル、ベースメイク、副業、転職、祭り、お弁当、資格勉強、自己投資 这类泛话题词；它们不是绝对禁止，但默认应放 long_term/watch，不要放 today。',
-    '好候选示例：大正解、小確幸、自己肯定感、木漏れ日、清潔感、布教、推し変、気まずい、モヤる、距離感、気を遣う、空気読む、しんどい、刺さる、だるい。',
+    '好候选方向：微妙情绪、人际分寸、社交语感、生活状态、学习/工作/消费状态、中文不好直译但能用自然例句解释的表达。不要照抄示例或禁止列表里的词。',
     '弱候选示例：ネイル、ベースメイク、副業、転職、祭り、お弁当。弱候选需要更具体场景或标题包装，否则不要进入 today。',
     '注意标准日语写法：例如 オーバサイズ 应修正为 オーバーサイズ；长音缺失或片假名不标准时必须自动修正或标记需查证。',
     '每个候选必须给 expressionValueScore，0-100：85+ 强表达价值，70-84 可推荐，55-69 候选池观察，低于55不进每日热门。',
@@ -488,12 +490,15 @@ function buildSystemPrompt() {
 
 function buildUserPrompt(payload) {
   const context = payload.context || {};
+  const exclusionContext = context.deepSeekExclusion || {};
+  const excludedWords = cleanArray(exclusionContext.excludedWords || payload.avoidWords, 200);
+  const excludedReasons = exclusionContext.excludedReasons || {};
   return JSON.stringify({
     task: payload.action,
     generationMode: payload.action === 'generate_candidates' ? 'wild_ideas' : payload.action,
     count: payload.count,
     batchHint: payload.batchHint || '',
-    avoidWords: cleanArray(payload.avoidWords, 120),
+    avoidWords: excludedWords,
     input: payload.input,
     preferences: payload.preferences,
     highRiskRule: payload.preferences.includeHighRisk === 'exclude'
@@ -506,7 +511,27 @@ function buildUserPrompt(payload) {
       existingCandidates: cleanArray(context.existingCandidates, 160)
     },
     jsonRequirement: '必须返回合法 json object，顶层字段必须包含 items、summary；不要输出 json 之外的任何文字。',
-    duplicationRule: 'avoidWords 和 existingCandidates 中出现过的词不要再生成；同一批 items 内也不要重复。',
+    duplicationRule: 'avoidWords、禁止生成的词、favorites、publishedWords、existingCandidates 中出现过的词不要再生成；同一批 items 内也不要重复。',
+    noveltyRule: {
+      title: '【禁止生成的词】',
+      forbiddenWords: excludedWords,
+      forbiddenReasons: {
+        recent_history_30d: cleanArray(excludedReasons.recent_history_30d, 80),
+        favorite_or_pending: cleanArray(excludedReasons.favorite_or_pending, 80),
+        published: cleanArray(excludedReasons.published, 80),
+        selected_today: cleanArray(excludedReasons.selected_today, 80),
+        current_batch_duplicate: cleanArray(excludedReasons.current_batch_duplicate, 80),
+        protected: cleanArray(excludedReasons.protected, 80),
+        existing_recent_candidate: cleanArray(excludedReasons.existing_recent_candidate, 80)
+      },
+      instructions: [
+        '上面的 forbiddenWords 已经推荐过、收藏过、发布过、今天选过或本轮出现过，禁止再次生成。',
+        '如果你想生成的词在禁止列表里，请换成新的表达。',
+        '不要生成同义重复词，不要只换解释继续生成同一个词。',
+        '优先找更细分、更有语感、更有生活场景的新词。',
+        '不要生成中文用户一眼能懂的泛话题词、普通话题名词、泛美妆标签、泛职业标签、太基础教材词、过度圈层黑话、词义不稳定的新造词、高风险或易冒犯词。'
+      ]
+    },
     accountLearningRule: {
       coreQuestion: '这个词是否值得做成小红书日语内容，而不只是热门话题？',
       priorityMix: '情绪状态/人际语感约40%，生活/学习/状态场景约25%，大众可理解圈层兴趣约15%，审美美妆穿搭约10%，季节文化其他约10%。',

@@ -368,6 +368,22 @@ function cleanNumberSummary(summary = {}, keys = [], min = 0, max = 1000) {
   }, {});
 }
 
+function cleanNoveltySummary(summary = {}) {
+  const countKeys = [
+    'generatedUniqueCount',
+    'importedUniqueCount',
+    'recentHistoryRejectedCount',
+    'favoriteProtectedRejectedCount',
+    'currentBatchDuplicateRejectedCount',
+    'reviewRejectedCount'
+  ];
+  return {
+    ...cleanNumberSummary(summary, countKeys, 0, 10000),
+    duplicateRate: clamp(toInt(summary?.duplicateRate, 0), 0, 100),
+    historyCollisionRate: clamp(toInt(summary?.historyCollisionRate, 0), 0, 100)
+  };
+}
+
 function cleanRecommendationAuditSummary(audit = {}) {
   const sourceSummaryKeys = [...RECOMMENDATION_ORIGIN_TYPES];
   const qualitySummaryKeys = [
@@ -387,6 +403,7 @@ function cleanRecommendationAuditSummary(audit = {}) {
     total: clamp(toInt(audit?.total, 0), 0, 100),
     sourceSummary: cleanNumberSummary(audit?.sourceSummary, sourceSummaryKeys, 0, 1000),
     qualitySummary: cleanNumberSummary(audit?.qualitySummary, qualitySummaryKeys, 0, 1000),
+    noveltySummary: cleanNoveltySummary(audit?.noveltySummary || {}),
     diagnosis: safeArray(audit?.diagnosis).map(text => cleanText(text, 300)).filter(Boolean).slice(0, 12),
     items: safeArray(audit?.items).map(cleanRecommendationAuditItem).filter(Boolean).slice(0, 100),
     createdAt: isIsoLike(audit?.createdAt) ? audit.createdAt : ''

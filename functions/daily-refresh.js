@@ -1,6 +1,18 @@
 import { addDays, buildRankingForDate, cleanDateKey, cleanStoredRanking, dateKey } from '../shared/rankings.mjs';
-import { cleanStoredWorkflow, generateTodaySnapshot, isCurrentGeneratorSnapshot } from '../shared/today-snapshot.mjs';
+import {
+  cleanStoredWorkflow,
+  generateTodaySnapshot,
+  getChineseTransparencyScore,
+  getExpressionValueScore,
+  isCurrentGeneratorSnapshot,
+  isGenericTopicWord
+} from '../shared/today-snapshot.mjs';
 import { getAccountLearningSummary } from '../shared/account-learning.mjs';
+import {
+  buildDeepSeekExclusionContext,
+  flattenWords,
+  normalizeKanjiSpelling
+} from '../shared/deepseek-exclusion.mjs';
 
 const CORS_HEADERS = {
   'Access-Control-Allow-Origin': '*',
@@ -180,7 +192,131 @@ function safeArray(value) {
 }
 
 function uniqueWords(words) {
-  return [...new Set(safeArray(words).map(item => cleanText(item, 80)).filter(Boolean))];
+  return [...new Set(safeArray(words).map(item => normalizeKanjiSpelling(item)).filter(Boolean))];
+}
+
+function daysBetweenIso(value, now = new Date()) {
+  const time = Date.parse(value || '');
+  if (!Number.isFinite(time)) return Number.POSITIVE_INFINITY;
+  return Math.floor((now.getTime() - time) / 86400000);
+}
+
+function getPendingWords(workflow = {}) {
+  return Object.entries(workflow.statuses || {})
+    .filter(([, status]) => ['pending', 'published'].includes(status))
+    .map(([word]) => word);
+}
+
+function isProtectedWordExcluded(entry = {}) {
+  if (!entry?.protected) return false;
+  if (['review', 'blocked', 'long_term', 'seasonal'].includes(entry.displayBucket)) return true;
+  if (['medium', 'high'].includes(entry.riskLevel)) return true;
+  if (entry.confidenceLevel === 'review' || entry.evidenceType === 'unknown' || entry.lastReviewState === 'review') return true;
+  return false;
+}
+
+function getProtectedExcludedWords(workflow = {}) {
+  return Object.values(workflow.candidatePool || {})
+    .filter(isProtectedWordExcluded)
+    .map(entry => entry.kanji);
+}
+
+function getRecentlyRecommendedCandidateWords(workflow = {}, now = new Date(), days = 30) {
+  return Object.values(workflow.candidatePool || {})
+    .filter(entry => {
+      const selectedAt = entry.recommendationAudit?.selectedAt || entry.lastRecommendedAt || '';
+      return Boolean(entry.kanji && selectedAt && daysBetweenIso(selectedAt, now) <= days);
+    })
+    .map(entry => entry.kanji);
+}
+
+function getExclusionReason(kanji, exclusionContext = {}) {
+  const cleanKanji = normalizeKanjiSpelling(kanji);
+  const reasons = exclusionContext.excludedReasons || {};
+  const priority = [
+    ['current_batch_duplicate', 'duplicate_in_current_batch'],
+    ['selected_today', 'selected_today'],
+    ['favorite_or_pending', 'favorite_or_pending'],
+    ['published', 'published'],
+    ['recent_history_30d', 'recent_history_30d'],
+    ['protected', 'protected_word'],
+    ['existing_recent_candidate', 'recently_recommended_candidate']
+  ];
+  for (const [key, reason] of priority) {
+    if (uniqueWords(reasons[key]).includes(cleanKanji)) return reason;
+  }
+  if (uniqueWords(exclusionContext.excludedWords).includes(cleanKanji)) return 'excluded_word';
+  return '';
+}
+
+function buildWorkflowExclusionContext(workflow = {}, rankingHistoryWords = {}, options = {}) {
+  const now = options.now || new Date();
+  return buildDeepSeekExclusionContext({
+    recentHistoryWords: flattenWords(rankingHistoryWords),
+    favoriteWords: workflow.words,
+    pendingWords: getPendingWords(workflow),
+    publishedWords: [...getPublishedWords(workflow)],
+    selectedTodayWords: workflow.todaySnapshot?.words || [],
+    currentBatchWords: options.currentBatchWords || [],
+    protectedWords: getProtectedExcludedWords(workflow),
+    existingRecentCandidateWords: getRecentlyRecommendedCandidateWords(workflow, now, 30)
+  });
+}
+
+function createNoveltyStats() {
+  return {
+    generatedWords: new Set(),
+    importedWords: new Set(),
+    recentHistoryRejectedWords: new Set(),
+    favoriteProtectedRejectedWords: new Set(),
+    currentBatchDuplicateRejectedWords: new Set(),
+    reviewRejectedWords: new Set(),
+    generatedTotal: 0
+  };
+}
+
+function recordGeneratedWords(stats, items = []) {
+  safeArray(items).forEach(item => {
+    const kanji = normalizeKanjiSpelling(item?.kanji || item?.word);
+    if (!kanji) return;
+    stats.generatedWords.add(kanji);
+    stats.generatedTotal += 1;
+  });
+}
+
+function mergeImportNoveltyStats(stats, importStats = {}) {
+  safeArray(importStats.importedWords).forEach(word => stats.importedWords.add(normalizeKanjiSpelling(word)));
+  [
+    'recent_history_30d',
+    'recently_recommended_candidate'
+  ].forEach(reason => {
+    safeArray(importStats.rejectedWordsByReason?.[reason]).forEach(word => stats.recentHistoryRejectedWords.add(normalizeKanjiSpelling(word)));
+  });
+  [
+    'favorite_or_pending',
+    'published',
+    'protected_word'
+  ].forEach(reason => {
+    safeArray(importStats.rejectedWordsByReason?.[reason]).forEach(word => stats.favoriteProtectedRejectedWords.add(normalizeKanjiSpelling(word)));
+  });
+  safeArray(importStats.rejectedWordsByReason?.duplicate_in_current_batch).forEach(word => stats.currentBatchDuplicateRejectedWords.add(normalizeKanjiSpelling(word)));
+  safeArray(importStats.rejectedWordsByReason?.review_required).forEach(word => stats.reviewRejectedWords.add(normalizeKanjiSpelling(word)));
+}
+
+function getNoveltySummary(stats) {
+  const generatedUniqueCount = stats.generatedWords.size;
+  const duplicateCount = Math.max(0, stats.generatedTotal - generatedUniqueCount);
+  const recentHistoryRejectedCount = stats.recentHistoryRejectedWords.size;
+  return {
+    generatedUniqueCount,
+    importedUniqueCount: stats.importedWords.size,
+    recentHistoryRejectedCount,
+    favoriteProtectedRejectedCount: stats.favoriteProtectedRejectedWords.size,
+    currentBatchDuplicateRejectedCount: stats.currentBatchDuplicateRejectedWords.size,
+    reviewRejectedCount: stats.reviewRejectedWords.size,
+    duplicateRate: stats.generatedTotal ? Math.round((duplicateCount / stats.generatedTotal) * 100) : 0,
+    historyCollisionRate: generatedUniqueCount ? Math.round((recentHistoryRejectedCount / generatedUniqueCount) * 100) : 0
+  };
 }
 
 function getStorageKey(url) {
@@ -259,32 +395,78 @@ function isBlockedCandidate(item = {}) {
   return Boolean(item.blocked || item.displayBucket === 'blocked');
 }
 
-function importAiCandidates(workflow, items = [], batch = {}) {
+function getSoftRejectedReason(item = {}) {
+  if (item.displayBucket === 'review' || item.riskLevel === 'high' || item.confidenceLevel === 'review' || item.evidenceType === 'unknown') return 'review_required';
+  if (isGenericTopicWord(item)) return 'generic_topic';
+  if (getExpressionValueScore(item) < 55) return 'low_expression_value';
+  if (getChineseTransparencyScore(item) >= 80) return 'high_chinese_transparency';
+  return '';
+}
+
+function importAiCandidates(workflow, items = [], batch = {}, options = {}) {
   const nextWorkflow = cleanStoredWorkflow(workflow);
   const stats = {
     generated: safeArray(items).length,
     imported: 0,
     skipped: 0,
     review: 0,
-    blocked: 0
+    blocked: 0,
+    importedWords: [],
+    rejectedWordsByReason: {}
   };
   const pool = { ...(nextWorkflow.candidatePool || {}) };
+  const seenInCurrentImport = new Set();
+  const rejectedReasonByKanji = {};
+  const addRejectedReason = (kanji, reason) => {
+    const cleanKanji = normalizeKanjiSpelling(kanji);
+    if (!cleanKanji || !reason) return;
+    rejectedReasonByKanji[cleanKanji] = reason;
+    if (!stats.rejectedWordsByReason[reason]) stats.rejectedWordsByReason[reason] = [];
+    stats.rejectedWordsByReason[reason].push(cleanKanji);
+  };
   safeArray(items).forEach(item => {
-    const kanji = cleanText(item.kanji, 80);
-    if (!kanji || isBlockedCandidate(item)) {
+    const kanji = normalizeKanjiSpelling(item.kanji);
+    if (!kanji) {
       stats.blocked += 1;
       stats.skipped += 1;
+      addRejectedReason(item.kanji, 'missing_kanji');
+      return;
+    }
+    if (seenInCurrentImport.has(kanji)) {
+      stats.skipped += 1;
+      addRejectedReason(kanji, 'duplicate_in_current_batch');
+      return;
+    }
+    seenInCurrentImport.add(kanji);
+    if (isBlockedCandidate(item)) {
+      stats.blocked += 1;
+      stats.skipped += 1;
+      addRejectedReason(kanji, 'blocked');
+      return;
+    }
+    const exclusionReason = getExclusionReason(kanji, options.exclusionContext);
+    if (exclusionReason) {
+      stats.skipped += 1;
+      addRejectedReason(kanji, exclusionReason);
       return;
     }
     if (isFavoriteOrPublished(kanji, nextWorkflow)) {
       stats.skipped += 1;
+      addRejectedReason(kanji, nextWorkflow.statuses?.[kanji] === 'published' || getPublishedWords(nextWorkflow).has(kanji) ? 'published' : 'favorite_or_pending');
       return;
     }
     const existing = pool[kanji] || {};
+    if (isProtectedWordExcluded(existing)) {
+      stats.skipped += 1;
+      addRejectedReason(kanji, 'protected_word');
+      return;
+    }
     const isReview = item.displayBucket === 'review'
       || item.riskLevel === 'high'
       || item.confidenceLevel === 'review'
       || item.evidenceType === 'unknown';
+    const softRejectedReason = getSoftRejectedReason({ ...item, kanji });
+    if (softRejectedReason) addRejectedReason(kanji, softRejectedReason);
     pool[kanji] = {
       ...existing,
       ...item,
@@ -303,10 +485,26 @@ function importAiCandidates(workflow, items = [], batch = {}) {
       lastReviewState: isReview ? 'review' : (item.lastReviewState || existing.lastReviewState || 'watch')
     };
     stats.imported += 1;
+    stats.importedWords.push(kanji);
     if (isReview) stats.review += 1;
   });
   const nextBatches = safeArray(nextWorkflow.aiBatches).map(item => item.id === batch.id
-    ? { ...item, importedCount: stats.imported, skippedCount: stats.skipped }
+    ? {
+        ...item,
+        acceptedCount: stats.imported,
+        rejectedCount: stats.skipped,
+        importedCount: stats.imported,
+        skippedCount: stats.skipped,
+        items: safeArray(item.items).map(batchItem => {
+          const kanji = normalizeKanjiSpelling(batchItem.kanji);
+          const rejectedReason = rejectedReasonByKanji[kanji] || batchItem.rejectedReason || '';
+          return {
+            ...batchItem,
+            kanji,
+            rejectedReason
+          };
+        })
+      }
     : item);
   return {
     workflow: cleanStoredWorkflow({
@@ -320,10 +518,13 @@ function importAiCandidates(workflow, items = [], batch = {}) {
 }
 
 function buildCandidatePayload(workflow, options = {}) {
+  const exclusionContext = options.exclusionContext || buildDeepSeekExclusionContext();
   return {
     action: 'stable_today',
     input: '',
     count: cleanInteger(options.count, DEFAULT_CANDIDATE_COUNT, 1, 100),
+    batchHint: cleanText(options.batchHint, 1000),
+    avoidWords: exclusionContext.excludedWords,
     preferences: {
       includeMemes: true,
       includeHighRisk: 'review_only',
@@ -333,6 +534,7 @@ function buildCandidatePayload(workflow, options = {}) {
       favorites: workflow.words,
       negativeFeedback: workflow.feedback,
       publishedWords: safeArray(workflow.publishedRecords).map(record => record.word).filter(Boolean),
+      deepSeekExclusion: exclusionContext,
       existingCandidates: Object.values(workflow.candidatePool || {}).map(entry => ({
         kanji: entry.kanji,
         candidateType: entry.candidateType,
@@ -577,7 +779,15 @@ function cleanRefreshRunState(state = {}) {
     error: cleanText(record.error, 500),
     errorStack: cleanText(record.errorStack, 3000),
     generatedCandidates: cleanInteger(record.generatedCandidates, 0, 0, 10000),
+    generatedUniqueCount: cleanInteger(record.generatedUniqueCount, 0, 0, 10000),
     importedCandidates: cleanInteger(record.importedCandidates, 0, 0, 10000),
+    importedUniqueCount: cleanInteger(record.importedUniqueCount, 0, 0, 10000),
+    recentHistoryRejectedCount: cleanInteger(record.recentHistoryRejectedCount, 0, 0, 10000),
+    favoriteProtectedRejectedCount: cleanInteger(record.favoriteProtectedRejectedCount, 0, 0, 10000),
+    currentBatchDuplicateRejectedCount: cleanInteger(record.currentBatchDuplicateRejectedCount, 0, 0, 10000),
+    reviewRejectedCount: cleanInteger(record.reviewRejectedCount, 0, 0, 10000),
+    duplicateRate: cleanInteger(record.duplicateRate, 0, 0, 100),
+    historyCollisionRate: cleanInteger(record.historyCollisionRate, 0, 0, 100),
     todayCount: cleanInteger(record.todayCount, 0, 0, 1000),
     generatedCards: cleanInteger(record.generatedCards, 0, 0, 1000),
     queuedCards: cleanInteger(record.queuedCards, 0, 0, 1000),
@@ -667,7 +877,15 @@ async function runDailyRefreshJob({ origin, env, key, today, options = {}, reque
     stepIndex: getStepIndex('started'),
     totalSteps: REFRESH_STEPS.length,
     generatedCandidates: 0,
+    generatedUniqueCount: 0,
     importedCandidates: 0,
+    importedUniqueCount: 0,
+    recentHistoryRejectedCount: 0,
+    favoriteProtectedRejectedCount: 0,
+    currentBatchDuplicateRejectedCount: 0,
+    reviewRejectedCount: 0,
+    duplicateRate: 0,
+    historyCollisionRate: 0,
     todayCount: 0,
     generatedCards: 0,
     queuedCards: 0,
@@ -704,38 +922,67 @@ async function runDailyRefreshJob({ origin, env, key, today, options = {}, reque
         status: 'completed',
         finishedAt: nowIso(),
         generatedCandidates: 0,
+        generatedUniqueCount: 0,
         importedCandidates: 0,
+        importedUniqueCount: 0,
+        recentHistoryRejectedCount: 0,
+        favoriteProtectedRejectedCount: 0,
+        currentBatchDuplicateRejectedCount: 0,
+        reviewRejectedCount: 0,
+        duplicateRate: 0,
+        historyCollisionRate: 0,
         todayCount: stored.todaySnapshot.words.length,
         generatedCards: 0,
         queuedCards: 0
       });
     }
 
+    const rankingHistoryWords = await readRankingHistoryWords(env, today, 30);
+    const noveltyStats = createNoveltyStats();
+    const getNoveltyPatch = () => getNoveltySummary(noveltyStats);
+    const getExclusionContext = workflow => buildWorkflowExclusionContext(workflow, rankingHistoryWords, {
+      currentBatchWords: [...noveltyStats.generatedWords]
+    });
+
     await writeStep('generate_candidates_start');
-    const generated = await generateCandidates(origin, stored, { count: runState.count });
+    const initialExclusionContext = getExclusionContext(stored);
+    const generated = await generateCandidates(origin, stored, {
+      count: runState.count,
+      exclusionContext: initialExclusionContext,
+      batchHint: '首批每日热门候选：请避开禁止列表，生成新的低风险日语表达。'
+    });
+    recordGeneratedWords(noveltyStats, generated.items);
     let totalGenerated = generated.items.length;
-    await writeStep('generate_candidates_done', { generatedCandidates: totalGenerated });
+    await writeStep('generate_candidates_done', { generatedCandidates: totalGenerated, ...getNoveltyPatch() });
     const workflowWithBatch = cleanStoredWorkflow({
       ...stored,
       aiBatches: [generated.batch, ...safeArray(stored.aiBatches)].slice(0, 100)
     });
-    await writeStep('import_candidates_start', { generatedCandidates: totalGenerated });
-    let imported = importAiCandidates(workflowWithBatch, generated.items, generated.batch);
+    await writeStep('import_candidates_start', { generatedCandidates: totalGenerated, ...getNoveltyPatch() });
+    let imported = importAiCandidates(workflowWithBatch, generated.items, generated.batch, {
+      exclusionContext: initialExclusionContext
+    });
+    mergeImportNoveltyStats(noveltyStats, imported.stats);
     let totalImported = imported.stats.imported;
     await writeStep('import_candidates_done', {
       generatedCandidates: totalGenerated,
-      importedCandidates: totalImported
+      importedCandidates: totalImported,
+      ...getNoveltyPatch()
     });
     await writeStep('select_today_start', {
       generatedCandidates: totalGenerated,
-      importedCandidates: totalImported
+      importedCandidates: totalImported,
+      ...getNoveltyPatch()
     });
-    const rankingHistoryWords = await readRankingHistoryWords(env, today, 30);
-    let snapshot = generateTodaySnapshot({ ...imported.workflow, rankingHistoryWords }, { mode: 'create', createdBy: 'server' });
+    let snapshot = generateTodaySnapshot(
+      { ...imported.workflow, rankingHistoryWords },
+      { mode: 'create', createdBy: 'server', noveltySummary: getNoveltyPatch() }
+    );
     await writeStep('select_today_done', {
       generatedCandidates: totalGenerated,
       importedCandidates: totalImported,
-      todayCount: safeArray(snapshot.workflow.todaySnapshot?.words).length
+      todayCount: safeArray(snapshot.workflow.todaySnapshot?.words).length,
+      ...getNoveltyPatch()
     });
 
     for (let round = 0; snapshot.result.shortage && round < runState.maxTopUpRounds; round += 1) {
@@ -744,16 +991,24 @@ async function runDailyRefreshJob({ origin, env, key, today, options = {}, reque
         topUpRoundsUsed: round,
         generatedCandidates: totalGenerated,
         importedCandidates: totalImported,
-        todayCount: safeArray(snapshot.workflow.todaySnapshot?.words).length
+        todayCount: safeArray(snapshot.workflow.todaySnapshot?.words).length,
+        ...getNoveltyPatch()
       });
-      const extraGenerated = await generateCandidates(origin, snapshot.workflow, { count: runState.count });
+      const topUpExclusionContext = getExclusionContext(snapshot.workflow);
+      const extraGenerated = await generateCandidates(origin, snapshot.workflow, {
+        count: runState.count,
+        exclusionContext: topUpExclusionContext,
+        batchHint: `topUp 补词：当前今日热门只有 ${safeArray(snapshot.workflow.todaySnapshot?.words).length}/20 个。首批、本轮已生成、今日已选和近 30 天历史词都在禁止列表里，必须换新方向。`
+      });
+      recordGeneratedWords(noveltyStats, extraGenerated.items);
       totalGenerated += extraGenerated.items.length;
       await writeStep('top_up_generate_done', {
         topUpTriggered: true,
         topUpRoundsUsed: round + 1,
         generatedCandidates: totalGenerated,
         importedCandidates: totalImported,
-        todayCount: safeArray(snapshot.workflow.todaySnapshot?.words).length
+        todayCount: safeArray(snapshot.workflow.todaySnapshot?.words).length,
+        ...getNoveltyPatch()
       });
       const workflowWithExtraBatch = cleanStoredWorkflow({
         ...snapshot.workflow,
@@ -764,24 +1019,33 @@ async function runDailyRefreshJob({ origin, env, key, today, options = {}, reque
         topUpRoundsUsed: round + 1,
         generatedCandidates: totalGenerated,
         importedCandidates: totalImported,
-        todayCount: safeArray(snapshot.workflow.todaySnapshot?.words).length
+        todayCount: safeArray(snapshot.workflow.todaySnapshot?.words).length,
+        ...getNoveltyPatch()
       });
-      imported = importAiCandidates(workflowWithExtraBatch, extraGenerated.items, extraGenerated.batch);
+      imported = importAiCandidates(workflowWithExtraBatch, extraGenerated.items, extraGenerated.batch, {
+        exclusionContext: topUpExclusionContext
+      });
+      mergeImportNoveltyStats(noveltyStats, imported.stats);
       totalImported += imported.stats.imported;
       await writeStep('top_up_import_done', {
         topUpTriggered: true,
         topUpRoundsUsed: round + 1,
         generatedCandidates: totalGenerated,
         importedCandidates: totalImported,
-        todayCount: safeArray(snapshot.workflow.todaySnapshot?.words).length
+        todayCount: safeArray(snapshot.workflow.todaySnapshot?.words).length,
+        ...getNoveltyPatch()
       });
-      snapshot = generateTodaySnapshot({ ...imported.workflow, rankingHistoryWords }, { mode: 'fill', createdBy: 'server' });
+      snapshot = generateTodaySnapshot(
+        { ...imported.workflow, rankingHistoryWords },
+        { mode: 'fill', createdBy: 'server', noveltySummary: getNoveltyPatch() }
+      );
       await writeStep('top_up_select_done', {
         topUpTriggered: true,
         topUpRoundsUsed: round + 1,
         generatedCandidates: totalGenerated,
         importedCandidates: totalImported,
-        todayCount: safeArray(snapshot.workflow.todaySnapshot?.words).length
+        todayCount: safeArray(snapshot.workflow.todaySnapshot?.words).length,
+        ...getNoveltyPatch()
       });
       if (!imported.stats.imported) break;
     }
@@ -791,7 +1055,8 @@ async function runDailyRefreshJob({ origin, env, key, today, options = {}, reque
     await writeStep('save_workflow_start', {
       generatedCandidates: totalGenerated,
       importedCandidates: totalImported,
-      todayCount: safeArray(finalWorkflow.todaySnapshot?.words).length
+      todayCount: safeArray(finalWorkflow.todaySnapshot?.words).length,
+      ...getNoveltyPatch()
     });
     await env.FAVORITES.put(key, JSON.stringify(finalWorkflow));
     const todayWords = safeArray(finalWorkflow.todaySnapshot?.words);
@@ -800,7 +1065,8 @@ async function runDailyRefreshJob({ origin, env, key, today, options = {}, reque
       generatedCandidates: totalGenerated,
       importedCandidates: totalImported,
       todayCount: todayWords.length,
-      queuedCards: cardTargets.length
+      queuedCards: cardTargets.length,
+      ...getNoveltyPatch()
     });
 
     await writeStep('completed', {
@@ -811,6 +1077,7 @@ async function runDailyRefreshJob({ origin, env, key, today, options = {}, reque
       todayCount: todayWords.length,
       generatedCards: 0,
       queuedCards: cardTargets.length,
+      ...getNoveltyPatch(),
       cardGenerationSkipped: Boolean(runState.skipCards)
     });
 
@@ -910,7 +1177,15 @@ export async function onRequest(context) {
         mode: options.mode,
         count: options.count,
         skipCards: options.skipCards,
-        maxTopUpRounds: options.maxTopUpRounds
+        maxTopUpRounds: options.maxTopUpRounds,
+        generatedUniqueCount: 0,
+        importedUniqueCount: 0,
+        recentHistoryRejectedCount: 0,
+        favoriteProtectedRejectedCount: 0,
+        currentBatchDuplicateRejectedCount: 0,
+        reviewRejectedCount: 0,
+        duplicateRate: 0,
+        historyCollisionRate: 0
       });
       return jsonResponse({
         ok: true,
@@ -940,7 +1215,15 @@ export async function onRequest(context) {
       stepIndex: getStepIndex('started'),
       totalSteps: REFRESH_STEPS.length,
       generatedCandidates: 0,
+      generatedUniqueCount: 0,
       importedCandidates: 0,
+      importedUniqueCount: 0,
+      recentHistoryRejectedCount: 0,
+      favoriteProtectedRejectedCount: 0,
+      currentBatchDuplicateRejectedCount: 0,
+      reviewRejectedCount: 0,
+      duplicateRate: 0,
+      historyCollisionRate: 0,
       todayCount: 0,
       generatedCards: 0,
       queuedCards: 0,
@@ -1002,7 +1285,15 @@ export async function onRequest(context) {
       ok: false,
       status: 'failed',
       generatedCandidates: 0,
+      generatedUniqueCount: 0,
       importedCandidates: 0,
+      importedUniqueCount: 0,
+      recentHistoryRejectedCount: 0,
+      favoriteProtectedRejectedCount: 0,
+      currentBatchDuplicateRejectedCount: 0,
+      reviewRejectedCount: 0,
+      duplicateRate: 0,
+      historyCollisionRate: 0,
       todayCount: 0,
       generatedCards: 0,
       dateKey: today,
