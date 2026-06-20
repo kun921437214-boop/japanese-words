@@ -5,3 +5,7 @@ pages_build_output_dir = "."
 [[kv_namespaces]]
 binding = "FAVORITES"
 id = "969904de6cf24fe6982d2b8ee01c9b1a"
+
+[[env.preview.kv_namespaces]]
+binding = "FAVORITES"
+id = "d4d4852d9be04115830789aaffbf4aca"

@@ -7,6 +7,14 @@ const TODAY_SNAPSHOT_HISTORY_LIMIT = 45;
 const AI_PREVIEW_ITEMS_LIMIT = 100;
 const TEAM_DISMISSED_WORDS_LIMIT = 100;
 const TODAY_SNAPSHOT_VERSION = 1;
+export const TODAY_SNAPSHOT_GENERATOR_VERSION = 'daily-v4-dedup30-server';
+const APP_TIME_ZONE = 'Asia/Shanghai';
+const DATE_KEY_FORMATTER = new Intl.DateTimeFormat('en-US', {
+  timeZone: APP_TIME_ZONE,
+  year: 'numeric',
+  month: '2-digit',
+  day: '2-digit'
+});
 
 const STATUS_OPTIONS = ['none', 'pending', 'published'];
 const NEGATIVE_FEEDBACK_REASONS = [
@@ -37,6 +45,8 @@ const EMOTION_TONE_OPTIONS = ['positive', 'neutral', 'negative', 'aesthetic', 'l
 const REVIEW_REASON_TYPE_OPTIONS = ['uncertain_usage', 'too_niche', 'possible_wrong_meaning', 'ip_brand_role', 'privacy_sensitive', 'offensive', 'too_basic'];
 const SOURCE_TYPE_OPTIONS = ['deepseek_generated', 'deepseek_reviewed', 'manual_keep', 'audit_missing'];
 const SOURCE_PROMPT_OPTIONS = ['stable_today', 'wild_ideas', 'generate_candidates', 'extract_from_materials', 'enrich_words', 'generate_word_card', 'rerank_candidates', 'audit_library_for_delete', 'audit_missing_library_words'];
+const RECOMMENDATION_ORIGIN_TYPES = ['deepseek_new', 'candidate_pool', 'history_fallback', 'local_word_bank', 'manual_added', 'today_backfill', 'dedup_relaxed', 'unknown'];
+const RECOMMENDATION_LEVEL_OPTIONS = ['S', 'A', 'B', 'C', ''];
 const PROMPT_VERSION_BY_ACTION = {
   stable_today: 'candidate-v3',
   wild_ideas: 'candidate-v3',
@@ -77,6 +87,14 @@ function uniqueStrings(values, maxLength = 80, limit = 500) {
 
 function isIsoLike(value) {
   return typeof value === 'string' && value.trim().length > 0;
+}
+
+export function workflowDateKey(date = new Date()) {
+  const parts = DATE_KEY_FORMATTER.formatToParts(date);
+  const year = parts.find(part => part.type === 'year')?.value;
+  const month = parts.find(part => part.type === 'month')?.value;
+  const day = parts.find(part => part.type === 'day')?.value;
+  return `${year}-${month}-${day}`;
 }
 
 function latestString(...values) {
@@ -298,6 +316,100 @@ export function cleanCandidateScoreBreakdown(breakdown = {}) {
   };
 }
 
+function cleanRecommendationAuditTrace(trace = {}) {
+  return {
+    ...(trace || {}),
+    originType: cleanEnum(trace?.originType, RECOMMENDATION_ORIGIN_TYPES, 'unknown'),
+    originLabel: cleanText(trace?.originLabel, 80),
+    sourceAction: cleanText(trace?.sourceAction, 120),
+    sourceBatchId: cleanText(trace?.sourceBatchId, 120),
+    fromDeepSeekNew: Boolean(trace?.fromDeepSeekNew),
+    fromCandidatePool: Boolean(trace?.fromCandidatePool),
+    fromHistoryFallback: Boolean(trace?.fromHistoryFallback),
+    fromLocalFallback: Boolean(trace?.fromLocalFallback),
+    fromManual: Boolean(trace?.fromManual),
+    isBackfill: Boolean(trace?.isBackfill),
+    isDedupRelaxed: Boolean(trace?.isDedupRelaxed),
+    dedupDaysUsed: clamp(toInt(trace?.dedupDaysUsed, 0), 0, 365),
+    selectedReason: cleanText(trace?.selectedReason, 1000),
+    selectedAt: isIsoLike(trace?.selectedAt) ? trace.selectedAt : ''
+  };
+}
+
+function cleanRecommendationAuditItem(item = {}) {
+  const kanji = cleanText(item?.kanji, 80);
+  if (!kanji) return null;
+  return {
+    ...(item || {}),
+    kanji,
+    meaning: cleanText(item?.meaning, 240),
+    recommendationLevel: cleanEnum(item?.recommendationLevel, RECOMMENDATION_LEVEL_OPTIONS, ''),
+    riskLevel: cleanText(item?.riskLevel, 80),
+    originType: cleanEnum(item?.originType, RECOMMENDATION_ORIGIN_TYPES, 'unknown'),
+    originLabel: cleanText(item?.originLabel, 80),
+    isBackfill: Boolean(item?.isBackfill),
+    isDedupRelaxed: Boolean(item?.isDedupRelaxed),
+    dedupDaysUsed: clamp(toInt(item?.dedupDaysUsed, 0), 0, 365),
+    finalScore: clamp(toInt(item?.finalScore, 0), 0, 100),
+    accountLearningBonus: clamp(toInt(item?.accountLearningBonus, 0), -50, 50),
+    accountLearningPenalty: clamp(toInt(item?.accountLearningPenalty, 0), 0, 100),
+    expressionValueScore: clamp(toInt(item?.expressionValueScore, 0), 0, 100),
+    chineseTransparencyScore: clamp(toInt(item?.chineseTransparencyScore, 0), 0, 100),
+    genericTopicPenalty: clamp(toInt(item?.genericTopicPenalty, 0), 0, 100),
+    selectedReason: cleanText(item?.selectedReason, 1000),
+    diagnosis: safeArray(item?.diagnosis).map(text => cleanText(text, 240)).filter(Boolean).slice(0, 8)
+  };
+}
+
+function cleanNumberSummary(summary = {}, keys = [], min = 0, max = 1000) {
+  return keys.reduce((result, key) => {
+    result[key] = clamp(toInt(summary?.[key], 0), min, max);
+    return result;
+  }, {});
+}
+
+function cleanNoveltySummary(summary = {}) {
+  const countKeys = [
+    'generatedUniqueCount',
+    'importedUniqueCount',
+    'recentHistoryRejectedCount',
+    'favoriteProtectedRejectedCount',
+    'currentBatchDuplicateRejectedCount',
+    'reviewRejectedCount'
+  ];
+  return {
+    ...cleanNumberSummary(summary, countKeys, 0, 10000),
+    duplicateRate: clamp(toInt(summary?.duplicateRate, 0), 0, 100),
+    historyCollisionRate: clamp(toInt(summary?.historyCollisionRate, 0), 0, 100)
+  };
+}
+
+function cleanRecommendationAuditSummary(audit = {}) {
+  const sourceSummaryKeys = [...RECOMMENDATION_ORIGIN_TYPES];
+  const qualitySummaryKeys = [
+    'averageFinalScore',
+    'averageExpressionValueScore',
+    'averageChineseTransparencyScore',
+    'genericTopicCount',
+    'highTransparencyCount',
+    'sLevelCount',
+    'aLevelCount',
+    'bLevelCount',
+    'cLevelCount'
+  ];
+  return {
+    ...(audit || {}),
+    date: cleanText(audit?.date, 20),
+    total: clamp(toInt(audit?.total, 0), 0, 100),
+    sourceSummary: cleanNumberSummary(audit?.sourceSummary, sourceSummaryKeys, 0, 1000),
+    qualitySummary: cleanNumberSummary(audit?.qualitySummary, qualitySummaryKeys, 0, 1000),
+    noveltySummary: cleanNoveltySummary(audit?.noveltySummary || {}),
+    diagnosis: safeArray(audit?.diagnosis).map(text => cleanText(text, 300)).filter(Boolean).slice(0, 12),
+    items: safeArray(audit?.items).map(cleanRecommendationAuditItem).filter(Boolean).slice(0, 100),
+    createdAt: isIsoLike(audit?.createdAt) ? audit.createdAt : ''
+  };
+}
+
 function normalizeSourceType(value) {
   const cleanValue = cleanText(value, 80);
   if (cleanValue === 'deepseek_api') return 'deepseek_generated';
@@ -368,6 +480,7 @@ export function cleanCandidatePoolEntry(kanji, entry = {}) {
     expressionValueScore: clamp(toInt(entry?.expressionValueScore, 0), 0, 100),
     accountLearningTone: cleanText(entry?.accountLearningTone, 80),
     accountLearningBonus: clamp(toInt(entry?.accountLearningBonus, 0), -30, 30),
+    recommendationAudit: cleanRecommendationAuditTrace(entry?.recommendationAudit || {}),
     wasRecommended: Boolean(entry?.wasRecommended),
     historicalBackfill: Boolean(entry?.historicalBackfill),
     lastDecayAt: isIsoLike(entry?.lastDecayAt) ? entry.lastDecayAt : '',
@@ -401,6 +514,7 @@ export function cleanAiBatch(batch = {}, index = 0) {
     ...(batch || {}),
     id,
     action,
+    promptType: cleanText(batch?.promptType || action, 120),
     model: cleanText(batch?.model, 120),
     createdAt: isIsoLike(batch?.createdAt) ? batch.createdAt : '',
     promptVersion: cleanText(batch?.promptVersion || getPromptVersion(action), 80),
@@ -408,11 +522,37 @@ export function cleanAiBatch(batch = {}, index = 0) {
     rawOutput: cleanTraceText(batch?.rawOutput, 8000),
     normalizedOutput: cleanTraceText(batch?.normalizedOutput, 8000),
     reviewResult: cleanEnum(batch?.reviewResult, ['accepted', 'rejected', 'edited'], ''),
+    rawCount: clamp(toInt(batch?.rawCount ?? batch?.itemCount, 0), 0, 1000),
+    normalizedCount: clamp(toInt(batch?.normalizedCount ?? batch?.itemCount, 0), 0, 1000),
+    acceptedCount: clamp(toInt(batch?.acceptedCount ?? batch?.importedCount, 0), 0, 1000),
+    rejectedCount: clamp(toInt(batch?.rejectedCount ?? batch?.skippedCount, 0), 0, 1000),
     itemCount: clamp(toInt(batch?.itemCount, 0), 0, 1000),
     importedCount: clamp(toInt(batch?.importedCount, 0), 0, 1000),
     skippedCount: clamp(toInt(batch?.skippedCount, 0), 0, 1000),
     promptSummary: cleanText(batch?.promptSummary, 500),
-    trendNotes: cleanText(batch?.trendNotes, 1000)
+    trendNotes: cleanText(batch?.trendNotes, 1000),
+    items: safeArray(batch?.items).map((item, itemIndex) => cleanAiBatchItem(item, itemIndex, action, id)).filter(Boolean).slice(0, 200)
+  };
+}
+
+function cleanAiBatchItem(item = {}, index = 0, fallbackAction = '', fallbackBatchId = '') {
+  const kanji = cleanText(item?.kanji, 80);
+  if (!kanji) return null;
+  return {
+    ...(item || {}),
+    kanji,
+    kana: cleanText(item?.kana || item?.reading, 120),
+    romaji: cleanText(item?.romaji, 120),
+    meaning: cleanText(item?.meaning, 240),
+    candidateType: cleanEnum(item?.candidateType, CANDIDATE_TYPE_OPTIONS, '稳定候选'),
+    displayBucket: cleanEnum(item?.displayBucket, DISPLAY_BUCKET_OPTIONS, 'long_term'),
+    riskLevel: cleanEnum(item?.riskLevel, RISK_LEVEL_OPTIONS, 'low'),
+    confidenceLevel: cleanEnum(item?.confidenceLevel, CONFIDENCE_LEVEL_OPTIONS, 'medium'),
+    sourceAction: cleanText(item?.sourceAction || fallbackAction, 120),
+    sourceBatchId: cleanText(item?.sourceBatchId || fallbackBatchId, 120),
+    rawRank: clamp(toInt(item?.rawRank, index + 1), 0, 9999),
+    rejectedReason: cleanText(item?.rejectedReason, 500),
+    selectedForToday: Boolean(item?.selectedForToday)
   };
 }
 
@@ -501,7 +641,15 @@ export function cleanTodaySnapshot(snapshot = {}) {
     generatedAt: isIsoLike(snapshot?.generatedAt) ? snapshot.generatedAt : '',
     source: cleanText(snapshot?.source || 'candidatePool', 80) || 'candidatePool',
     batchIds: uniqueStrings(snapshot?.batchIds, 120, 30),
-    version: clamp(toInt(snapshot?.version, words.length ? TODAY_SNAPSHOT_VERSION : 0), 0, 999)
+    version: clamp(toInt(snapshot?.version, words.length ? TODAY_SNAPSHOT_VERSION : 0), 0, 999),
+    generatorVersion: cleanText(snapshot?.generatorVersion, 80),
+    createdBy: cleanEnum(snapshot?.createdBy, ['server', 'frontend', 'worker', 'manual'], ''),
+    dedupDaysUsed: clamp(toInt(snapshot?.dedupDaysUsed, 0), 0, 365),
+    relaxedDedup: Boolean(snapshot?.relaxedDedup),
+    shortage: Boolean(snapshot?.shortage),
+    repeated30Count: clamp(toInt(snapshot?.repeated30Count, 0), 0, 20),
+    repeated30Words: uniqueStrings(snapshot?.repeated30Words, 80, 20),
+    recommendationAudit: cleanRecommendationAuditSummary(snapshot?.recommendationAudit || {})
   };
 }
 
@@ -518,8 +666,16 @@ export function cleanHistorySnapshot(snapshot = {}, fallbackDateKey = '') {
     source: cleanText(snapshot?.source || 'todaySnapshot', 80) || 'todaySnapshot',
     batchIds: uniqueStrings(snapshot?.batchIds, 120, 30),
     version: clamp(toInt(snapshot?.version, words.length ? TODAY_SNAPSHOT_VERSION : 1), 1, 999),
+    generatorVersion: cleanText(snapshot?.generatorVersion, 80),
+    createdBy: cleanEnum(snapshot?.createdBy, ['server', 'frontend', 'worker', 'manual'], ''),
+    dedupDaysUsed: clamp(toInt(snapshot?.dedupDaysUsed, 0), 0, 365),
+    relaxedDedup: Boolean(snapshot?.relaxedDedup),
+    shortage: Boolean(snapshot?.shortage),
+    repeated30Count: clamp(toInt(snapshot?.repeated30Count, 0), 0, 20),
+    repeated30Words: uniqueStrings(snapshot?.repeated30Words, 80, 20),
     archivedAt: isIsoLike(snapshot?.archivedAt) ? snapshot.archivedAt : '',
-    title: cleanText(snapshot?.title || '今日 AI 候选归档', 120)
+    title: cleanText(snapshot?.title || '今日 AI 候选归档', 120),
+    recommendationAudit: cleanRecommendationAuditSummary(snapshot?.recommendationAudit || {})
   };
 }
 
@@ -563,6 +719,14 @@ export function archiveTodaySnapshotIntoSnapshotHistory(history = [], snapshot =
       source: 'todaySnapshot',
       batchIds: cleanSnapshot.batchIds,
       version: cleanSnapshot.version || TODAY_SNAPSHOT_VERSION,
+      generatorVersion: cleanSnapshot.generatorVersion,
+      createdBy: cleanSnapshot.createdBy,
+      dedupDaysUsed: cleanSnapshot.dedupDaysUsed,
+      relaxedDedup: cleanSnapshot.relaxedDedup,
+      shortage: cleanSnapshot.shortage,
+      repeated30Count: cleanSnapshot.repeated30Count,
+      repeated30Words: cleanSnapshot.repeated30Words,
+      recommendationAudit: cleanSnapshot.recommendationAudit,
       archivedAt: new Date().toISOString(),
       title: '每日热门归档'
     },
@@ -585,6 +749,14 @@ export function archiveTodaySnapshotIntoHistory(historySnapshots = {}, snapshot 
       source: 'todaySnapshot',
       batchIds: cleanSnapshot.batchIds,
       version: cleanSnapshot.version || TODAY_SNAPSHOT_VERSION,
+      generatorVersion: cleanSnapshot.generatorVersion,
+      createdBy: cleanSnapshot.createdBy,
+      dedupDaysUsed: cleanSnapshot.dedupDaysUsed,
+      relaxedDedup: cleanSnapshot.relaxedDedup,
+      shortage: cleanSnapshot.shortage,
+      repeated30Count: cleanSnapshot.repeated30Count,
+      repeated30Words: cleanSnapshot.repeated30Words,
+      recommendationAudit: cleanSnapshot.recommendationAudit,
       archivedAt,
       title: '今日 AI 候选归档'
     }
@@ -612,6 +784,31 @@ export function cleanStoredWorkflow(data = {}) {
     updated: isIsoLike(source.updated) ? source.updated : null,
     schemaVersion: clamp(toInt(source.schemaVersion, SCHEMA_VERSION), 1, 999)
   };
+}
+
+export function isCurrentGeneratorSnapshot(snapshot = {}, now = new Date()) {
+  const cleanSnapshot = cleanTodaySnapshot(snapshot);
+  return cleanSnapshot.dateKey === workflowDateKey(now)
+    && cleanSnapshot.words.length > 0
+    && cleanSnapshot.generatorVersion === TODAY_SNAPSHOT_GENERATOR_VERSION;
+}
+
+export function stripInvalidCurrentTodaySnapshot(workflow = {}, now = new Date()) {
+  const cleanWorkflow = cleanStoredWorkflow(workflow);
+  const snapshot = cleanTodaySnapshot(cleanWorkflow.todaySnapshot);
+  if (
+    snapshot.dateKey === workflowDateKey(now)
+    && snapshot.words.length > 0
+    && snapshot.generatorVersion !== TODAY_SNAPSHOT_GENERATOR_VERSION
+  ) {
+    return cleanStoredWorkflow({
+      ...cleanWorkflow,
+      todaySnapshot: cleanTodaySnapshot({}),
+      historySnapshots: archiveTodaySnapshotIntoHistory(cleanWorkflow.historySnapshots, snapshot),
+      todaySnapshotHistory: archiveTodaySnapshotIntoSnapshotHistory(cleanWorkflow.todaySnapshotHistory, snapshot)
+    });
+  }
+  return cleanWorkflow;
 }
 
 function statusRank(status) {
@@ -817,6 +1014,7 @@ function mergeCandidateEntry(localEntry = {}, remoteEntry = {}) {
     lastRecommendedAt: latestString(local.lastRecommendedAt, remote.lastRecommendedAt),
     recommendationCount: Math.max(toInt(local.recommendationCount, 0), toInt(remote.recommendationCount, 0)),
     ignoredCount: Math.max(toInt(local.ignoredCount, 0), toInt(remote.ignoredCount, 0)),
+    recommendationAudit: cleanRecommendationAuditTrace(recommendedSource.recommendationAudit || newer.recommendationAudit || older.recommendationAudit || {}),
     wasRecommended: Boolean(local.wasRecommended || remote.wasRecommended),
     lastOrigin: recommendedSource.lastOrigin || newer.lastOrigin,
     lastConfidenceLevel: recommendedSource.lastConfidenceLevel || newer.lastConfidenceLevel,
@@ -857,10 +1055,15 @@ function mergeAiBatches(localBatches = [], remoteBatches = []) {
     merged.set(batch.id, cleanAiBatch({
       ...fallback,
       ...winner,
+      rawCount: Math.max(toInt(fallback.rawCount, 0), toInt(winner.rawCount, 0)),
+      normalizedCount: Math.max(toInt(fallback.normalizedCount, 0), toInt(winner.normalizedCount, 0)),
+      acceptedCount: Math.max(toInt(fallback.acceptedCount, 0), toInt(winner.acceptedCount, 0)),
+      rejectedCount: Math.max(toInt(fallback.rejectedCount, 0), toInt(winner.rejectedCount, 0)),
       importedCount: Math.max(toInt(fallback.importedCount, 0), toInt(winner.importedCount, 0)),
       skippedCount: Math.max(toInt(fallback.skippedCount, 0), toInt(winner.skippedCount, 0)),
       rawOutput: winner.rawOutput || fallback.rawOutput,
-      normalizedOutput: winner.normalizedOutput || fallback.normalizedOutput
+      normalizedOutput: winner.normalizedOutput || fallback.normalizedOutput,
+      items: safeArray(winner.items).length >= safeArray(fallback.items).length ? winner.items : fallback.items
     }));
   });
   return [...merged.values()]
@@ -955,7 +1158,7 @@ export function mergeWorkflowForFullSave(currentWorkflow = {}, incomingWorkflow 
   const incomingRaw = incomingWorkflow && typeof incomingWorkflow === 'object' ? incomingWorkflow : {};
   const incoming = cleanStoredWorkflow({ ...current, ...incomingRaw });
   const merged = mergeWorkflow(current, incoming);
-  return cleanStoredWorkflow({
+  return stripInvalidCurrentTodaySnapshot(cleanStoredWorkflow({
     ...merged,
     words: Array.isArray(incomingRaw.words) ? incoming.words : current.words,
     statuses: incomingRaw.statuses ? incoming.statuses : current.statuses,
@@ -970,7 +1173,7 @@ export function mergeWorkflowForFullSave(currentWorkflow = {}, incomingWorkflow 
     todaySnapshotHistory: incomingRaw.todaySnapshotHistory ? mergeTodaySnapshotHistory(current.todaySnapshotHistory, incoming.todaySnapshotHistory) : current.todaySnapshotHistory,
     updated: isIsoLike(incomingRaw.updated) ? incomingRaw.updated : new Date().toISOString(),
     schemaVersion: SCHEMA_VERSION
-  });
+  }));
 }
 
 export {
