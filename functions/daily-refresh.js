@@ -145,16 +145,20 @@ function getRequestOption(url, body, name) {
 function getRefreshOptions(url, body = {}) {
   const mode = cleanText(getRequestOption(url, body, 'mode'), 40);
   const isPreviewTest = ['preview-test', 'test'].includes(mode);
+  const isManualMode = ['manual', 'inline', 'manual-inline'].includes(mode);
+  const requestedInline = cleanBoolean(getRequestOption(url, body, 'runInline'), false);
+  const runInline = isPreviewTest || isManualMode || requestedInline;
   const defaultCount = isPreviewTest ? PREVIEW_TEST_CANDIDATE_COUNT : DEFAULT_CANDIDATE_COUNT;
   const defaultTopUpRounds = isPreviewTest ? PREVIEW_TEST_MAX_TOP_UP_ROUNDS : DEFAULT_MAX_TOP_UP_ROUNDS;
   // Preview test allows a higher candidate count for controlled validation while keeping production defaults unchanged.
   const countMax = isPreviewTest ? PREVIEW_TEST_MAX_CANDIDATE_COUNT : 100;
   const topUpMax = isPreviewTest ? PREVIEW_TEST_MAX_TOP_UP_ROUNDS : DEFAULT_MAX_TOP_UP_ROUNDS;
   return {
-    mode: isPreviewTest ? 'preview-test' : 'default',
+    mode: isPreviewTest ? 'preview-test' : (isManualMode ? 'manual' : (requestedInline ? 'inline' : 'default')),
     isPreviewTest,
+    runInline,
     count: cleanInteger(getRequestOption(url, body, 'count'), defaultCount, 1, countMax),
-    skipCards: cleanBoolean(getRequestOption(url, body, 'skipCards'), isPreviewTest),
+    skipCards: cleanBoolean(getRequestOption(url, body, 'skipCards'), isPreviewTest || isManualMode || requestedInline),
     maxTopUpRounds: cleanInteger(getRequestOption(url, body, 'maxTopUpRounds'), defaultTopUpRounds, 0, topUpMax)
   };
 }
@@ -626,6 +630,14 @@ async function callJsonEndpoint(origin, path, payload, options = {}) {
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
     try {
+      if (typeof options.onAttempt === 'function') {
+        await options.onAttempt({
+          path,
+          callLabel,
+          attempt,
+          maxAttempts: maxRetries + 1
+        });
+      }
       const response = await fetch(`${origin}${path}`, {
         method: 'POST',
         headers: {
@@ -666,6 +678,17 @@ async function callJsonEndpoint(origin, path, payload, options = {}) {
       lastError = normalizedError;
       if (!retryable || attempt > maxRetries) {
         const suffix = attempt > 1 ? ` after ${attempt} attempts` : ` on attempt ${attempt}`;
+        if (typeof options.onFailure === 'function') {
+          await options.onFailure({
+            path,
+            callLabel,
+            attempt,
+            maxAttempts: maxRetries + 1,
+            status: normalizedError.status || 0,
+            error: normalizedError.message || String(normalizedError),
+            reason: normalizedError.reason || 'failed'
+          });
+        }
         throw createEndpointError(`AI call ${callLabel} failed${suffix}: ${normalizedError.message || normalizedError}`, {
           status: normalizedError.status || 0,
           retryable: false,
@@ -698,7 +721,9 @@ async function generateCandidates(origin, workflow, options = {}) {
   const payload = buildCandidatePayload(workflow, options);
   const data = await callJsonEndpoint(origin, '/ai-candidates', payload, {
     callLabel: options.callLabel,
-    onRetry: options.onRetry
+    onAttempt: options.onAttempt,
+    onRetry: options.onRetry,
+    onFailure: options.onFailure
   });
   const batchId = `daily_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
   const trace = getAiTraceFromUsage(data.usage || {}, payload);
@@ -878,6 +903,9 @@ function cleanRefreshRunState(state = {}) {
     aiRetryCount: cleanInteger(record.aiRetryCount, 0, 0, 100),
     aiRetryLastCall: cleanText(record.aiRetryLastCall, 120),
     aiRetryLastError: cleanText(record.aiRetryLastError, 500),
+    lastAiCallPath: cleanText(record.lastAiCallPath, 120),
+    lastAiCallAttempt: cleanInteger(record.lastAiCallAttempt, 0, 0, 10),
+    lastAiCallError: cleanText(record.lastAiCallError, 500),
     todayCount: cleanInteger(record.todayCount, 0, 0, 1000),
     generatedCards: cleanInteger(record.generatedCards, 0, 0, 1000),
     queuedCards: cleanInteger(record.queuedCards, 0, 0, 1000),
@@ -885,6 +913,8 @@ function cleanRefreshRunState(state = {}) {
     topUpRoundsUsed: cleanInteger(record.topUpRoundsUsed, 0, 0, 20),
     requestId: cleanText(record.requestId, 120),
     mode: cleanText(record.mode, 40),
+    runInline: Boolean(record.runInline),
+    executionMode: ['waitUntil', 'inline'].includes(record.executionMode) ? record.executionMode : '',
     count: cleanInteger(record.count, 0, 0, 100),
     skipCards: Boolean(record.skipCards),
     maxTopUpRounds: cleanInteger(record.maxTopUpRounds, 0, 0, 20),
@@ -980,6 +1010,9 @@ async function runDailyRefreshJob({ origin, env, key, today, options = {}, reque
     aiRetryCount: 0,
     aiRetryLastCall: '',
     aiRetryLastError: '',
+    lastAiCallPath: '',
+    lastAiCallAttempt: 0,
+    lastAiCallError: '',
     todayCount: 0,
     generatedCards: 0,
     queuedCards: 0,
@@ -989,6 +1022,8 @@ async function runDailyRefreshJob({ origin, env, key, today, options = {}, reque
     errorStack: '',
     requestId,
     mode: options.mode || 'default',
+    runInline: Boolean(options.runInline),
+    executionMode: ['waitUntil', 'inline'].includes(options.executionMode) ? options.executionMode : '',
     count: cleanInteger(options.count, DEFAULT_CANDIDATE_COUNT, 1, 100),
     skipCards: Boolean(options.skipCards),
     maxTopUpRounds: cleanInteger(options.maxTopUpRounds, DEFAULT_MAX_TOP_UP_ROUNDS, 0, DEFAULT_MAX_TOP_UP_ROUNDS),
@@ -1007,6 +1042,11 @@ async function runDailyRefreshJob({ origin, env, key, today, options = {}, reque
     });
     return writeRefreshRunState(env, today, runState);
   };
+  const writeAiAttempt = async details => writeStep(lastStep, {
+    lastAiCallPath: cleanText(details.path, 120),
+    lastAiCallAttempt: cleanInteger(details.attempt, 0, 0, 10),
+    lastAiCallError: ''
+  });
   const writeAiRetry = async details => {
     runState.aiCallFailures += 1;
     runState.aiRetryCount += 1;
@@ -1014,7 +1054,19 @@ async function runDailyRefreshJob({ origin, env, key, today, options = {}, reque
       aiCallFailures: runState.aiCallFailures,
       aiRetryCount: runState.aiRetryCount,
       aiRetryLastCall: cleanText(`${details.callLabel} attempt ${details.attempt}/${details.maxAttempts}`, 120),
-      aiRetryLastError: cleanText(`${details.error}; retrying in ${details.delayMs}ms`, 500)
+      aiRetryLastError: cleanText(`${details.error}; retrying in ${details.delayMs}ms`, 500),
+      lastAiCallPath: cleanText(details.path, 120),
+      lastAiCallAttempt: cleanInteger(details.attempt, 0, 0, 10),
+      lastAiCallError: cleanText(`${details.error}; retrying in ${details.delayMs}ms`, 500)
+    });
+  };
+  const writeAiFailure = async details => {
+    runState.aiCallFailures += 1;
+    return writeStep(lastStep, {
+      aiCallFailures: runState.aiCallFailures,
+      lastAiCallPath: cleanText(details.path, 120),
+      lastAiCallAttempt: cleanInteger(details.attempt, 0, 0, 10),
+      lastAiCallError: cleanText(details.error || 'AI call failed', 500)
     });
   };
 
@@ -1039,6 +1091,9 @@ async function runDailyRefreshJob({ origin, env, key, today, options = {}, reque
         aiRetryCount: 0,
         aiRetryLastCall: '',
         aiRetryLastError: '',
+        lastAiCallPath: '',
+        lastAiCallAttempt: 0,
+        lastAiCallError: '',
         todayCount: stored.todaySnapshot.words.length,
         generatedCards: 0,
         queuedCards: 0
@@ -1056,7 +1111,9 @@ async function runDailyRefreshJob({ origin, env, key, today, options = {}, reque
     const initialExclusionContext = getExclusionContext(stored);
     const generated = await generateCandidates(origin, stored, {
       callLabel: 'initial_candidates',
+      onAttempt: writeAiAttempt,
       onRetry: writeAiRetry,
+      onFailure: writeAiFailure,
       count: runState.count,
       exclusionContext: initialExclusionContext,
       batchHint: '首批每日热门候选：请避开禁止列表，生成新的低风险日语表达。'
@@ -1107,7 +1164,9 @@ async function runDailyRefreshJob({ origin, env, key, today, options = {}, reque
       const topUpExclusionContext = getExclusionContext(snapshot.workflow);
       const extraGenerated = await generateCandidates(origin, snapshot.workflow, {
         callLabel: `top_up_candidates_round_${round + 1}`,
+        onAttempt: writeAiAttempt,
         onRetry: writeAiRetry,
+        onFailure: writeAiFailure,
         count: runState.count,
         exclusionContext: topUpExclusionContext,
         batchHint: `topUp 补词：当前今日热门只有 ${safeArray(snapshot.workflow.todaySnapshot?.words).length}/20 个。首批、本轮已生成、今日已选和近 30 天历史词都在禁止列表里，必须换新方向。`
@@ -1230,6 +1289,7 @@ async function runDailyRefreshJob({ origin, env, key, today, options = {}, reque
       finishedAt: nowIso(),
       error: cleanText(error?.message || 'daily refresh failed', 500),
       aiRetryLastError: cleanText(error?.message || 'daily refresh failed', 500),
+      lastAiCallError: cleanText(error?.message || 'daily refresh failed', 500),
       errorStack: cleanText(error?.stack || '', 3000)
     });
   }
@@ -1302,7 +1362,12 @@ export async function onRequest(context) {
         aiCallFailures: 0,
         aiRetryCount: 0,
         aiRetryLastCall: '',
-        aiRetryLastError: ''
+        aiRetryLastError: '',
+        lastAiCallPath: '',
+        lastAiCallAttempt: 0,
+        lastAiCallError: '',
+        runInline: options.runInline,
+        executionMode: options.runInline ? 'inline' : ''
       });
       return jsonResponse({
         ok: true,
@@ -1345,6 +1410,9 @@ export async function onRequest(context) {
       aiRetryCount: 0,
       aiRetryLastCall: '',
       aiRetryLastError: '',
+      lastAiCallPath: '',
+      lastAiCallAttempt: 0,
+      lastAiCallError: '',
       todayCount: 0,
       generatedCards: 0,
       queuedCards: 0,
@@ -1354,6 +1422,8 @@ export async function onRequest(context) {
       errorStack: '',
       requestId,
       mode: options.mode,
+      runInline: options.runInline,
+      executionMode: options.runInline ? 'inline' : (typeof context.waitUntil === 'function' ? 'waitUntil' : 'inline'),
       count: options.count,
       skipCards: options.skipCards,
       maxTopUpRounds: options.maxTopUpRounds,
@@ -1364,12 +1434,17 @@ export async function onRequest(context) {
       cardError: ''
     });
 
+    const executionMode = options.runInline || typeof context.waitUntil !== 'function' ? 'inline' : 'waitUntil';
+    const jobOptions = {
+      ...options,
+      executionMode
+    };
     const job = runDailyRefreshJob({
       origin,
       env,
       key,
       today,
-      options,
+      options: jobOptions,
       requestId,
       startedAt,
       previousRun: {
@@ -1378,7 +1453,7 @@ export async function onRequest(context) {
         updatedAt: runState.updatedAt
       }
     });
-    if (options.isPreviewTest) {
+    if (executionMode === 'inline') {
       const finalState = await job;
       return jsonResponse({
         ok: finalState.status !== 'failed',
@@ -1388,11 +1463,7 @@ export async function onRequest(context) {
         staleAfterMs: STALE_RUNNING_MS
       }, finalState.status === 'failed' ? 500 : 200);
     }
-    if (typeof context.waitUntil === 'function') {
-      context.waitUntil(job);
-    } else {
-      await job;
-    }
+    context.waitUntil(job);
     return jsonResponse({
       ok: true,
       ...initialState,
@@ -1419,6 +1490,9 @@ export async function onRequest(context) {
       aiRetryCount: 0,
       aiRetryLastCall: '',
       aiRetryLastError: '',
+      lastAiCallPath: '',
+      lastAiCallAttempt: 0,
+      lastAiCallError: '',
       todayCount: 0,
       generatedCards: 0,
       dateKey: today,
