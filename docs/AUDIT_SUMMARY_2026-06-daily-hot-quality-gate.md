@@ -1,6 +1,6 @@
 # Daily Hot Quality Gate Audit Summary
 
-Updated: 2026-06-20
+Updated: 2026-06-21
 
 This is a sanitized summary of local Preview and recommendation audits for PR #1. It intentionally excludes secrets, tokens, API keys, and raw local audit artifacts.
 
@@ -118,41 +118,58 @@ It also tracks novelty metrics:
 - `duplicateRate`
 - `historyCollisionRate`
 
-## Current Unfinished Validation
+## Final Preview Validation
 
-The improved novelty logic has not yet completed a fresh `count=30` Preview POST.
-
-Reason:
+Latest Preview deployment:
 
 ```text
-Preview AUTO_REFRESH_SECRET authentication is still returning 401 Unauthorized for GET /daily-refresh?date=2026-06-19.
+https://61af0dc4.jiyimianbao.pages.dev
+https://fix-daily-hot-quality-gate-p.jiyimianbao.pages.dev
 ```
 
-Because the request is rejected by auth before workflow entry:
+Final read/write validation:
 
 ```text
-DeepSeek is not called.
-No new todaySnapshot is written.
-No cards are generated.
-Production is not polluted.
+GET /daily-refresh?date=2026-06-19: 200
+POST /daily-refresh?mode=preview-test&count=30&skipCards=true&maxTopUpRounds=1: 200
+status: completed
+todayCount: 20
+generatedCandidates: 60
+generatedUniqueCount: 50
+importedCandidates: 39
+importedUniqueCount: 39
+topUpTriggered: true
+topUpRoundsUsed: 1
+aiCallFailures: 0
+aiRetryCount: 0
+cardGenerationSkipped: true
 ```
 
-## Next Recommended Step
-
-Do not merge yet.
-
-Recommended sequence:
+Final todaySnapshot audit:
 
 ```text
-1. Rotate Preview-only AUTO_REFRESH_SECRET.
-2. Put only the raw secret value in Cloudflare Preview environment variables.
-3. Redeploy only the Preview deployment for fix/daily-hot-quality-gate-pr.
-4. Verify GET /daily-refresh?date=2026-06-19 returns 200 with Authorization: Bearer <secret>.
-5. Stop and record auth success.
-6. After explicit approval, run exactly one count=30 Preview test with skipCards=true and maxTopUpRounds=1.
+words: お久しぶりです、お元気ですか、お邪魔します、お世話になります、お疲れ様、よろしくお願いします、空気を読む、気分転換、勉強法、タイパ、詰む、おうち時間、リラックス、現場、自担、盛る、時短、お疲れ気味、やりくり、手応え
+low-quality words: 0
+generic topic words: 0
+high Chinese-transparency + low expression-value words: 0
+S/A/B/C: S 18 / A 1 / B 1 / C 0
+source summary: deepseek_new 8 / today_backfill 11 / candidate_pool 1
+dedupRelaxed: 0
+manual/protected selected words: 0
+repeated 30-day words: 0
 ```
 
-Do not call DeepSeek or POST `/daily-refresh` until GET auth returns 200.
+Interpretation:
+
+```text
+Preview auth is fixed.
+The improved DeepSeek novelty path reached 20 Daily Hot words.
+The transient top-up 502 was addressed by the retry patch and did not recur in the final run.
+Quality gate behavior remained strict: no low-quality or generic-topic words were admitted.
+`today_backfill` is a balanced-fill audit marker after homepage admission, not a low-quality old-word bypass.
+```
+
+Do not run more Preview POSTs before merge unless explicitly approved.
 
 ## Production Safety Summary
 
@@ -164,6 +181,7 @@ Production daily-refresh POST: not called
 Production KV clear: not done
 Production KV key count: remained 78 in checks
 Production codex-preview* keys: 0 in checks
+Production preview-test* keys: 0 in checks
 Production todaySnapshot: remained old 13-word snapshot in checks
 ```
 
@@ -172,11 +190,11 @@ Production todaySnapshot: remained old 13-word snapshot in checks
 Current recommendation:
 
 ```text
-Do not merge PR #1 yet.
+Recommend merge PR #1 after explicit owner approval.
 ```
 
 Reason:
 
 ```text
-The code fix is in place and local validation passed, but the latest Preview count=30 validation is blocked by Preview auth.
+Local validation passed, final Preview count=30 validation completed with todayCount 20, and Production remained unpolluted.
 ```

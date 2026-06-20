@@ -1,6 +1,6 @@
 # Japanese Words PR #1 Handoff: Daily Hot Quality Gate
 
-Updated: 2026-06-20
+Updated: 2026-06-21
 
 ## Current PR
 
@@ -8,8 +8,8 @@ Updated: 2026-06-20
 - PR: https://github.com/kun921437214-boop/japanese-words/pull/1
 - Branch: `fix/daily-hot-quality-gate-pr`
 - Base: `main`
-- Latest branch commit at handoff: `cd71424 fix: improve DeepSeek candidate novelty for daily refresh`
-- Status: PR is open and must not be merged yet.
+- Latest branch commit at final audit: `af633ea fix: retry transient daily refresh AI calls`
+- Status: PR is open, Preview validation passed, merge still requires explicit user approval.
 
 Resume locally:
 
@@ -79,6 +79,8 @@ Implemented on the PR branch:
 Important recent commits:
 
 ```text
+af633ea fix: retry transient daily refresh AI calls
+38cc420 docs: add daily hot quality gate handoff
 cd71424 fix: improve DeepSeek candidate novelty for daily refresh
 7ca4d22 test: allow larger preview daily refresh count
 2a74362 fix: bind preview pages kv namespace
@@ -117,10 +119,10 @@ Cloudflare Pages project:
 jiyimianbao
 ```
 
-Latest Preview deployment checked before handoff:
+Latest Preview deployment checked:
 
 ```text
-https://7ee5e40b.jiyimianbao.pages.dev
+https://61af0dc4.jiyimianbao.pages.dev
 ```
 
 Preview alias:
@@ -133,7 +135,7 @@ Preview branch and commit:
 
 ```text
 fix/daily-hot-quality-gate-pr
-cd71424
+af633ea
 ```
 
 Preview KV binding was confirmed separate from Production earlier in the validation flow:
@@ -143,22 +145,39 @@ Preview FAVORITES namespace: d4d4852d9be04115830789aaffbf4aca
 Production FAVORITES namespace: 969904de6cf24fe6982d2b8ee01c9b1a
 ```
 
-Latest safe Preview data state before handoff:
+Latest Preview validation result:
 
 ```text
-Preview todaySnapshot: empty today words after clearing only the current-day snapshot state
-Preview candidateCount: 378
-Preview favoriteCount: 25
-Preview publishedCount: 0
+GET /daily-refresh?date=2026-06-19: 200
+POST /daily-refresh?mode=preview-test&count=30&skipCards=true&maxTopUpRounds=1: 200
+status: completed
+todayCount: 20
+generatedCandidates: 60
+generatedUniqueCount: 50
+importedCandidates: 39
+importedUniqueCount: 39
+topUpTriggered: true
+topUpRoundsUsed: 1
+aiCallFailures: 0
+aiRetryCount: 0
+cardGenerationSkipped: true
 ```
 
-Current Preview blocker:
+Latest Preview todaySnapshot quality audit:
 
 ```text
-GET /daily-refresh?date=2026-06-19 still returns 401 Unauthorized.
+words: お久しぶりです、お元気ですか、お邪魔します、お世話になります、お疲れ様、よろしくお願いします、空気を読む、気分転換、勉強法、タイパ、詰む、おうち時間、リラックス、現場、自担、盛る、時短、お疲れ気味、やりくり、手応え
+low-quality words: 0
+generic topic words: 0
+high Chinese-transparency + low expression-value words: 0
+S/A/B/C: S 18 / A 1 / B 1 / C 0
+source summary: deepseek_new 8 / today_backfill 11 / candidate_pool 1
+dedupRelaxed: 0
+manual/protected selected words: 0
+repeated 30-day words: 0
 ```
 
-This means `AUTO_REFRESH_SECRET` authentication is not aligned between the request and the active Preview deployment. The workflow is not entered when this 401 occurs, so DeepSeek is not called.
+`today_backfill` is a balanced-fill audit marker after normal homepage admission, not a low-quality old-word bypass. It remains a follow-up signal that candidate diversity can improve, but it did not relax 30-day dedup or let low-quality/manual/protected words bypass admission.
 
 Code-auth facts from `functions/daily-refresh.js`:
 
@@ -196,38 +215,29 @@ Production todayCount: 13
 Production candidateCount: 370
 Production favoriteCount: 25
 Production publishedCount: 0
-Production KV key count: 78
 Production codex-preview* keys: 0
+Production preview-test* keys: 0
 ```
 
 Production was not deployed during this work. Production KV was not intentionally written during the Preview tests.
 
 ## Current Blocker
 
-Do not continue recommendation tuning yet.
+No Preview validation blocker remains.
 
-The current blocker is:
-
-```text
-Preview AUTO_REFRESH_SECRET authentication still does not match.
-```
-
-The next safe action is to fix Preview auth before running another flow test.
-
-Recommended next sequence:
+The previous Preview auth blocker is resolved:
 
 ```text
-1. Rotate the Preview-only AUTO_REFRESH_SECRET in Cloudflare.
-2. Store only the raw secret value in Cloudflare Preview environment variables.
-3. Trigger a Preview-only redeploy for fix/daily-hot-quality-gate-pr.
-4. Use hidden input or another non-logged method to provide the secret locally.
-5. Run only GET https://<new-preview>/daily-refresh?date=2026-06-19 with Authorization: Bearer <secret>.
-6. If GET returns 200, stop and record that auth is fixed.
-7. Only after explicit approval, run one count=30 Preview test:
-   POST /daily-refresh?mode=preview-test&count=30&skipCards=true&maxTopUpRounds=1
+GET /daily-refresh?date=2026-06-19 returned 200 on Preview.
 ```
 
-Do not POST `/daily-refresh` while GET auth is still 401.
+The previous transient top-up blocker is also resolved:
+
+```text
+POST preview-test returned 200 with todayCount: 20.
+```
+
+Do not run more Preview POSTs before merge unless explicitly approved.
 
 ## Preview Test History
 
@@ -249,7 +259,8 @@ Important results:
   - Candidate novelty was insufficient.
   - Many generated words collided with recent 30-day history, favorites, protected words, or review buckets.
 - After this, commit `cd71424` improved DeepSeek novelty/exclusion prompts and audit metrics.
-- The improved novelty code has not yet been validated in a successful `count=30` Preview POST because Preview auth is currently returning 401.
+- Commit `af633ea` added one controlled retry for transient `/ai-candidates` errors.
+- Latest `count=30` Preview test on `https://61af0dc4.jiyimianbao.pages.dev` completed successfully with `todayCount: 20`.
 
 ## Do Not Do These Without Explicit Approval
 
@@ -286,5 +297,12 @@ Only recommend merge after all are true:
 - Production remains unchanged.
 - DeepSeek top-up is observable and does not hang in `running`.
 - PR description reflects the final state.
+
+Current status:
+
+```text
+All merge-readiness criteria are satisfied.
+Recommendation: merge PR #1 after explicit owner approval.
+```
 
 Merge and Production deploy both require explicit user approval.
