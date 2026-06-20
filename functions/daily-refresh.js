@@ -38,6 +38,9 @@ const DEFAULT_MAX_TOP_UP_ROUNDS = 2;
 const PREVIEW_TEST_MAX_TOP_UP_ROUNDS = 1;
 const STALE_RUNNING_MS = 15 * 60 * 1000;
 const AI_ENDPOINT_TIMEOUT_MS = 90 * 1000;
+const AI_ENDPOINT_MAX_RETRIES = 1;
+const AI_ENDPOINT_RETRY_MIN_DELAY_MS = 1500;
+const AI_ENDPOINT_RETRY_MAX_DELAY_MS = 3000;
 const RUN_STATE_TTL_SECONDS = 3 * 24 * 60 * 60;
 const REFRESH_STEPS = [
   'started',
@@ -92,6 +95,36 @@ function cleanBoolean(value, fallback = false) {
   if (['true', '1', 'yes', 'y', 'on'].includes(text)) return true;
   if (['false', '0', 'no', 'n', 'off'].includes(text)) return false;
   return fallback;
+}
+
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+function getRetryDelayMs() {
+  return Math.round(AI_ENDPOINT_RETRY_MIN_DELAY_MS + Math.random() * (AI_ENDPOINT_RETRY_MAX_DELAY_MS - AI_ENDPOINT_RETRY_MIN_DELAY_MS));
+}
+
+function createEndpointError(message, options = {}) {
+  const error = new Error(message);
+  error.status = options.status || 0;
+  error.retryable = Boolean(options.retryable);
+  error.reason = options.reason || '';
+  return error;
+}
+
+function isRetryableHttpStatus(status) {
+  return [429, 500, 502, 503, 504].includes(status);
+}
+
+function isTemporaryNetworkError(error) {
+  const message = String(error?.message || '').toLowerCase();
+  return error?.name === 'TypeError'
+    || message.includes('fetch failed')
+    || message.includes('network')
+    || message.includes('connection')
+    || message.includes('econnreset')
+    || message.includes('etimedout');
 }
 
 async function readJsonBody(request) {
@@ -586,34 +619,87 @@ function buildWordCardPayloadItems(workflow, kanjis) {
 
 async function callJsonEndpoint(origin, path, payload, options = {}) {
   const timeoutMs = cleanInteger(options.timeoutMs, AI_ENDPOINT_TIMEOUT_MS, 1000, AI_ENDPOINT_TIMEOUT_MS);
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
-  try {
-    const response = await fetch(`${origin}${path}`, {
-      method: 'POST',
-      headers: {
-        Accept: 'application/json',
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify(payload),
-      signal: controller.signal
-    });
-    const data = await response.json().catch(() => ({}));
-    if (!response.ok || data.error) throw new Error(data.error?.message || data.error || `HTTP ${response.status}`);
-    return data;
-  } catch (error) {
-    if (error?.name === 'AbortError') {
-      throw new Error(`${path} timed out after ${timeoutMs}ms`);
+  const maxRetries = cleanInteger(options.maxRetries, AI_ENDPOINT_MAX_RETRIES, 0, 1);
+  const callLabel = cleanText(options.callLabel || `${path}:${payload?.action || 'unknown'}`, 120);
+  let lastError;
+  for (let attempt = 1; attempt <= maxRetries + 1; attempt += 1) {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const response = await fetch(`${origin}${path}`, {
+        method: 'POST',
+        headers: {
+          Accept: 'application/json',
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify(payload),
+        signal: controller.signal
+      });
+      const text = await response.text();
+      let data = {};
+      if (text) {
+        try {
+          data = JSON.parse(text);
+        } catch (error) {
+          throw createEndpointError(`${callLabel} returned invalid JSON on attempt ${attempt}`, {
+            status: response.status,
+            retryable: false,
+            reason: 'invalid_json'
+          });
+        }
+      }
+      if (!response.ok || data.error) {
+        const message = data.error?.message || data.error || `HTTP ${response.status}`;
+        const status = response.status || cleanInteger(String(message).match(/HTTP\s+(\d+)/i)?.[1], 0, 0, 599);
+        throw createEndpointError(message, {
+          status,
+          retryable: isRetryableHttpStatus(status),
+          reason: status ? `http_${status}` : 'endpoint_error'
+        });
+      }
+      return data;
+    } catch (error) {
+      const retryable = error?.retryable || error?.name === 'AbortError' || isTemporaryNetworkError(error);
+      const normalizedError = error?.name === 'AbortError'
+        ? createEndpointError(`${path} timed out after ${timeoutMs}ms`, { retryable: true, reason: 'timeout' })
+        : error;
+      lastError = normalizedError;
+      if (!retryable || attempt > maxRetries) {
+        const suffix = attempt > 1 ? ` after ${attempt} attempts` : ` on attempt ${attempt}`;
+        throw createEndpointError(`AI call ${callLabel} failed${suffix}: ${normalizedError.message || normalizedError}`, {
+          status: normalizedError.status || 0,
+          retryable: false,
+          reason: normalizedError.reason || 'failed'
+        });
+      }
+      const delayMs = getRetryDelayMs();
+      if (typeof options.onRetry === 'function') {
+        await options.onRetry({
+          path,
+          callLabel,
+          attempt,
+          nextAttempt: attempt + 1,
+          maxAttempts: maxRetries + 1,
+          delayMs,
+          status: normalizedError.status || 0,
+          error: normalizedError.message || String(normalizedError),
+          reason: normalizedError.reason || 'retryable_error'
+        });
+      }
+      await sleep(delayMs);
+    } finally {
+      clearTimeout(timeoutId);
     }
-    throw error;
-  } finally {
-    clearTimeout(timeoutId);
   }
+  throw lastError || createEndpointError(`AI call ${callLabel} failed`, { retryable: false, reason: 'unknown' });
 }
 
 async function generateCandidates(origin, workflow, options = {}) {
   const payload = buildCandidatePayload(workflow, options);
-  const data = await callJsonEndpoint(origin, '/ai-candidates', payload);
+  const data = await callJsonEndpoint(origin, '/ai-candidates', payload, {
+    callLabel: options.callLabel,
+    onRetry: options.onRetry
+  });
   const batchId = `daily_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
   const trace = getAiTraceFromUsage(data.usage || {}, payload);
   const rawItems = safeArray(data.items);
@@ -788,6 +874,10 @@ function cleanRefreshRunState(state = {}) {
     reviewRejectedCount: cleanInteger(record.reviewRejectedCount, 0, 0, 10000),
     duplicateRate: cleanInteger(record.duplicateRate, 0, 0, 100),
     historyCollisionRate: cleanInteger(record.historyCollisionRate, 0, 0, 100),
+    aiCallFailures: cleanInteger(record.aiCallFailures, 0, 0, 100),
+    aiRetryCount: cleanInteger(record.aiRetryCount, 0, 0, 100),
+    aiRetryLastCall: cleanText(record.aiRetryLastCall, 120),
+    aiRetryLastError: cleanText(record.aiRetryLastError, 500),
     todayCount: cleanInteger(record.todayCount, 0, 0, 1000),
     generatedCards: cleanInteger(record.generatedCards, 0, 0, 1000),
     queuedCards: cleanInteger(record.queuedCards, 0, 0, 1000),
@@ -886,6 +976,10 @@ async function runDailyRefreshJob({ origin, env, key, today, options = {}, reque
     reviewRejectedCount: 0,
     duplicateRate: 0,
     historyCollisionRate: 0,
+    aiCallFailures: 0,
+    aiRetryCount: 0,
+    aiRetryLastCall: '',
+    aiRetryLastError: '',
     todayCount: 0,
     generatedCards: 0,
     queuedCards: 0,
@@ -913,6 +1007,16 @@ async function runDailyRefreshJob({ origin, env, key, today, options = {}, reque
     });
     return writeRefreshRunState(env, today, runState);
   };
+  const writeAiRetry = async details => {
+    runState.aiCallFailures += 1;
+    runState.aiRetryCount += 1;
+    return writeStep(lastStep, {
+      aiCallFailures: runState.aiCallFailures,
+      aiRetryCount: runState.aiRetryCount,
+      aiRetryLastCall: cleanText(`${details.callLabel} attempt ${details.attempt}/${details.maxAttempts}`, 120),
+      aiRetryLastError: cleanText(`${details.error}; retrying in ${details.delayMs}ms`, 500)
+    });
+  };
 
   try {
     await writeStep('load_workflow');
@@ -931,6 +1035,10 @@ async function runDailyRefreshJob({ origin, env, key, today, options = {}, reque
         reviewRejectedCount: 0,
         duplicateRate: 0,
         historyCollisionRate: 0,
+        aiCallFailures: 0,
+        aiRetryCount: 0,
+        aiRetryLastCall: '',
+        aiRetryLastError: '',
         todayCount: stored.todaySnapshot.words.length,
         generatedCards: 0,
         queuedCards: 0
@@ -947,6 +1055,8 @@ async function runDailyRefreshJob({ origin, env, key, today, options = {}, reque
     await writeStep('generate_candidates_start');
     const initialExclusionContext = getExclusionContext(stored);
     const generated = await generateCandidates(origin, stored, {
+      callLabel: 'initial_candidates',
+      onRetry: writeAiRetry,
       count: runState.count,
       exclusionContext: initialExclusionContext,
       batchHint: '首批每日热门候选：请避开禁止列表，生成新的低风险日语表达。'
@@ -996,6 +1106,8 @@ async function runDailyRefreshJob({ origin, env, key, today, options = {}, reque
       });
       const topUpExclusionContext = getExclusionContext(snapshot.workflow);
       const extraGenerated = await generateCandidates(origin, snapshot.workflow, {
+        callLabel: `top_up_candidates_round_${round + 1}`,
+        onRetry: writeAiRetry,
         count: runState.count,
         exclusionContext: topUpExclusionContext,
         batchHint: `topUp 补词：当前今日热门只有 ${safeArray(snapshot.workflow.todaySnapshot?.words).length}/20 个。首批、本轮已生成、今日已选和近 30 天历史词都在禁止列表里，必须换新方向。`
@@ -1117,6 +1229,7 @@ async function runDailyRefreshJob({ origin, env, key, today, options = {}, reque
       stepIndex: getStepIndex(lastStep),
       finishedAt: nowIso(),
       error: cleanText(error?.message || 'daily refresh failed', 500),
+      aiRetryLastError: cleanText(error?.message || 'daily refresh failed', 500),
       errorStack: cleanText(error?.stack || '', 3000)
     });
   }
@@ -1185,7 +1298,11 @@ export async function onRequest(context) {
         currentBatchDuplicateRejectedCount: 0,
         reviewRejectedCount: 0,
         duplicateRate: 0,
-        historyCollisionRate: 0
+        historyCollisionRate: 0,
+        aiCallFailures: 0,
+        aiRetryCount: 0,
+        aiRetryLastCall: '',
+        aiRetryLastError: ''
       });
       return jsonResponse({
         ok: true,
@@ -1224,6 +1341,10 @@ export async function onRequest(context) {
       reviewRejectedCount: 0,
       duplicateRate: 0,
       historyCollisionRate: 0,
+      aiCallFailures: 0,
+      aiRetryCount: 0,
+      aiRetryLastCall: '',
+      aiRetryLastError: '',
       todayCount: 0,
       generatedCards: 0,
       queuedCards: 0,
@@ -1294,6 +1415,10 @@ export async function onRequest(context) {
       reviewRejectedCount: 0,
       duplicateRate: 0,
       historyCollisionRate: 0,
+      aiCallFailures: 0,
+      aiRetryCount: 0,
+      aiRetryLastCall: '',
+      aiRetryLastError: '',
       todayCount: 0,
       generatedCards: 0,
       dateKey: today,
