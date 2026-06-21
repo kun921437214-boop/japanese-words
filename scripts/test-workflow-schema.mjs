@@ -14,6 +14,7 @@ import {
 } from '../shared/today-snapshot.mjs';
 import { getAccountLearningSummary } from '../shared/account-learning.mjs';
 import { buildDeepSeekExclusionContext } from '../shared/deepseek-exclusion.mjs';
+import { applyFavoriteAction } from '../functions/favorites.js';
 
 function test(name, fn) {
   try {
@@ -306,6 +307,54 @@ test('worker PUT 类保存不会导致 aiBatches/todaySnapshot 丢失', () => {
   assert.deepEqual(saved.words, ['抜け感']);
   assert.equal(saved.aiBatches[0].id, 'batch-a');
   assert.deepEqual(saved.todaySnapshot.words, ['こなれ']);
+});
+
+test('收藏增量同步不会用客户端空 todaySnapshot 覆盖服务端今日快照', () => {
+  const snapshotWords = Array.from({ length: 20 }, (_, index) => `今日词${index + 1}`);
+  const current = cleanStoredWorkflow({
+    words: ['こなれ'],
+    todaySnapshot: {
+      dateKey: '2026-06-21',
+      words: snapshotWords,
+      generatedAt: '2026-06-21T02:57:40.000Z',
+      generatorVersion: TODAY_SNAPSHOT_GENERATOR_VERSION,
+      version: 1
+    },
+    todayDismissed: {
+      dateKey: '2026-06-21',
+      words: ['跳过词'],
+      updatedAt: '2026-06-21T03:00:00.000Z'
+    },
+    historySnapshots: {
+      '2026-06-20': {
+        dateKey: '2026-06-20',
+        words: ['历史词'],
+        generatedAt: '2026-06-20T02:00:00.000Z',
+        version: 1
+      }
+    },
+    todaySnapshotHistory: [{
+      dateKey: '2026-06-19',
+      words: ['快照历史词'],
+      generatedAt: '2026-06-19T02:00:00.000Z',
+      version: 1
+    }]
+  });
+  const saved = applyFavoriteAction(current, {
+    action: 'add',
+    word: '新收藏',
+    todaySnapshot: {},
+    todayDismissed: {},
+    historySnapshots: {},
+    todaySnapshotHistory: []
+  });
+
+  assert.ok(saved.words.includes('新收藏'));
+  assert.equal(saved.todaySnapshot.dateKey, '2026-06-21');
+  assert.deepEqual(saved.todaySnapshot.words, snapshotWords);
+  assert.deepEqual(saved.todayDismissed.words, ['跳过词']);
+  assert.ok(saved.historySnapshots['2026-06-20']);
+  assert.ok(saved.todaySnapshotHistory.some(snapshot => snapshot.dateKey === '2026-06-19'));
 });
 
 test('worker PUT 类保存不会导致 aiPreview/todayDismissed 丢失', () => {

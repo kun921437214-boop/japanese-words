@@ -447,6 +447,35 @@ async function readJson(request) {
   }
 }
 
+export function applyFavoriteAction(currentWorkflow = {}, body = {}) {
+  const current = cleanStoredData(currentWorkflow);
+  const word = cleanWords([body.word])[0];
+  const currentWords = current.words;
+  let words = currentWords;
+  if (body.action === 'add') words = cleanWords([word, ...currentWords]);
+  if (body.action === 'remove') words = currentWords.filter(item => item !== word);
+  const statuses = cleanStatuses(current.statuses, words);
+  if (body.action === 'remove') delete statuses[word];
+  if (body.action === 'status' && currentWords.includes(word)) {
+    const status = cleanStatus(body.status);
+    if (status === 'none') delete statuses[word];
+    else statuses[word] = status;
+  }
+
+  const patch = {
+    words,
+    statuses,
+    updated: new Date().toISOString()
+  };
+  if (body.feedback) patch.feedback = body.feedback;
+  if (body.publishedRecords) patch.publishedRecords = body.publishedRecords;
+  if (body.candidatePool) patch.candidatePool = body.candidatePool;
+  if (body.aiBatches) patch.aiBatches = body.aiBatches;
+  if (body.aiPreview) patch.aiPreview = body.aiPreview;
+
+  return mergeWorkflowForFullSave(current, patch);
+}
+
 export async function onRequest({ request, env }) {
   if (request.method === 'OPTIONS') {
     return new Response(null, { headers: CORS_HEADERS });
@@ -487,34 +516,7 @@ export async function onRequest({ request, env }) {
     if (!word) return jsonResponse({ error: 'Invalid word' }, 400);
 
     const stored = await env.FAVORITES.get(key, 'json');
-    const current = cleanStoredData(stored);
-    const currentWords = current.words;
-    let words = currentWords;
-    if (body.action === 'add') words = cleanWords([word, ...currentWords]);
-    if (body.action === 'remove') words = currentWords.filter(item => item !== word);
-    const statuses = cleanStatuses(current.statuses, words);
-    if (body.action === 'remove') delete statuses[word];
-    if (body.action === 'status' && currentWords.includes(word)) {
-      const status = cleanStatus(body.status);
-      if (status === 'none') delete statuses[word];
-      else statuses[word] = status;
-    }
-      let data = cleanWorkflowSchema({
-        ...current,
-        words,
-        statuses,
-        feedback: body.feedback || current.feedback,
-        publishedRecords: body.publishedRecords || current.publishedRecords,
-        candidatePool: body.candidatePool || current.candidatePool,
-        aiBatches: body.aiBatches || current.aiBatches,
-        aiPreview: body.aiPreview || current.aiPreview,
-        todaySnapshot: body.todaySnapshot ? cleanTodaySnapshot(body.todaySnapshot) : current.todaySnapshot,
-        todayDismissed: body.todayDismissed || body.teamDismissed || current.todayDismissed,
-        historySnapshots: body.historySnapshots ? cleanHistorySnapshots(body.historySnapshots) : current.historySnapshots,
-        todaySnapshotHistory: body.todaySnapshotHistory || current.todaySnapshotHistory,
-        updated: new Date().toISOString()
-      });
-      data.historySnapshots = archiveTodaySnapshotIntoHistory(data.historySnapshots, data.todaySnapshot);
+    const data = applyFavoriteAction(stored, body);
 
     await env.FAVORITES.put(key, JSON.stringify(data));
     return jsonResponse(data);

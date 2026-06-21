@@ -3431,11 +3431,7 @@ async function syncFavoriteChange(kanji, action) {
         publishedRecords: cleanPublishedRecords(publishedRecords),
         candidatePool: cleanCandidatePool(candidatePool),
         aiBatches: cleanAiBatches(aiBatches),
-        aiPreview,
-        todaySnapshot: cleanTodaySnapshot(todaySnapshot),
-        todayDismissed: cleanTeamDismissedState(todayDismissed),
-        historySnapshots: cleanHistorySnapshots(historySnapshots),
-        todaySnapshotHistory: cleanTodaySnapshotHistory(todaySnapshotHistory)
+        aiPreview
       })
     });
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
@@ -3486,11 +3482,7 @@ async function syncFavoriteStatus(kanji, status) {
         publishedRecords: cleanPublishedRecords(publishedRecords),
         candidatePool: cleanCandidatePool(candidatePool),
         aiBatches: cleanAiBatches(aiBatches),
-        aiPreview,
-        todaySnapshot: cleanTodaySnapshot(todaySnapshot),
-        todayDismissed: cleanTeamDismissedState(todayDismissed),
-        historySnapshots: cleanHistorySnapshots(historySnapshots),
-        todaySnapshotHistory: cleanTodaySnapshotHistory(todaySnapshotHistory)
+        aiPreview
       })
     });
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
