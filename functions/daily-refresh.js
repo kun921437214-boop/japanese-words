@@ -1232,13 +1232,24 @@ async function runDailyRefreshJob({ origin, env, key, today, options = {}, reque
     await env.FAVORITES.put(key, JSON.stringify(finalWorkflow));
     const todayWords = safeArray(finalWorkflow.todaySnapshot?.words);
     const cardTargets = todayWords.filter(kanji => cleanAiCard(finalWorkflow.candidatePool?.[kanji]?.aiCard || {}).cardStatus !== 'ready');
-    await writeStep('save_workflow_done', {
+    const workflowSavedPatch = {
       generatedCandidates: totalGenerated,
       importedCandidates: totalImported,
       todayCount: todayWords.length,
       queuedCards: cardTargets.length,
       ...getNoveltyPatch()
-    });
+    };
+    if (runState.skipCards) {
+      return writeStep('save_workflow_done', {
+        ...workflowSavedPatch,
+        status: 'completed',
+        finishedAt: nowIso(),
+        generatedCards: 0,
+        cardGenerationSkipped: true
+      });
+    }
+
+    await writeStep('save_workflow_done', workflowSavedPatch);
 
     await writeStep('completed', {
       status: 'completed',
