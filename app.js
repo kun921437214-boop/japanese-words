@@ -3217,6 +3217,10 @@ function getAiCandidatesEndpoint() {
   return SYNC_API_URL ? `${SYNC_API_URL}/ai-candidates` : '/ai-candidates';
 }
 
+function getAiCardsEndpoint() {
+  return SYNC_API_URL ? `${SYNC_API_URL}/ai-cards` : '/ai-cards';
+}
+
 function getTodaySnapshotEndpoint() {
   return SYNC_API_URL ? `${SYNC_API_URL}/today-snapshot` : '/today-snapshot';
 }
@@ -6151,15 +6155,11 @@ function autoImportAiCandidates(items = [], batch = {}) {
 }
 
 async function autoGenerateCardsForToday() {
-  const snapshot = cleanTodaySnapshot(todaySnapshot);
-  return queueAutoGenerateAiCards(snapshot.words, { source: 'today', toast: false });
+  return Promise.resolve(0);
 }
 
 function queueAutoGenerateCardsForToday() {
-  const snapshot = cleanTodaySnapshot(todaySnapshot);
-  const targets = getMissingAiCardKanjis(snapshot.words, { source: 'today' });
-  if (!targets.length) return Promise.resolve(0);
-  return queueAutoGenerateAiCards(targets, { source: 'today', toast: true });
+  return Promise.resolve(0);
 }
 
 async function runDailyAutoRefreshIfNeeded(options = {}) {
@@ -6209,8 +6209,7 @@ async function runDailyAutoRefreshIfNeeded(options = {}) {
       });
     }
     renderToday();
-    if (todayWords.length) void queueAutoGenerateCardsForToday();
-    showToast(`自动日更完成：导入 ${importStats.imported} 个，今日 ${todayWords.length} 个，词卡后台生成中`);
+    showToast(`自动日更完成：导入 ${importStats.imported} 个，今日 ${todayWords.length} 个。可手动生成今日词卡。`);
     return {
       status: 'success',
       generatedCandidates: importStats.generated,
@@ -6248,6 +6247,117 @@ function getAiCardStatusLabel(aiCard) {
     failed: '生成失败',
     stale: '需重新生成'
   }[status] || '未生成词卡';
+}
+
+function isTodaySnapshotWord(kanji) {
+  const cleanKanji = cleanShortText(kanji, 80);
+  return Boolean(cleanKanji && cleanTodaySnapshot(todaySnapshot).words.includes(cleanKanji));
+}
+
+function getTodayAiCardActionLabel(aiCard, inFlight = false) {
+  if (inFlight) return '生成中';
+  const status = cleanAiCard(aiCard || {})?.cardStatus || 'none';
+  if (status === 'ready') return '重新生成';
+  if (status === 'failed') return '重试';
+  if (status === 'pending') return '生成中';
+  if (status === 'stale') return '重新生成';
+  return '生成卡片';
+}
+
+function renderAiCardActionButton(kanji, aiCard = {}, className = 'btn btn-ghost') {
+  const cleanKanji = cleanShortText(kanji, 80);
+  const safeKanji = escapeJSString(cleanKanji);
+  const card = cleanAiCard(aiCard || {});
+  const inFlight = aiCardAutoInFlight.has(cleanKanji);
+  if (isTodaySnapshotWord(cleanKanji)) {
+    const label = getTodayAiCardActionLabel(card, inFlight);
+    const disabled = inFlight || card.cardStatus === 'pending';
+    return `<button class="${escapeHTML(className)}" ${disabled ? 'disabled' : ''} onclick="generateTodayAiCard('${safeKanji}')">${escapeHTML(label)}</button>`;
+  }
+  if (card.cardStatus === 'ready') {
+    return `<button class="${escapeHTML(className)}" disabled>已生成词卡</button><button class="${escapeHTML(className)}" onclick="generateDeepSeekWordCard('${safeKanji}', true)">重新生成 DeepSeek 词卡</button>`;
+  }
+  if (card.cardStatus === 'pending') {
+    return `<button class="${escapeHTML(className)}" disabled>DeepSeek 词卡生成中</button>`;
+  }
+  return `<button class="${escapeHTML(className)}" onclick="generateDeepSeekWordCard('${safeKanji}', false)">${card.cardStatus === 'failed' ? '重试 DeepSeek 词卡' : '生成 DeepSeek 词卡'}</button>`;
+}
+
+async function generateTodayAiCardsOnServer(kanjis = [], options = {}) {
+  const endpoint = getAiCardsEndpoint();
+  if (!endpoint) {
+    showToast('云端后端还没有配置');
+    return 0;
+  }
+  if (!hasTodaySnapshotForToday(todaySnapshot)) {
+    showToast('今天还没有固定推荐，不能生成今日词卡');
+    return 0;
+  }
+  const targets = getUniqueWords(kanjis).filter(isTodaySnapshotWord).slice(0, 5);
+  if (!targets.length && options.wordsRequired !== false) {
+    showToast('请选择今日热门里的词生成卡片');
+    return 0;
+  }
+  targets.forEach(kanji => aiCardAutoInFlight.add(kanji));
+  renderToday();
+  try {
+    const response = await fetch(endpoint, {
+      method: 'POST',
+      headers: {
+        Accept: 'application/json',
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        mode: 'today',
+        words: targets,
+        force: Boolean(options.force),
+        retryFailed: Boolean(options.retryFailed),
+        maxWords: clamp(toInt(options.maxWords, 5), 1, 5)
+      })
+    });
+    const data = await response.json().catch(() => ({}));
+    await loadCloudWorkflow(false);
+    updateAllBadges();
+    renderToday();
+    if (currentWordForModal && targets.includes(currentWordForModal.kanji)) openDetail(currentWordForModal.kanji);
+    if (!response.ok || data.error) throw new Error(data.error || `HTTP ${response.status}`);
+    const savedCount = toInt(data.savedCount, 0);
+    showToast(savedCount ? `已生成 ${savedCount} 个今日词卡` : '没有需要生成的今日词卡');
+    return savedCount;
+  } catch (error) {
+    console.warn('今日词卡生成失败', error);
+    await loadCloudWorkflow(false);
+    renderToday();
+    if (currentWordForModal && targets.includes(currentWordForModal.kanji)) openDetail(currentWordForModal.kanji);
+    showToast(`今日词卡生成失败：${error.message || '服务暂时不可用'}`);
+    return 0;
+  } finally {
+    targets.forEach(kanji => aiCardAutoInFlight.delete(kanji));
+    renderToday();
+    if (currentWordForModal && targets.includes(currentWordForModal.kanji)) openDetail(currentWordForModal.kanji);
+  }
+}
+
+function generateTodayAiCard(kanji, options = {}) {
+  const entry = cleanCandidatePoolEntry(kanji, candidatePool[kanji] || {}) || {};
+  const status = cleanAiCard(entry.aiCard || {})?.cardStatus || 'none';
+  return generateTodayAiCardsOnServer([kanji], {
+    force: options.force ?? status === 'ready',
+    retryFailed: options.retryFailed ?? status === 'failed',
+    maxWords: 1
+  });
+}
+
+function generateMissingTodayAiCards() {
+  const targets = cleanTodaySnapshot(todaySnapshot).words.filter(kanji => {
+    const status = cleanAiCard(candidatePool?.[kanji]?.aiCard || {})?.cardStatus || 'none';
+    return status !== 'ready' && status !== 'pending' && status !== 'failed';
+  }).slice(0, 5);
+  if (!targets.length) {
+    showToast('今日没有缺失的词卡；失败项请在单词卡上点“重试”。');
+    return Promise.resolve(0);
+  }
+  return generateTodayAiCardsOnServer(targets, { maxWords: 5 });
 }
 
 function getAiCardAutoAttemptsState() {
@@ -7180,6 +7290,12 @@ function renderTodayCard(word) {
   const recommendationGrade = getRecommendationGrade(word);
   const riskStateLabel = getRiskStateLabel(word);
   const riskStateKey = getRiskStateKey(riskStateLabel);
+  const entry = cleanCandidatePoolEntry(word.kanji, candidatePool[word.kanji] || word.candidateMeta || {}) || {};
+  const aiCard = cleanAiCard(entry.aiCard || word.aiCard || {});
+  const aiCardInFlight = aiCardAutoInFlight.has(word.kanji);
+  const aiCardStatus = aiCardInFlight ? 'pending' : (aiCard?.cardStatus || 'none');
+  const aiCardActionLabel = getTodayAiCardActionLabel(aiCard, aiCardInFlight);
+  const aiCardActionDisabled = aiCardInFlight || aiCardStatus === 'pending';
   const fallbackSvg = `data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 520 390%22><rect fill=%22%23fdeef0%22 width=%22520%22 height=%22390%22/><text x=%22260%22 y=%22195%22 text-anchor=%22middle%22 font-size=%2272%22 fill=%22%23f47a9a%22>${encodeURIComponent(word.kanji)}</text></svg>`;
   const safeId = escapeJSString(word.id);
   const safeKanjiAction = escapeJSString(word.kanji);
@@ -7209,6 +7325,10 @@ function renderTodayCard(word) {
           <span class="daily-hot-tag state-tag-${escapeHTML(teamState.key)}">${escapeHTML(teamState.note)}</span>
           <span class="daily-hot-tag recommendation-grade-chip grade-${escapeHTML(recommendationGrade.toLowerCase())}">推荐等级 ${escapeHTML(recommendationGrade)}</span>
           <span class="daily-hot-tag risk-state-chip risk-${escapeHTML(riskStateKey)}">${escapeHTML(riskStateLabel)}</span>
+          <span class="daily-hot-tag ai-card-state-${escapeHTML(aiCardStatus)}">${escapeHTML(getAiCardStatusLabel(aiCardInFlight ? { cardStatus: 'pending' } : aiCard))}</span>
+        </div>
+        <div class="daily-hot-actions" onclick="event.stopPropagation()">
+          <button class="card-action-btn ghost" ${aiCardActionDisabled ? 'disabled' : ''} onclick="generateTodayAiCard('${safeKanjiAction}')">${escapeHTML(aiCardActionLabel)}</button>
         </div>
       </div>
     </div>`;
@@ -7637,9 +7757,6 @@ function renderDailyHot() {
     manageBtn.disabled = !isTodayView;
     manageBtn.title = isTodayView ? '管理今天的固定推荐' : '历史推荐不能重新生成，请切回今天。';
   }
-  if (isTodayView && todayWords.length) {
-    void queueAutoGenerateAiCards(todayWords.map(word => word.kanji), { source: 'today-visible', toast: false });
-  }
 }
 
 function renderToday() {
@@ -7660,9 +7777,8 @@ async function finishTodaySnapshotGeneration(result, actionLabel, options = {}) 
   const dedupHint = result.relaxedDedup
     ? ' 注意：本次结果启用了去重放宽。'
     : '';
-  const cardHint = result.selectedCount ? ' DeepSeek 词卡后台生成中。' : '';
+  const cardHint = result.selectedCount ? ' 可手动生成今日词卡。' : '';
   showToast(`${actionLabel}：${result.selectedCount} 个今日候选。${dedupHint}${supplementHint}${cardHint}${shortageHint}`);
-  if (result.selectedCount) void queueAutoGenerateCardsForToday();
 }
 
 async function generateTodaySnapshotOnServer(mode) {
@@ -8165,8 +8281,8 @@ function openDetail(idOrKanji) {
   const entry = cleanCandidatePoolEntry(word.kanji, candidatePool[word.kanji] || word.candidateMeta || {}) || {};
   const aiCard = cleanAiCard(entry.aiCard || word.aiCard || {});
   const hasReadyAiCard = aiCard?.cardStatus === 'ready';
-  const shouldAutoQueueCard = !hasReadyAiCard && shouldAutoGenerateAiCard(word.kanji);
-  const displayAiCard = shouldAutoQueueCard ? { ...(aiCard || {}), cardStatus: 'pending' } : aiCard;
+  const aiCardInFlight = aiCardAutoInFlight.has(word.kanji);
+  const displayAiCard = aiCardInFlight ? { ...(aiCard || {}), cardStatus: 'pending' } : aiCard;
   if (!hasReadyAiCard) {
     const basicRomaji = entry.romaji || word.romaji || '';
     const basicKana = entry.kana || word.kana || word.reading || '';
@@ -8194,7 +8310,7 @@ function openDetail(idOrKanji) {
         </div>
         <div class="modal-section compact-section">
           <div class="modal-section-title">DeepSeek 词卡</div>
-          <div class="wrong-usage-box">${shouldAutoQueueCard || displayAiCard?.cardStatus === 'pending' ? '系统正在自动生成 DeepSeek 词卡。生成完成后会刷新为正式词卡内容。' : '该词还没有生成 DeepSeek 词卡。未生成前不展示推荐标题、例句、详细解释、错误用法或互动引导。'}</div>
+          <div class="wrong-usage-box">${displayAiCard?.cardStatus === 'pending' ? 'DeepSeek 词卡生成中。生成完成后会刷新为正式词卡内容。' : '该词还没有生成 DeepSeek 词卡。未生成前不展示推荐标题、例句、详细解释、错误用法或互动引导。'}</div>
         </div>
         <div class="modal-section compact-section">
           <div class="modal-section-title">准入状态</div>
@@ -8202,13 +8318,10 @@ function openDetail(idOrKanji) {
         </div>
         ${renderSourceInfoSection(entry)}
         <div class="modal-footer-actions">
-          ${shouldAutoQueueCard || displayAiCard?.cardStatus === 'pending'
-            ? '<button class="btn btn-primary" disabled>DeepSeek 词卡生成中</button>'
-            : `<button class="btn btn-primary" onclick="generateDeepSeekWordCard('${safeKanjiAction}', false)">生成 DeepSeek 词卡</button>`}
+          ${renderAiCardActionButton(word.kanji, displayAiCard, 'btn btn-primary')}
         </div>
       </div>`;
     document.getElementById('modalOverlay').classList.add('open');
-    if (shouldAutoQueueCard) void queueAutoGenerateAiCards([word.kanji], { source: 'detail', toast: false });
     return;
   }
   const displayTitle = safeArray(aiCard?.suggestedTitles)[0] || '';
@@ -8305,9 +8418,7 @@ function openDetail(idOrKanji) {
       <div class="modal-footer-actions">
         <button class="btn btn-primary" onclick="markPending('${safeKanjiAction}')">标记待发布</button>
         <button class="btn btn-ghost" onclick="openPublishedRecordModal('', '${safeKanjiAction}')">添加已发布记录</button>
-        ${hasReadyAiCard
-          ? `<button class="btn btn-ghost" disabled>已生成词卡</button><button class="btn btn-ghost" onclick="generateDeepSeekWordCard('${safeKanjiAction}', true)">重新生成 DeepSeek 词卡</button>`
-          : `<button class="btn btn-ghost" onclick="generateDeepSeekWordCard('${safeKanjiAction}', false)">生成 DeepSeek 词卡</button>`}
+        ${renderAiCardActionButton(word.kanji, aiCard, 'btn btn-ghost')}
       </div>
     </div>`;
   document.getElementById('modalOverlay').classList.add('open');
