@@ -74,6 +74,7 @@ const APP_TIME_ZONE = 'Asia/Shanghai';
 const RANKINGS_DAYS = 30;
 const WORDS_PER_DAY = 20;
 const AI_CARD_AUTO_MAX_ATTEMPTS_PER_DAY = 2;
+const AI_CARD_PENDING_TTL_MS = 10 * 60 * 1000;
 const FAVORITE_STATUS_ORDER = ['none', 'pending', 'published'];
 const FAVORITE_STATUS_LABELS = {
   none: '无',
@@ -6240,6 +6241,7 @@ async function runDailyAutoRefreshIfNeeded(options = {}) {
 
 function getAiCardStatusLabel(aiCard) {
   const status = cleanAiCard(aiCard || {})?.cardStatus || 'none';
+  if (status === 'pending' && isAiCardStalePending(aiCard)) return '生成超时';
   return {
     none: '未生成词卡',
     pending: '生成中',
@@ -6249,17 +6251,24 @@ function getAiCardStatusLabel(aiCard) {
   }[status] || '未生成词卡';
 }
 
+function isAiCardStalePending(aiCard, entry = {}) {
+  const card = cleanAiCard(aiCard || {});
+  if (card.cardStatus !== 'pending') return false;
+  const startedAt = Date.parse(card.generatedAt || entry.updatedAt || '');
+  return Boolean(Number.isFinite(startedAt) && Date.now() - startedAt > AI_CARD_PENDING_TTL_MS);
+}
+
 function isTodaySnapshotWord(kanji) {
   const cleanKanji = cleanShortText(kanji, 80);
   return Boolean(cleanKanji && cleanTodaySnapshot(todaySnapshot).words.includes(cleanKanji));
 }
 
-function getTodayAiCardActionLabel(aiCard, inFlight = false) {
+function getTodayAiCardActionLabel(aiCard, inFlight = false, entry = {}) {
   if (inFlight) return '生成中';
   const status = cleanAiCard(aiCard || {})?.cardStatus || 'none';
   if (status === 'ready') return '重新生成';
   if (status === 'failed') return '重试';
-  if (status === 'pending') return '生成中';
+  if (status === 'pending') return isAiCardStalePending(aiCard, entry) ? '重试' : '生成中';
   if (status === 'stale') return '重新生成';
   return '生成卡片';
 }
@@ -6270,8 +6279,10 @@ function renderAiCardActionButton(kanji, aiCard = {}, className = 'btn btn-ghost
   const card = cleanAiCard(aiCard || {});
   const inFlight = aiCardAutoInFlight.has(cleanKanji);
   if (isTodaySnapshotWord(cleanKanji)) {
-    const label = getTodayAiCardActionLabel(card, inFlight);
-    const disabled = inFlight || card.cardStatus === 'pending';
+    const entry = candidatePool?.[cleanKanji] || {};
+    const label = getTodayAiCardActionLabel(card, inFlight, entry);
+    const stalePending = isAiCardStalePending(card, entry);
+    const disabled = inFlight || (card.cardStatus === 'pending' && !stalePending);
     return `<button class="${escapeHTML(className)}" ${disabled ? 'disabled' : ''} onclick="generateTodayAiCard('${safeKanji}')">${escapeHTML(label)}</button>`;
   }
   if (card.cardStatus === 'ready') {
@@ -6312,6 +6323,7 @@ async function generateTodayAiCardsOnServer(kanjis = [], options = {}) {
         words: targets,
         force: Boolean(options.force),
         retryFailed: Boolean(options.retryFailed),
+        retryStalePending: Boolean(options.retryStalePending),
         maxWords: clamp(toInt(options.maxWords, 5), 1, 5)
       })
     });
@@ -6340,10 +6352,13 @@ async function generateTodayAiCardsOnServer(kanjis = [], options = {}) {
 
 function generateTodayAiCard(kanji, options = {}) {
   const entry = cleanCandidatePoolEntry(kanji, candidatePool[kanji] || {}) || {};
-  const status = cleanAiCard(entry.aiCard || {})?.cardStatus || 'none';
+  const card = cleanAiCard(entry.aiCard || {});
+  const status = card?.cardStatus || 'none';
+  const stalePending = isAiCardStalePending(card, entry);
   return generateTodayAiCardsOnServer([kanji], {
     force: options.force ?? status === 'ready',
     retryFailed: options.retryFailed ?? status === 'failed',
+    retryStalePending: options.retryStalePending ?? stalePending,
     maxWords: 1
   });
 }
@@ -7294,8 +7309,9 @@ function renderTodayCard(word) {
   const aiCard = cleanAiCard(entry.aiCard || word.aiCard || {});
   const aiCardInFlight = aiCardAutoInFlight.has(word.kanji);
   const aiCardStatus = aiCardInFlight ? 'pending' : (aiCard?.cardStatus || 'none');
-  const aiCardActionLabel = getTodayAiCardActionLabel(aiCard, aiCardInFlight);
-  const aiCardActionDisabled = aiCardInFlight || aiCardStatus === 'pending';
+  const aiCardActionLabel = getTodayAiCardActionLabel(aiCard, aiCardInFlight, entry);
+  const aiCardStalePending = isAiCardStalePending(aiCard, entry);
+  const aiCardActionDisabled = aiCardInFlight || (aiCardStatus === 'pending' && !aiCardStalePending);
   const fallbackSvg = `data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 520 390%22><rect fill=%22%23fdeef0%22 width=%22520%22 height=%22390%22/><text x=%22260%22 y=%22195%22 text-anchor=%22middle%22 font-size=%2272%22 fill=%22%23f47a9a%22>${encodeURIComponent(word.kanji)}</text></svg>`;
   const safeId = escapeJSString(word.id);
   const safeKanjiAction = escapeJSString(word.kanji);

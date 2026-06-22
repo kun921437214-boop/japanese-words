@@ -17,6 +17,7 @@ import { buildDeepSeekExclusionContext } from '../shared/deepseek-exclusion.mjs'
 import { applyFavoriteAction } from '../functions/favorites.js';
 import {
   applyAiCardGenerationResult,
+  isAiCardStalePending,
   selectTodayAiCardTargets,
   summarizeTodayAiCards
 } from '../functions/ai-cards.js';
@@ -461,6 +462,105 @@ test('ai-cards failed 默认不重试，retryFailed=true 才允许', () => {
   assert.deepEqual(skipped.skipped.failed, [target]);
   const retry = selectTodayAiCardTargets(workflow, { mode: 'today', words: [target], retryFailed: true });
   assert.deepEqual(retry.targets, [target]);
+});
+
+test('ai-cards stale pending 默认不重试，retryStalePending=true 才允许', () => {
+  const workflow = makeCardWorkflow();
+  const target = workflow.todaySnapshot.words[0];
+  workflow.candidatePool[target].aiCard = {
+    cardStatus: 'pending',
+    summary: 'DeepSeek 词卡生成中',
+    generatedAt: '2026-06-21T03:00:00.000Z'
+  };
+  workflow.candidatePool[target].updatedAt = '2026-06-21T03:01:00.000Z';
+  const nowMs = Date.parse('2026-06-21T03:12:01.000Z');
+
+  assert.equal(isAiCardStalePending(workflow.candidatePool[target], nowMs), true);
+  const skipped = selectTodayAiCardTargets(workflow, { mode: 'today', words: [target], nowMs });
+  assert.deepEqual(skipped.targets, []);
+  assert.deepEqual(skipped.skipped.pending, [target]);
+  assert.deepEqual(skipped.skipped.stalePending, [target]);
+
+  const retry = selectTodayAiCardTargets(workflow, {
+    mode: 'today',
+    words: [target],
+    retryStalePending: true,
+    nowMs
+  });
+  assert.deepEqual(retry.targets, [target]);
+});
+
+test('ai-cards fresh pending 即使 retryStalePending=true 也不重试', () => {
+  const workflow = makeCardWorkflow();
+  const target = workflow.todaySnapshot.words[0];
+  workflow.candidatePool[target].aiCard = {
+    cardStatus: 'pending',
+    summary: 'DeepSeek 词卡生成中',
+    generatedAt: '2026-06-21T03:08:00.000Z'
+  };
+  const nowMs = Date.parse('2026-06-21T03:12:00.000Z');
+
+  assert.equal(isAiCardStalePending(workflow.candidatePool[target], nowMs), false);
+  const skipped = selectTodayAiCardTargets(workflow, {
+    mode: 'today',
+    words: [target],
+    retryStalePending: true,
+    nowMs
+  });
+  assert.deepEqual(skipped.targets, []);
+  assert.deepEqual(skipped.skipped.pending, [target]);
+  assert.deepEqual(skipped.skipped.stalePending, []);
+});
+
+test('ai-cards stale pending 汇总统计正确', () => {
+  const workflow = makeCardWorkflow();
+  workflow.candidatePool[workflow.todaySnapshot.words[0]].aiCard = {
+    cardStatus: 'pending',
+    summary: 'DeepSeek 词卡生成中',
+    generatedAt: '2026-06-21T03:00:00.000Z'
+  };
+  workflow.candidatePool[workflow.todaySnapshot.words[1]].aiCard = {
+    cardStatus: 'pending',
+    summary: 'DeepSeek 词卡生成中',
+    generatedAt: '2026-06-21T03:11:00.000Z'
+  };
+
+  const summary = summarizeTodayAiCards(workflow, { nowMs: Date.parse('2026-06-21T03:12:01.000Z') });
+  assert.equal(summary.pendingCount, 2);
+  assert.equal(summary.stalePendingCount, 1);
+  assert.equal(summary.items[0].stalePending, true);
+  assert.equal(summary.items[1].stalePending, false);
+});
+
+test('ai-cards stale pending 重试写回不改变 todaySnapshot / favorites', () => {
+  const workflow = makeCardWorkflow();
+  const target = workflow.todaySnapshot.words[0];
+  workflow.candidatePool[target].aiCard = {
+    cardStatus: 'pending',
+    summary: 'DeepSeek 词卡生成中',
+    generatedAt: '2026-06-21T03:00:00.000Z'
+  };
+  const nowMs = Date.parse('2026-06-21T03:12:01.000Z');
+  const selection = selectTodayAiCardTargets(workflow, {
+    mode: 'today',
+    words: [target],
+    retryStalePending: true,
+    nowMs
+  });
+  assert.deepEqual(selection.targets, [target]);
+
+  const result = applyAiCardGenerationResult(workflow, {
+    targets: selection.targets,
+    usage: { model: 'deepseek-test', createdAt: '2026-06-21T04:00:00.000Z' },
+    items: [{ kanji: target, aiCard: { cardStatus: 'ready', summary: '重试成功词卡' } }]
+  });
+  assert.equal(result.savedCount, 1);
+  assert.equal(result.workflow.candidatePool[target].aiCard.cardStatus, 'ready');
+  assert.equal(result.workflow.candidatePool[target].aiCard.summary, '重试成功词卡');
+  assert.deepEqual(result.workflow.todaySnapshot.words, workflow.todaySnapshot.words);
+  assert.deepEqual(result.workflow.words, workflow.words);
+  assert.deepEqual(result.workflow.statuses, workflow.statuses);
+  assert.ok(result.workflow.historySnapshots['2026-06-20']);
 });
 
 test('ai-cards 状态汇总统计 ready missing failed', () => {

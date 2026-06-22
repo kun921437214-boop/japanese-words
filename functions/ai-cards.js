@@ -16,6 +16,7 @@ const CORS_HEADERS = {
 };
 
 const MAX_WORDS_PER_REQUEST = 5;
+export const AI_CARD_PENDING_TTL_MS = 10 * 60 * 1000;
 
 function jsonResponse(body, status = 200) {
   return new Response(JSON.stringify(body), {
@@ -87,16 +88,31 @@ function getCardStatus(workflow, kanji) {
   return card.cardStatus || 'none';
 }
 
-export function summarizeTodayAiCards(workflow = {}) {
+function parseTimeMs(value) {
+  const timestamp = Date.parse(String(value || ''));
+  return Number.isFinite(timestamp) ? timestamp : 0;
+}
+
+export function isAiCardStalePending(entry = {}, nowMs = Date.now()) {
+  const aiCard = cleanAiCard(entry.aiCard || entry || {});
+  if (aiCard.cardStatus !== 'pending') return false;
+  const startedAtMs = parseTimeMs(aiCard.generatedAt || entry.updatedAt);
+  return Boolean(startedAtMs && Number.isFinite(nowMs) && nowMs - startedAtMs > AI_CARD_PENDING_TTL_MS);
+}
+
+export function summarizeTodayAiCards(workflow = {}, options = {}) {
   const cleanWorkflow = cleanStoredWorkflow(workflow);
   const words = cleanWords(cleanWorkflow.todaySnapshot?.words).slice(0, 20);
+  const nowMs = Number.isFinite(options.nowMs) ? options.nowMs : Date.now();
   const items = words.map(kanji => {
     const entry = cleanWorkflow.candidatePool?.[kanji] || {};
     const aiCard = cleanAiCard(entry.aiCard || {});
     const status = aiCard.cardStatus || 'none';
+    const stalePending = isAiCardStalePending(entry, nowMs);
     return {
       kanji,
       cardStatus: status,
+      stalePending,
       generatedAt: aiCard.generatedAt || '',
       summary: aiCard.summary || ''
     };
@@ -104,6 +120,7 @@ export function summarizeTodayAiCards(workflow = {}) {
   const readyCount = items.filter(item => item.cardStatus === 'ready').length;
   const failedCount = items.filter(item => item.cardStatus === 'failed').length;
   const pendingCount = items.filter(item => item.cardStatus === 'pending').length;
+  const stalePendingCount = items.filter(item => item.stalePending).length;
   return {
     todaySnapshot: {
       dateKey: cleanWorkflow.todaySnapshot?.dateKey || '',
@@ -113,7 +130,8 @@ export function summarizeTodayAiCards(workflow = {}) {
     readyCount,
     missingCount: Math.max(0, items.length - readyCount - failedCount - pendingCount),
     failedCount,
-    pendingCount
+    pendingCount,
+    stalePendingCount
   };
 }
 
@@ -127,6 +145,8 @@ export function selectTodayAiCardTargets(workflow = {}, options = {}) {
   const requestedWords = cleanWords(options.words || []).slice(0, 50);
   const force = Boolean(options.force);
   const retryFailed = Boolean(options.retryFailed);
+  const retryStalePending = Boolean(options.retryStalePending);
+  const nowMs = Number.isFinite(options.nowMs) ? options.nowMs : Date.now();
   const maxWords = clamp(toInt(options.maxWords, MAX_WORDS_PER_REQUEST), 1, MAX_WORDS_PER_REQUEST);
   const candidateWords = requestedWords.length ? requestedWords.filter(word => todaySet.has(word)) : todayWords;
   const skipped = {
@@ -134,6 +154,7 @@ export function selectTodayAiCardTargets(workflow = {}, options = {}) {
     ready: [],
     failed: [],
     pending: [],
+    stalePending: [],
     missingEntry: [],
     limited: []
   };
@@ -147,7 +168,13 @@ export function selectTodayAiCardTargets(workflow = {}, options = {}) {
       return;
     }
     if (status === 'pending') {
+      const stalePending = isAiCardStalePending(entry, nowMs);
+      if (stalePending && retryStalePending) {
+        targets.push(kanji);
+        return;
+      }
       skipped.pending.push(kanji);
+      if (stalePending) skipped.stalePending.push(kanji);
       return;
     }
     if (status === 'ready' && !force) {
@@ -169,7 +196,8 @@ export function selectTodayAiCardTargets(workflow = {}, options = {}) {
     todayWords,
     maxWords,
     force,
-    retryFailed
+    retryFailed,
+    retryStalePending
   };
 }
 
