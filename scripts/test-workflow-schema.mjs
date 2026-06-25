@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
 import {
   cleanStoredWorkflow,
   mergeWorkflow,
@@ -43,6 +44,15 @@ const readyCard = {
   suggestedTitles: ['日本人说「こなれ」，不是普通熟练'],
   interactionPrompts: ['你会用它形容哪种穿搭？']
 };
+
+test('前端初始化不会自动触发今日推荐生成', () => {
+  const appSource = fs.readFileSync(new URL('../app.js', import.meta.url), 'utf8');
+  assert.equal((appSource.match(/queueDailyAutoRefreshIfNeeded\(/g) || []).length, 1);
+  assert.ok(appSource.includes('if (!options.force) return false;'));
+  assert.equal(appSource.includes('正在自动生成今日推荐'), false);
+  assert.equal(appSource.includes('自动生成中'), false);
+  assert.ok(appSource.includes('function handleGenerateTodaySnapshot()'));
+});
 
 test('getAccountLearningSummary 提供账号学习规则入口', () => {
   const summary = getAccountLearningSummary();
