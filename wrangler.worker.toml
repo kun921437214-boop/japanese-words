@@ -5,7 +5,7 @@ workers_dev = true
 preview_urls = false
 
 [triggers]
-crons = ["0 16 * * *"]
+crons = ["0 16 * * *", "10,20,30,40,50 16 * * *", "0 17 * * *"]
 
 [[kv_namespaces]]
 binding = "FAVORITES"
