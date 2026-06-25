@@ -3034,7 +3034,7 @@ function markAutoDailySuccess() {
 }
 
 function shouldRunDailyAutoRefresh(options = {}) {
-  if (options.force) return true;
+  if (!options.force) return false;
   if (hasTodaySnapshotForToday(todaySnapshot)) return false;
   const state = getRenderableAutoDailyRefreshState();
   if (state.dateKey === todayKey() && state.status === 'success' && hasTodaySnapshotForToday(todaySnapshot)) return false;
@@ -7401,15 +7401,11 @@ function renderTodayGrid(words, options = {}) {
     return;
   }
   const state = getRenderableAutoDailyRefreshState();
-  if (state.dateKey === todayKey() && state.status === 'running') {
-    grid.innerHTML = '<div class="empty-state inline-empty"><div class="empty-title">正在自动生成今日推荐……</div><div class="empty-desc">正在自动生成每日热门，请稍等……系统会先生成候选、入库、筛出今日 20 个，再补齐词卡。</div><button class="btn btn-primary" disabled>自动生成中</button></div>';
-    return;
-  }
   if (state.dateKey === todayKey() && state.status === 'failed') {
-    grid.innerHTML = `<div class="empty-state inline-empty"><div class="empty-title">自动更新失败，可以手动生成</div><div class="empty-desc">${escapeHTML(state.error || '服务暂时不可用，可以手动点击生成。')}</div><button class="btn btn-primary" data-today-action onclick="handleGenerateTodaySnapshot()">手动生成今日 20 个</button></div>`;
+    grid.innerHTML = `<div class="empty-state inline-empty"><div class="empty-title">今天暂无固定推荐</div><div class="empty-desc">${escapeHTML(state.error || '可等待每日定时任务生成，或点击“管理今日推荐”手动生成。')}</div><button class="btn btn-primary" data-today-action onclick="handleGenerateTodaySnapshot()">手动生成今日 20 个</button></div>`;
     return;
   }
-  grid.innerHTML = '<div class="empty-state inline-empty"><div class="empty-title">今天还没有固定推荐</div><div class="empty-desc">可以从 AI 候选库生成今日推荐。系统也会在自动日更时补齐。</div><button class="btn btn-primary" data-today-action onclick="handleGenerateTodaySnapshot()">手动生成今日 20 个</button></div>';
+  grid.innerHTML = '<div class="empty-state inline-empty"><div class="empty-title">今天暂无固定推荐</div><div class="empty-desc">可等待每日定时任务生成，或点击“管理今日推荐”手动生成。</div><button class="btn btn-primary" data-today-action onclick="handleGenerateTodaySnapshot()">手动生成今日 20 个</button></div>';
 }
 
 function renderHistoryGrid(words) {
@@ -8895,7 +8891,6 @@ function switchTab(tab) {
   localStorage.setItem(ACTIVE_TAB_STORAGE_KEY, targetTab);
   if (targetTab === 'today') {
     renderToday();
-    if (!todayWords.length) queueDailyAutoRefreshIfNeeded().catch(error => console.warn('自动日更触发失败', error));
   }
   else if (targetTab === 'favorites') renderFavorites();
   else if (targetTab === 'candidate') renderCandidatePool();
@@ -9016,7 +9011,6 @@ async function syncRemoteDataInBackground() {
   hydrateTodayWordsFromSnapshot();
   updateAllBadges();
   refreshCurrentGrid();
-  queueDailyAutoRefreshIfNeeded().catch(error => console.warn('自动日更触发失败', error));
   return true;
 }
 
@@ -9117,7 +9111,6 @@ async function init() {
   ensureTodayGridVisible(true);
   requestAnimationFrame(() => ensureTodayGridVisible());
   setTimeout(() => ensureTodayGridVisible(), 0);
-  if (cloudLoaded) queueDailyAutoRefreshIfNeeded().catch(error => console.warn('自动日更触发失败', error));
 }
 
 window.addEventListener('pageshow', () => {
