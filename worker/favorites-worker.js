@@ -402,12 +402,21 @@ export default {
     const autoRefreshSecret = String(env.AUTO_REFRESH_SECRET || '').trim();
     if (siteUrl && autoRefreshSecret) {
       ctx.waitUntil(
-        fetch(`${siteUrl}/daily-refresh`, {
-          method: 'POST',
-          headers: {
-            Authorization: `Bearer ${autoRefreshSecret}`
+        (async () => {
+          const refreshUrl = new URL(`${siteUrl}/daily-refresh`);
+          refreshUrl.searchParams.set('mode', 'manual');
+          refreshUrl.searchParams.set('skipCards', 'true');
+          const response = await fetch(refreshUrl.toString(), {
+            method: 'POST',
+            headers: {
+              Authorization: `Bearer ${autoRefreshSecret}`
+            }
+          });
+          if (!response.ok) {
+            const text = await response.text().catch(() => '');
+            console.warn('daily refresh trigger returned non-OK', response.status, text.slice(0, 500));
           }
-        }).catch(error => console.warn('daily refresh trigger failed', error?.message || error))
+        })().catch(error => console.warn('daily refresh trigger failed', error?.message || error))
       );
     }
 
