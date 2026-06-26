@@ -19,6 +19,13 @@ const CORS_HEADERS = {
   'Access-Control-Max-Age': '86400'
 };
 
+const DAILY_REFRESH_CRON = '0 16 * * *';
+const AI_CARD_BATCH_CRONS = new Set([
+  '10,20,30,40,50 16 * * *',
+  '0 17 * * *'
+]);
+const AI_CARD_BATCH_MAX_WORDS = 5;
+
 function jsonResponse(body, status = 200) {
   return new Response(JSON.stringify(body), {
     status,
@@ -26,6 +33,88 @@ function jsonResponse(body, status = 200) {
       ...CORS_HEADERS,
       'Content-Type': 'application/json; charset=utf-8'
     }
+  });
+}
+
+async function readLimitedText(response, maxLength = 500) {
+  const text = await response.text().catch(() => '');
+  return text.slice(0, maxLength);
+}
+
+async function triggerDailyRefresh(env) {
+  const siteUrl = String(env.SITE_URL || '').trim().replace(/\/+$/, '');
+  const autoRefreshSecret = String(env.AUTO_REFRESH_SECRET || '').trim();
+  if (!siteUrl || !autoRefreshSecret) {
+    console.warn('daily refresh trigger skipped because SITE_URL or AUTO_REFRESH_SECRET is missing');
+    return;
+  }
+
+  const refreshUrl = new URL(`${siteUrl}/daily-refresh`);
+  refreshUrl.searchParams.set('mode', 'manual');
+  refreshUrl.searchParams.set('skipCards', 'true');
+  const response = await fetch(refreshUrl.toString(), {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${autoRefreshSecret}`
+    }
+  });
+  if (!response.ok) {
+    const text = await readLimitedText(response);
+    console.warn('daily refresh trigger returned non-OK', response.status, text);
+    return;
+  }
+  console.log('daily refresh trigger completed', response.status);
+}
+
+async function triggerTodayAiCardBatch(env) {
+  const siteUrl = String(env.SITE_URL || '').trim().replace(/\/+$/, '');
+  if (!siteUrl) {
+    console.warn('ai card batch skipped because SITE_URL is missing');
+    return;
+  }
+
+  const cardsUrl = new URL(`${siteUrl}/ai-cards`);
+  const statusResponse = await fetch(cardsUrl.toString());
+  if (!statusResponse.ok) {
+    const text = await readLimitedText(statusResponse);
+    console.warn('ai card batch status returned non-OK', statusResponse.status, text);
+    return;
+  }
+
+  const status = await statusResponse.json().catch(() => null);
+  const readyCount = Number.parseInt(status?.readyCount, 10) || 0;
+  const missingCount = Number.parseInt(status?.missingCount, 10) || 0;
+  const pendingCount = Number.parseInt(status?.pendingCount, 10) || 0;
+  console.log('ai card batch status', { readyCount, missingCount, pendingCount });
+
+  if (missingCount <= 0) return;
+  if (pendingCount > 0) {
+    console.warn('ai card batch skipped because cards are pending', { missingCount, pendingCount });
+    return;
+  }
+
+  const response = await fetch(cardsUrl.toString(), {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({
+      mode: 'today',
+      maxWords: AI_CARD_BATCH_MAX_WORDS
+    })
+  });
+  if (!response.ok) {
+    const text = await readLimitedText(response);
+    console.warn('ai card batch returned non-OK', response.status, text);
+    return;
+  }
+
+  const result = await response.json().catch(() => ({}));
+  console.log('ai card batch completed', {
+    status: response.status,
+    savedCount: Number.parseInt(result?.savedCount, 10) || 0,
+    missingCount,
+    readyCount
   });
 }
 
@@ -398,29 +487,20 @@ export default {
   },
 
   async scheduled(controller, env, ctx) {
-    const siteUrl = String(env.SITE_URL || '').trim().replace(/\/+$/, '');
-    const autoRefreshSecret = String(env.AUTO_REFRESH_SECRET || '').trim();
-    if (siteUrl && autoRefreshSecret) {
+    const cron = String(controller?.cron || '').trim();
+    if (cron === DAILY_REFRESH_CRON) {
       ctx.waitUntil(
-        (async () => {
-          const refreshUrl = new URL(`${siteUrl}/daily-refresh`);
-          refreshUrl.searchParams.set('mode', 'manual');
-          refreshUrl.searchParams.set('skipCards', 'true');
-          const response = await fetch(refreshUrl.toString(), {
-            method: 'POST',
-            headers: {
-              Authorization: `Bearer ${autoRefreshSecret}`
-            }
-          });
-          if (!response.ok) {
-            const text = await response.text().catch(() => '');
-            console.warn('daily refresh trigger returned non-OK', response.status, text.slice(0, 500));
-          }
-        })().catch(error => console.warn('daily refresh trigger failed', error?.message || error))
+        triggerDailyRefresh(env).catch(error => console.warn('daily refresh trigger failed', error?.message || error))
       );
     }
 
-    if (!env.FAVORITES) return;
+    if (AI_CARD_BATCH_CRONS.has(cron)) {
+      ctx.waitUntil(
+        triggerTodayAiCardBatch(env).catch(error => console.warn('ai card batch failed', error?.message || error))
+      );
+    }
+
+    if (!env.FAVORITES || cron !== DAILY_REFRESH_CRON) return;
     let cursor;
     do {
       const listed = await env.FAVORITES.list({ prefix: 'favorites:', cursor });

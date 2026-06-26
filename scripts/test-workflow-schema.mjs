@@ -54,6 +54,30 @@ test('前端初始化不会自动触发今日推荐生成', () => {
   assert.ok(appSource.includes('function handleGenerateTodaySnapshot()'));
 });
 
+test('scheduled Worker 分离日更和 aiCard 批量 cron', () => {
+  const workerConfig = fs.readFileSync(new URL('../wrangler.worker.toml', import.meta.url), 'utf8');
+  const workerSource = fs.readFileSync(new URL('../worker/favorites-worker.js', import.meta.url), 'utf8');
+
+  assert.ok(workerConfig.includes('"0 16 * * *"'));
+  assert.ok(workerConfig.includes('"10,20,30,40,50 16 * * *"'));
+  assert.ok(workerConfig.includes('"0 17 * * *"'));
+  assert.ok(workerSource.includes("const DAILY_REFRESH_CRON = '0 16 * * *';"));
+  assert.ok(workerSource.includes("const AI_CARD_BATCH_MAX_WORDS = 5;"));
+  assert.ok(workerSource.includes("new URL(`${siteUrl}/daily-refresh`)"));
+  assert.ok(workerSource.includes("refreshUrl.searchParams.set('mode', 'manual')"));
+  assert.ok(workerSource.includes("refreshUrl.searchParams.set('skipCards', 'true')"));
+  assert.ok(workerSource.includes('Authorization: `Bearer ${autoRefreshSecret}`'));
+  assert.ok(workerSource.includes("new URL(`${siteUrl}/ai-cards`)"));
+  assert.ok(workerSource.includes("mode: 'today'"));
+  assert.ok(workerSource.includes('maxWords: AI_CARD_BATCH_MAX_WORDS'));
+  assert.ok(workerSource.includes('if (missingCount <= 0) return;'));
+  assert.ok(workerSource.includes('if (pendingCount > 0)'));
+  assert.ok(workerSource.includes('cron !== DAILY_REFRESH_CRON'));
+  assert.equal(workerSource.includes('force: true'), false);
+  assert.equal(workerSource.includes('retryFailed: true'), false);
+  assert.equal(workerSource.includes('retryStalePending: true'), false);
+});
+
 test('getAccountLearningSummary 提供账号学习规则入口', () => {
   const summary = getAccountLearningSummary();
   assert.ok(summary.preferredDirections.includes('情绪状态'));
