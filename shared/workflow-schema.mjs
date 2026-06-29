@@ -368,6 +368,15 @@ function cleanNumberSummary(summary = {}, keys = [], min = 0, max = 1000) {
   }, {});
 }
 
+function cleanCountMap(summary = {}, limit = 40) {
+  return Object.entries(summary || {}).reduce((result, [key, value]) => {
+    const cleanKey = cleanText(key, 80);
+    if (!cleanKey || Object.keys(result).length >= limit) return result;
+    result[cleanKey] = clamp(toInt(value, 0), 0, 1000);
+    return result;
+  }, {});
+}
+
 function cleanNoveltySummary(summary = {}) {
   const countKeys = [
     'generatedUniqueCount',
@@ -395,14 +404,23 @@ function cleanRecommendationAuditSummary(audit = {}) {
     'sLevelCount',
     'aLevelCount',
     'bLevelCount',
-    'cLevelCount'
+    'cLevelCount',
+    'score'
   ];
+  const qualitySummary = audit?.qualitySummary || {};
   return {
     ...(audit || {}),
     date: cleanText(audit?.date, 20),
     total: clamp(toInt(audit?.total, 0), 0, 100),
     sourceSummary: cleanNumberSummary(audit?.sourceSummary, sourceSummaryKeys, 0, 1000),
-    qualitySummary: cleanNumberSummary(audit?.qualitySummary, qualitySummaryKeys, 0, 1000),
+    qualitySummary: {
+      ...cleanNumberSummary(qualitySummary, qualitySummaryKeys, 0, 1000),
+      categoryCounts: cleanCountMap(qualitySummary?.categoryCounts, 20),
+      clusterCounts: cleanCountMap(qualitySummary?.clusterCounts, 50),
+      warnings: uniqueStrings(qualitySummary?.warnings, 240, 12),
+      relaxed: Boolean(qualitySummary?.relaxed),
+      relaxedReasons: uniqueStrings(qualitySummary?.relaxedReasons, 120, 12)
+    },
     noveltySummary: cleanNoveltySummary(audit?.noveltySummary || {}),
     diagnosis: safeArray(audit?.diagnosis).map(text => cleanText(text, 300)).filter(Boolean).slice(0, 12),
     items: safeArray(audit?.items).map(cleanRecommendationAuditItem).filter(Boolean).slice(0, 100),
