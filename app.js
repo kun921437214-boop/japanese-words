@@ -127,6 +127,51 @@ const AUDIT_SPELLING_SUGGESTIONS = {
   '痛バック': '建议修正为「痛バッグ」',
   'オーバサイズ': '建议修正为「オーバーサイズ」'
 };
+const DAILY_QUALITY_SEMANTIC_CLUSTERS = [
+  { key: 'moya_state', words: ['モヤる', 'もやもや'] },
+  { key: 'tension_mood', words: ['テンション', 'テンション上がる', 'テンションが上がる', 'テンション下がる', 'テンションが下がる'] },
+  { key: 'read_the_room', words: ['空気読む', '空気を読む', '空気読める'] },
+  { key: 'consideration', words: ['気を遣う', '気遣い'] },
+  { key: 'oshi_identity', words: ['推し', '自担', '同担'] }
+];
+const DAILY_QUALITY_CLUSTER_WORD_MAP = DAILY_QUALITY_SEMANTIC_CLUSTERS.reduce((result, cluster) => {
+  cluster.words.forEach(word => {
+    result[word] = cluster.key;
+  });
+  return result;
+}, {});
+const DAILY_QUALITY_BASIC_POLITE_WORDS = new Set([
+  '失礼します',
+  'おはようございます',
+  'こんにちは',
+  'こんばんは',
+  'ありがとうございます',
+  'すみません',
+  'お願いします',
+  'よろしくお願いします',
+  'お疲れ様',
+  'お世話になります',
+  'お久しぶりです',
+  'お元気ですか',
+  'お邪魔します'
+]);
+const DAILY_QUALITY_GENERIC_BASIC_WORDS = new Set([
+  '頑張る',
+  '集中',
+  '充実',
+  'テンション',
+  'カップル',
+  'オタク'
+]);
+const DAILY_QUALITY_BEAUTY_WORDS = new Set([
+  'ツヤ肌',
+  '涙袋メイク',
+  'メンズメイク',
+  'ベースメイク',
+  'ネイル',
+  '洗顔'
+]);
+const DAILY_QUALITY_BEAUTY_CONTEXT_RE = /美妆|美妝|メイク|肌|涙袋|ツヤ|コスメ|化粧|美容|スキンケア|ネイル/i;
 const PROMPT_VERSION_BY_ACTION = {
   stable_today: 'candidate-v3',
   wild_ideas: 'candidate-v3',
@@ -1303,6 +1348,65 @@ function isGenericTopicWord(entry = {}) {
   return GENERIC_TOPIC_CONTEXT_RE.test(`${kanji} ${getEntryContextText(entry)}`);
 }
 
+function getSemanticClusterKey(entry = {}) {
+  const kanji = normalizeKanjiSpelling(entry.kanji);
+  if (!kanji) return '';
+  if (DAILY_QUALITY_CLUSTER_WORD_MAP[kanji]) return DAILY_QUALITY_CLUSTER_WORD_MAP[kanji];
+  const text = `${kanji} ${getEntryContextText(entry)}`;
+  if (/モヤる|もやもや/.test(text)) return 'moya_state';
+  if (/テンション(が)?(上がる|下がる)?/.test(text)) return 'tension_mood';
+  if (/空気(を)?読(む|める)/.test(text)) return 'read_the_room';
+  if (/気を遣う|気遣い/.test(text)) return 'consideration';
+  if (/推し|自担|同担/.test(text)) return 'oshi_identity';
+  return `word:${kanji}`;
+}
+
+function isBasicPoliteWord(entry = {}) {
+  const kanji = normalizeKanjiSpelling(entry.kanji);
+  if (!kanji) return false;
+  if (DAILY_QUALITY_BASIC_POLITE_WORDS.has(kanji)) return true;
+  const text = `${kanji} ${getEntryContextText(entry)}`;
+  return /教材|挨拶|寒暄|礼貌用语|礼貌|ビジネス日本語|敬語/.test(text)
+    && /失礼します|お願いします|お疲れ様|お世話になります|こんにちは|ありがとうございます|すみません/.test(text);
+}
+
+function isGenericBasicWord(entry = {}) {
+  const kanji = normalizeKanjiSpelling(entry.kanji);
+  if (!kanji) return false;
+  if (DAILY_QUALITY_GENERIC_BASIC_WORDS.has(kanji)) return true;
+  const text = `${kanji} ${getEntryContextText(entry)}`;
+  return /基础|基礎|普通|泛用|常见|常用|一眼懂|太泛/.test(text)
+    && !EXPRESSION_VALUE_STRONG_RE.test(text);
+}
+
+function isBeautyCategoryWord(entry = {}) {
+  const kanji = normalizeKanjiSpelling(entry.kanji);
+  if (!kanji) return false;
+  if (DAILY_QUALITY_BEAUTY_WORDS.has(kanji)) return true;
+  const text = `${kanji} ${getEntryContextText(entry)}`;
+  return entry.candidateType === '美妆穿搭词' || DAILY_QUALITY_BEAUTY_CONTEXT_RE.test(text);
+}
+
+function hasStrongXhsExpressionValue(entry = {}) {
+  const text = `${normalizeKanjiSpelling(entry.kanji)} ${getEntryContextText(entry)}`;
+  return getExpressionValueScore(entry) >= 82
+    || EXPRESSION_VALUE_STRONG_RE.test(text)
+    || EXPRESSION_VALUE_CONTEXT_RE.test(text);
+}
+
+function getDailyQualityCategory(entry = {}) {
+  if (isBasicPoliteWord(entry)) return 'basic_polite';
+  if (isBeautyCategoryWord(entry)) return 'beauty_category';
+  if (isGenericBasicWord(entry)) return 'generic_basic';
+  const tone = getAccountLearningTone(entry);
+  if (tone === 'emotion_social') return 'emotion_social';
+  if (tone === 'lifestyle') return 'life_state';
+  if (tone === 'fandom') return 'fandom_circle';
+  if (tone === 'aesthetic') return 'aesthetic_expression';
+  if (hasStrongXhsExpressionValue(entry)) return 'xhs_expression';
+  return 'other';
+}
+
 function getExpressionValueScore(entry = {}) {
   const explicit = toInt(entry.expressionValueScore, 0);
   if (explicit > 0) return clamp(explicit, 0, 100);
@@ -1404,8 +1508,30 @@ function buildRecommendationAuditItem(wordOrEntry = {}, context = {}) {
   const expressionValueScore = getExpressionValueScore(entry);
   const chineseTransparencyScore = getChineseTransparencyScore(entry);
   const genericTopic = isGenericTopicWord(entry);
+  const semanticClusterKey = getSemanticClusterKey(entry);
+  const qualityCategory = getDailyQualityCategory(entry);
+  const clusterCount = semanticClusterKey ? toInt(context.semanticClusterCounts?.[semanticClusterKey], 0) : 0;
+  const clusterPrimaryKanji = semanticClusterKey ? context.semanticClusterPrimaryKanji?.[semanticClusterKey] : '';
+  const isDuplicateCluster = Boolean(semanticClusterKey && clusterCount > 1);
+  const isDuplicateClusterSecondary = Boolean(isDuplicateCluster && clusterPrimaryKanji && clusterPrimaryKanji !== normalizeKanjiSpelling(entry.kanji));
+  const isBasicPolite = qualityCategory === 'basic_polite';
+  const isGenericBasic = qualityCategory === 'generic_basic';
+  const isBeautyCategory = qualityCategory === 'beauty_category';
+  const isBeautyCategorySecondary = Boolean(isBeautyCategory && context.beautyCategoryCount > 1 && context.beautyCategoryPrimaryKanji && context.beautyCategoryPrimaryKanji !== normalizeKanjiSpelling(entry.kanji));
+  const pureCategoryWord = isBeautyCategory && !hasStrongXhsExpressionValue(entry);
+  const sLevelEligible = !isBasicPolite
+    && !isGenericBasic
+    && !isDuplicateClusterSecondary
+    && !pureCategoryWord
+    && !isBeautyCategorySecondary
+    && expressionValueScore >= 78;
   const diagnosis = [];
   if (genericTopic) diagnosis.push('泛话题词，适合候选池观察，不宜默认强推');
+  if (isBasicPolite) diagnosis.push('基础礼貌 / 教材寒暄词，不应默认评为 S');
+  if (isGenericBasic) diagnosis.push('泛基础词，适合做内容但不应默认强推为 S');
+  if (isBeautyCategory) diagnosis.push('美妆品类词，需要控制同日占比');
+  if (isDuplicateClusterSecondary) diagnosis.push('同语义簇重复词，最多作为 A/B 补充，不应与主词同为 S');
+  if (isBeautyCategorySecondary) diagnosis.push('同日美妆品类集中，建议最多保留一个 S 级美妆词');
   if (chineseTransparencyScore >= 80) diagnosis.push('中文透明度高，可能缺少日语语感解释价值');
   if (expressionValueScore < 55) diagnosis.push('表达价值偏低');
   if (audit.isBackfill) diagnosis.push('补位入选，需要关注候选池是否不足');
@@ -1416,8 +1542,19 @@ function buildRecommendationAuditItem(wordOrEntry = {}, context = {}) {
   return cleanRecommendationAuditItem({
     kanji: entry.kanji || wordOrEntry.kanji || '',
     meaning: entry.meaning || wordOrEntry.meaning || '',
-    recommendationLevel: getRecommendationGrade(wordOrEntry),
+    recommendationLevel: getRecommendationGrade(wordOrEntry, {
+      sLevelEligible,
+      isDuplicateClusterSecondary,
+      isBeautyCategorySecondary,
+      isBasicPolite,
+      isGenericBasic,
+      pureCategoryWord
+    }),
     riskLevel: entry.riskLevel || wordOrEntry.riskLevel || '',
+    semanticClusterKey,
+    qualityCategory,
+    isDuplicateCluster,
+    sLevelEligible,
     ...audit,
     finalScore: clamp(toInt(wordOrEntry.finalScore || entry.lastScore || entry.xhsFitScore, 0), 0, 100),
     accountLearningBonus: clamp(toInt(entry.accountLearningBonus || wordOrEntry.accountLearningBonus || 0), -50, 50),
@@ -1437,7 +1574,35 @@ function averageNumber(values = []) {
 }
 
 function buildTodayRecommendationAudit(words = [], context = {}) {
-  const items = safeArray(words).map(word => buildRecommendationAuditItem(word, context));
+  const normalizedWords = safeArray(words);
+  const clusterBuckets = normalizedWords.reduce((result, word) => {
+    const entry = word.candidateMeta || word || {};
+    const key = getSemanticClusterKey(entry);
+    if (!key) return result;
+    result[key] = result[key] || [];
+    result[key].push(normalizeKanjiSpelling(entry.kanji || word.kanji));
+    return result;
+  }, {});
+  const semanticClusterCounts = Object.entries(clusterBuckets).reduce((result, [key, list]) => ({
+    ...result,
+    [key]: list.length
+  }), {});
+  const semanticClusterPrimaryKanji = Object.entries(clusterBuckets).reduce((result, [key, list]) => ({
+    ...result,
+    [key]: list[0] || ''
+  }), {});
+  const beautyWords = normalizedWords
+    .map(word => word.candidateMeta || word || {})
+    .filter(isBeautyCategoryWord)
+    .map(entry => normalizeKanjiSpelling(entry.kanji));
+  const auditContext = {
+    ...context,
+    semanticClusterCounts,
+    semanticClusterPrimaryKanji,
+    beautyCategoryCount: beautyWords.length,
+    beautyCategoryPrimaryKanji: beautyWords[0] || ''
+  };
+  const items = normalizedWords.map(word => buildRecommendationAuditItem(word, auditContext));
   const sourceSummary = RECOMMENDATION_ORIGIN_TYPES.reduce((result, key) => ({ ...result, [key]: 0 }), {});
   items.forEach(item => {
     sourceSummary[item.originType] = (sourceSummary[item.originType] || 0) + 1;
@@ -1447,6 +1612,12 @@ function buildTodayRecommendationAudit(words = [], context = {}) {
     if (item.isBackfill && item.originType !== 'today_backfill') sourceSummary.today_backfill += 1;
     if (item.isDedupRelaxed && item.originType !== 'dedup_relaxed') sourceSummary.dedup_relaxed += 1;
   });
+  const duplicateClusters = Object.entries(clusterBuckets)
+    .filter(([, list]) => list.length > 1)
+    .map(([key, list]) => ({ key, words: getUniqueWords(list) }));
+  const beautyCategoryCount = items.filter(item => item.qualityCategory === 'beauty_category').length;
+  const basicPoliteCount = items.filter(item => item.qualityCategory === 'basic_polite').length;
+  const genericBasicCount = items.filter(item => item.qualityCategory === 'generic_basic').length;
   const qualitySummary = {
     averageFinalScore: averageNumber(items.map(item => item.finalScore)),
     averageExpressionValueScore: averageNumber(items.map(item => item.expressionValueScore)),
@@ -1456,7 +1627,14 @@ function buildTodayRecommendationAudit(words = [], context = {}) {
     sLevelCount: items.filter(item => item.recommendationLevel === 'S').length,
     aLevelCount: items.filter(item => item.recommendationLevel === 'A').length,
     bLevelCount: items.filter(item => item.recommendationLevel === 'B').length,
-    cLevelCount: items.filter(item => item.recommendationLevel === 'C').length
+    cLevelCount: items.filter(item => item.recommendationLevel === 'C').length,
+    duplicateClusterCount: duplicateClusters.length,
+    duplicateClusters,
+    beautyCategoryCount,
+    basicPoliteCount,
+    genericBasicCount,
+    categoryConcentrationWarnings: [],
+    healthWarnings: []
   };
   const total = items.length || 1;
   const latestBatchItems = safeArray(context.latestBatchItems);
@@ -1467,8 +1645,25 @@ function buildTodayRecommendationAudit(words = [], context = {}) {
   if ((sourceSummary.today_backfill / total) > 0.3) diagnosis.push('今日推荐候选不足，补位比例过高，建议不要硬凑满 20 个。');
   if ((sourceSummary.local_word_bank / total) > 0.2) diagnosis.push('本地词库兜底过多，说明候选池有效词不足或去重规则过滤太多。');
   if ((sourceSummary.dedup_relaxed / total) > 0.2) diagnosis.push('30 天去重后候选不足，需要扩大候选池，而不是频繁放宽去重。');
-  if (qualitySummary.sLevelCount > 10) diagnosis.push('推荐等级过松，需要收紧 S/A 评分标准。');
+  if (qualitySummary.sLevelCount >= 10) diagnosis.push('推荐等级过松，需要收紧 S/A 评分标准。');
   if (qualitySummary.highTransparencyCount > 6) diagnosis.push('首页中文一眼懂的词偏多，会影响点击率，需要提高表达价值筛选。');
+  duplicateClusters.forEach(cluster => {
+    qualitySummary.healthWarnings.push(`同语义簇重复：${cluster.words.join(' / ')}`);
+  });
+  if (beautyCategoryCount > 1) {
+    qualitySummary.categoryConcentrationWarnings.push(`美妆品类词同日 ${beautyCategoryCount} 个，建议最多 1 个强推`);
+  }
+  if (basicPoliteCount) qualitySummary.healthWarnings.push(`基础礼貌 / 教材寒暄词 ${basicPoliteCount} 个，不应默认 S`);
+  if (genericBasicCount >= 3) qualitySummary.healthWarnings.push(`泛基础词 ${genericBasicCount} 个，S/A 分层需要更保守`);
+  if (qualitySummary.sLevelCount >= 10) qualitySummary.healthWarnings.push('推荐等级过松，需要收紧 S/A 评分标准。');
+  qualitySummary.healthWarnings.push(...qualitySummary.categoryConcentrationWarnings);
+  const rawHealthPenalty = (duplicateClusters.length * 7)
+    + (Math.max(0, beautyCategoryCount - 1) * 5)
+    + (basicPoliteCount * 6)
+    + (genericBasicCount * 4)
+    + (qualitySummary.sLevelCount >= 10 ? 6 : 0);
+  const estimatedPenalty = Math.round(Math.min(rawHealthPenalty, 28) * 0.45);
+  qualitySummary.estimatedHumanQualityScore = clamp(qualitySummary.averageFinalScore - estimatedPenalty, 0, 100);
   if (!diagnosis.length) diagnosis.push('未发现单一明显来源，建议结合逐词审计继续观察。');
   return cleanRecommendationAuditSummary({
     date: context.date || todayKey(),
@@ -2064,6 +2259,10 @@ function cleanRecommendationAuditItem(item = {}) {
     meaning: cleanShortText(item.meaning, 240),
     recommendationLevel: ['S', 'A', 'B', 'C'].includes(item.recommendationLevel) ? item.recommendationLevel : 'C',
     riskLevel: normalizeEnumValue(item.riskLevel, RISK_LEVEL_OPTIONS, 'low'),
+    semanticClusterKey: cleanShortText(item.semanticClusterKey, 80),
+    qualityCategory: cleanShortText(item.qualityCategory, 80),
+    isDuplicateCluster: Boolean(item.isDuplicateCluster),
+    sLevelEligible: Boolean(item.sLevelEligible),
     ...trace,
     finalScore: clamp(toInt(item.finalScore, 0), 0, 100),
     accountLearningBonus: clamp(toInt(item.accountLearningBonus, 0), -50, 50),
@@ -2091,12 +2290,32 @@ function cleanRecommendationAuditSummary(audit = {}) {
     'sLevelCount',
     'aLevelCount',
     'bLevelCount',
-    'cLevelCount'
+    'cLevelCount',
+    'duplicateClusterCount',
+    'beautyCategoryCount',
+    'basicPoliteCount',
+    'genericBasicCount',
+    'estimatedHumanQualityScore'
   ];
   const qualitySummary = qualityKeys.reduce((result, key) => ({
     ...result,
     [key]: clamp(toInt(audit.qualitySummary?.[key], 0), 0, 1000)
   }), {});
+  qualitySummary.duplicateClusters = safeArray(audit.qualitySummary?.duplicateClusters)
+    .map(cluster => ({
+      key: cleanShortText(cluster.key, 80),
+      words: safeArray(cluster.words).map(word => cleanShortText(word, 80)).filter(Boolean).slice(0, 12)
+    }))
+    .filter(cluster => cluster.key && cluster.words.length > 1)
+    .slice(0, 20);
+  qualitySummary.categoryConcentrationWarnings = safeArray(audit.qualitySummary?.categoryConcentrationWarnings)
+    .map(text => cleanShortText(text, 300))
+    .filter(Boolean)
+    .slice(0, 12);
+  qualitySummary.healthWarnings = safeArray(audit.qualitySummary?.healthWarnings)
+    .map(text => cleanShortText(text, 300))
+    .filter(Boolean)
+    .slice(0, 12);
   return {
     date: cleanShortText(audit.date, 20),
     total: clamp(toInt(audit.total, 0), 0, 1000),
@@ -7251,14 +7470,24 @@ function getDailyHotTeamState(word = {}) {
   return { key: 'idle', label: '未处理', note: '未处理' };
 }
 
-function getRecommendationGrade(word = {}) {
+function getRecommendationGrade(word = {}, auditOptions = {}) {
   const entry = word.candidateMeta || {};
+  const qualityEntry = word.candidateMeta || word || {};
   const score = Number(word.finalScore || entry.lastScore || entry.xhsFitScore || word.dataScore || word.heat || 0);
   const riskLevel = word.riskLevel || entry.riskLevel || '';
   const reviewState = word.reviewState || entry.lastReviewState || '';
   const confidenceLevel = word.confidenceLevel || entry.confidenceLevel || '';
   if (riskLevel === 'high' || reviewState === 'review' || confidenceLevel === 'review') return 'B';
-  if (score >= 90) return 'S';
+  const isBasicPolite = auditOptions.isBasicPolite ?? isBasicPoliteWord(qualityEntry);
+  const isGenericBasic = auditOptions.isGenericBasic ?? isGenericBasicWord(qualityEntry);
+  const pureCategoryWord = auditOptions.pureCategoryWord ?? (isBeautyCategoryWord(qualityEntry) && !hasStrongXhsExpressionValue(qualityEntry));
+  const blocksS = auditOptions.sLevelEligible === false
+    || auditOptions.isDuplicateClusterSecondary
+    || auditOptions.isBeautyCategorySecondary
+    || isBasicPolite
+    || isGenericBasic
+    || pureCategoryWord;
+  if (score >= 90 && !blocksS) return 'S';
   if (score >= 80) return 'A';
   if (score >= 70) return 'B';
   return 'C';
@@ -7599,10 +7828,15 @@ function openTodayRecommendationAuditModal() {
   const quality = audit.qualitySummary || {};
   const qualityRows = [
     renderAuditMetric('平均最终分', quality.averageFinalScore || 0),
+    renderAuditMetric('人工估算质量分', quality.estimatedHumanQualityScore || 0, quality.estimatedHumanQualityScore < 90 ? 'warn' : ''),
     renderAuditMetric('平均表达价值', quality.averageExpressionValueScore || 0),
     renderAuditMetric('平均中文透明度', quality.averageChineseTransparencyScore || 0),
     renderAuditMetric('泛话题词', quality.genericTopicCount || 0, quality.genericTopicCount ? 'warn' : ''),
     renderAuditMetric('中文透明度高', quality.highTransparencyCount || 0, quality.highTransparencyCount ? 'warn' : ''),
+    renderAuditMetric('重复语义簇', quality.duplicateClusterCount || 0, quality.duplicateClusterCount ? 'warn' : ''),
+    renderAuditMetric('美妆品类词', quality.beautyCategoryCount || 0, quality.beautyCategoryCount > 1 ? 'warn' : ''),
+    renderAuditMetric('教材寒暄词', quality.basicPoliteCount || 0, quality.basicPoliteCount ? 'warn' : ''),
+    renderAuditMetric('泛基础词', quality.genericBasicCount || 0, quality.genericBasicCount ? 'warn' : ''),
     renderAuditMetric('S/A/B/C', `${quality.sLevelCount || 0}/${quality.aLevelCount || 0}/${quality.bLevelCount || 0}/${quality.cLevelCount || 0}`)
   ].join('');
   const rows = safeArray(audit.items).map(item => `
@@ -7610,6 +7844,8 @@ function openTodayRecommendationAuditModal() {
       <td>${escapeHTML(item.kanji)}</td>
       <td>${escapeHTML(item.meaning)}</td>
       <td>${escapeHTML(item.recommendationLevel)}</td>
+      <td>${escapeHTML(item.qualityCategory || '—')}</td>
+      <td>${escapeHTML(item.semanticClusterKey || '—')}</td>
       <td>${escapeHTML(item.riskLevel || 'low')}</td>
       <td>${escapeHTML(item.originLabel)}</td>
       <td>${item.isBackfill ? '是' : '否'}</td>
@@ -7643,8 +7879,8 @@ function openTodayRecommendationAuditModal() {
           <div class="modal-section-title">逐词审计</div>
           <div class="audit-table-wrap">
             <table class="audit-table">
-              <thead><tr><th>词</th><th>意思</th><th>等级</th><th>风险</th><th>来源</th><th>补位</th><th>去重放宽</th><th>最终分</th><th>表达价值</th><th>中文透明度</th><th>泛话题</th><th>诊断</th></tr></thead>
-              <tbody>${rows || '<tr><td colspan="12">暂无可审计的今日推荐。</td></tr>'}</tbody>
+              <thead><tr><th>词</th><th>意思</th><th>等级</th><th>质量分类</th><th>语义簇</th><th>风险</th><th>来源</th><th>补位</th><th>去重放宽</th><th>最终分</th><th>表达价值</th><th>中文透明度</th><th>泛话题</th><th>诊断</th></tr></thead>
+              <tbody>${rows || '<tr><td colspan="14">暂无可审计的今日推荐。</td></tr>'}</tbody>
             </table>
           </div>
         </div>
@@ -7677,7 +7913,7 @@ function downloadTextFile(filename, text, type = 'text/plain;charset=utf-8') {
 function exportTodayRecommendationAudit() {
   const audit = getCurrentDailyHotAudit();
   const headers = [
-    '日期', '日语词', '读音', '中文意思', '推荐等级', '风险状态', '来源类型', '来源说明',
+    '日期', '日语词', '读音', '中文意思', '推荐等级', '质量分类', '语义簇', '是否重复语义簇', '是否可评 S', '风险状态', '来源类型', '来源说明',
     '是否 DeepSeek 新生成', '是否候选池旧词', '是否补位', '是否本地兜底', '是否去重放宽',
     '使用的去重天数', '最终分', '账号学习加分', '账号学习扣分', '表达价值分', '中文透明度',
     '是否泛话题词', '入选原因', '诊断结论'
@@ -7692,6 +7928,10 @@ function exportTodayRecommendationAudit() {
       word.reading || word.kana || word.romaji || '',
       item.meaning || word.meaning || '',
       item.recommendationLevel,
+      item.qualityCategory,
+      item.semanticClusterKey,
+      item.isDuplicateCluster ? '是' : '否',
+      item.sLevelEligible ? '是' : '否',
       getRiskStateLabel(word.candidateMeta ? word : { candidateMeta: item }),
       item.originType,
       item.originLabel,
