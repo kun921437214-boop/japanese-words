@@ -13,6 +13,12 @@ import {
   TODAY_SNAPSHOT_GENERATOR_VERSION,
   isCurrentGeneratorSnapshot
 } from '../shared/today-snapshot.mjs';
+import {
+  buildDailyQualityContext,
+  buildDailyQualitySummary,
+  getDailyQualityCategory,
+  getDailyQualityScoreDelta
+} from '../shared/today-quality.mjs';
 import { getAccountLearningSummary } from '../shared/account-learning.mjs';
 import { buildDeepSeekExclusionContext } from '../shared/deepseek-exclusion.mjs';
 import { applyFavoriteAction } from '../functions/favorites.js';
@@ -76,6 +82,110 @@ test('scheduled Worker 分离日更和 aiCard 批量 cron', () => {
   assert.equal(workerSource.includes('force: true'), false);
   assert.equal(workerSource.includes('retryFailed: true'), false);
   assert.equal(workerSource.includes('retryStalePending: true'), false);
+});
+
+function makeQualityCandidate(kanji, overrides = {}) {
+  return {
+    kanji,
+    meaning: `${kanji} 的小红书表达场景`,
+    sourceType: 'deepseek_generated',
+    displayBucket: 'today',
+    riskLevel: 'low',
+    confidenceLevel: 'high',
+    evidenceType: 'common_usage',
+    lastReviewState: 'approved',
+    expressionValueScore: 84,
+    xhsFitScore: 82,
+    candidateType: '生活方式词',
+    reason: '有情绪、社交或生活状态画面，适合标题封面收藏。',
+    ...overrides
+  };
+}
+
+test('daily quality audit flags 2026-06-29 basic greeting heavy set', () => {
+  const entries = [
+    'ありがとうございます',
+    'おはようございます',
+    'お願いします',
+    'ぐっと',
+    'こんにちは',
+    'こんばんは',
+    'しんみり',
+    'ほのぼの',
+    'かぶる',
+    'だらける',
+    '胸きゅん',
+    'お疲れ気味',
+    'やる気',
+    '神回',
+    'かわちい',
+    'ちゅき',
+    'アイシャドウベース',
+    'くすみ',
+    'わくわく',
+    'グロスリップ'
+  ].map(kanji => makeQualityCandidate(kanji));
+  const summary = buildDailyQualitySummary(entries);
+  assert.equal(summary.categoryCounts.basic_greeting, 4);
+  assert.equal(summary.categoryCounts.textbook_polite, 1);
+  assert.equal(summary.categoryCounts.beauty_product, 2);
+  assert.equal(summary.categoryCounts.cute_slang, 3);
+  assert.equal(summary.relaxed, true);
+  assert.ok(summary.warnings.some(text => text.includes('basic_greeting_textbook_polite')));
+  assert.ok(summary.warnings.some(text => text.includes('beauty_product')));
+  assert.ok(summary.warnings.some(text => text.includes('cute_slang')));
+});
+
+test('daily snapshot selection limits basic, beauty, fandom and keeps account-fit categories', () => {
+  const emotionWords = ['ぐっと', 'しんみり', 'ほのぼの', 'わくわく', 'お疲れ気味'];
+  const socialWords = ['かぶる', '気が合う', '気が置けない', '気を遣う'];
+  const lifeWords = ['だらける', '追い込み', '積みゲー', '気分転換', '気が散る'];
+  const basicWords = ['ありがとうございます', 'おはようございます', 'こんにちは', 'こんばんは'];
+  const politeWords = ['お願いします', 'よろしくお願いします'];
+  const beautyWords = ['アイシャドウベース', 'グロスリップ', 'マスカラ'];
+  const fandomWords = ['推し増し', '尊み', '沼落ち', '解釈一致'];
+  const neutralWords = ['落ち合う', 'やりくり', '煮詰まる', 'そわそわ', 'ドキドキ'];
+  const candidatePool = {};
+  [
+    ...emotionWords.map(kanji => makeQualityCandidate(kanji, { candidateType: '网络口语词', reason: '情绪状态，中文不好直译，有收藏价值。' })),
+    ...socialWords.map(kanji => makeQualityCandidate(kanji, { candidateType: '稳定候选', reason: '人际关系和社交语感表达。' })),
+    ...lifeWords.map(kanji => makeQualityCandidate(kanji, { candidateType: '生活方式词', reason: '生活学习状态场景。' })),
+    ...basicWords.map(kanji => makeQualityCandidate(kanji, { xhsFitScore: 95, candidateType: '稳定候选', reason: '基础问候。' })),
+    ...politeWords.map(kanji => makeQualityCandidate(kanji, { xhsFitScore: 94, candidateType: '稳定候选', reason: '教材礼貌表达。' })),
+    ...beautyWords.map(kanji => makeQualityCandidate(kanji, { xhsFitScore: 93, candidateType: '美妆穿搭词', reason: '美妆品类名。' })),
+    ...fandomWords.map(kanji => makeQualityCandidate(kanji, { xhsFitScore: 92, candidateType: '追星兴趣词', reason: '追星圈层表达。' })),
+    ...neutralWords.map(kanji => makeQualityCandidate(kanji))
+  ].forEach(entry => {
+    candidatePool[entry.kanji] = entry;
+  });
+  const { result } = generateTodaySnapshot({ candidatePool }, {
+    now: new Date('2026-06-30T01:00:00.000Z'),
+    createdBy: 'server'
+  });
+  const words = result.todaySnapshot.words;
+  const categories = words.map(word => getDailyQualityCategory(candidatePool[word]));
+  const countCategory = category => categories.filter(item => item === category).length;
+  assert.equal(words.length, 20);
+  assert.ok(countCategory('basic_greeting') + countCategory('textbook_polite') <= 1);
+  assert.ok(countCategory('beauty_product') <= 1);
+  assert.ok(countCategory('fandom_circle') <= 2);
+  assert.ok(countCategory('emotion_state') >= 4);
+  assert.ok(countCategory('social_nuance') >= 3);
+  assert.ok(countCategory('life_state') >= 4);
+  assert.equal(result.recommendationAudit.qualitySummary.relaxed, false);
+});
+
+test('daily quality scoring penalizes recent semantic cluster repeats', () => {
+  const workflow = {
+    historySnapshots: {
+      '2026-06-20': { dateKey: '2026-06-20', words: ['気が合う'] },
+      '2026-05-01': { dateKey: '2026-05-01', words: ['気が置けない'] }
+    }
+  };
+  const entry = makeQualityCandidate('気が楽', { reason: '情绪状态和気が表达。' });
+  const repeatedContext = buildDailyQualityContext(workflow, { today: '2026-06-29' });
+  const emptyContext = buildDailyQualityContext({}, { today: '2026-06-29' });
+  assert.ok(getDailyQualityScoreDelta(entry, repeatedContext) < getDailyQualityScoreDelta(entry, emptyContext));
 });
 
 test('getAccountLearningSummary 提供账号学习规则入口', () => {
