@@ -107,26 +107,33 @@ test('daily quality audit flags 2026-06-29 basic greeting heavy set', () => {
     'ありがとうございます',
     'おはようございます',
     'お願いします',
+    'ぐっと',
     'こんにちは',
     'こんばんは',
-    'アイシャドウベース',
-    'グロスリップ',
-    'ぐっと',
     'しんみり',
     'ほのぼの',
     'かぶる',
     'だらける',
     '胸きゅん',
     'お疲れ気味',
-    'わくわく'
+    'やる気',
+    '神回',
+    'かわちい',
+    'ちゅき',
+    'アイシャドウベース',
+    'くすみ',
+    'わくわく',
+    'グロスリップ'
   ].map(kanji => makeQualityCandidate(kanji));
   const summary = buildDailyQualitySummary(entries);
   assert.equal(summary.categoryCounts.basic_greeting, 4);
   assert.equal(summary.categoryCounts.textbook_polite, 1);
   assert.equal(summary.categoryCounts.beauty_product, 2);
+  assert.equal(summary.categoryCounts.cute_slang, 3);
   assert.equal(summary.relaxed, true);
   assert.ok(summary.warnings.some(text => text.includes('basic_greeting_textbook_polite')));
   assert.ok(summary.warnings.some(text => text.includes('beauty_product')));
+  assert.ok(summary.warnings.some(text => text.includes('cute_slang')));
 });
 
 test('daily snapshot selection limits basic, beauty, fandom and keeps account-fit categories', () => {

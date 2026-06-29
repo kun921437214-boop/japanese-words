@@ -141,7 +141,9 @@ const CUTE_SLANG_WORDS = new Set([
   'きゅん',
   '胸きゅん',
   'タピる',
-  'メロい'
+  'メロい',
+  'かわちい',
+  'ちゅき'
 ]);
 
 const GENERIC_BASIC_WORDS = new Set([
@@ -160,7 +162,7 @@ const FANDOM_RE = /推し|尊|神回|布教|沼落ち|解釈一致|現場|参戦
 const EMOTION_RE = /しんみり|ほのぼの|わくわく|モヤ|もにょ|だるい|しょんぼり|ときめ|胸きゅん|ドキドキ|そわそわ|ぽかぽか|気持ち|心情|情绪|情緒|状态|狀態/;
 const SOCIAL_RE = /気が合う|気が置けない|気を遣う|気遣い|気配り|距離感|空気|察する|きまづい|気が利く|人际|人際|社交|语感|語感|关系|關係/;
 const LIFE_RE = /だらけ|追い込み|積みゲー|やりくり|煮詰まる|気分転換|気が散る|生活|日常|学习|學習|仕事|状态场景|狀態場景/;
-const CUTE_SLANG_RE = /ぴえん|きゅん|メロい|タピる|可爱网络语|可愛網路語/;
+const CUTE_SLANG_RE = /ぴえん|きゅん|メロい|タピる|かわちい|ちゅき|可爱网络语|可愛網路語/;
 const TEXTBOOK_CONTEXT_RE = /教材|教科书|教科書|寒暄|礼貌表达|禮貌表達|基础问候|基礎問候/;
 const TITLE_VALUE_RE = /收藏|封面|标题|標題|画面|場景|场景|共鸣|共鳴|中文不好直译|中文不好直譯|微妙|表达|表達/;
 const LOW_TITLE_VALUE_RE = /太基础|太基礎|过于基础|過於基礎|教材|品类名|品類名|普通名词|普通名詞|不好做标题|不好做標題|内容价值低|內容價值低/;
@@ -199,6 +201,7 @@ export function getDailyQualityCategory(entry = {}) {
   if (BASIC_GREETING_WORDS.has(word)) return 'basic_greeting';
   if (TEXTBOOK_POLITE_WORDS.has(word)) return 'textbook_polite';
   if (BEAUTY_PRODUCT_WORDS.has(word) || BEAUTY_PRODUCT_RE.test(text)) return 'beauty_product';
+  if (CUTE_SLANG_WORDS.has(word) || CUTE_SLANG_RE.test(text)) return 'cute_slang';
   if (SOCIAL_NUANCE_WORDS.has(word)) return 'social_nuance';
   if (LIFE_STATE_WORDS.has(word)) return 'life_state';
   if (EMOTION_STATE_WORDS.has(word)) return 'emotion_state';
@@ -206,7 +209,6 @@ export function getDailyQualityCategory(entry = {}) {
   if (LIFE_RE.test(text)) return 'life_state';
   if (EMOTION_RE.test(text)) return 'emotion_state';
   if (FANDOM_WORDS.has(word) || FANDOM_RE.test(text)) return 'fandom_circle';
-  if (CUTE_SLANG_WORDS.has(word) || CUTE_SLANG_RE.test(text)) return 'cute_slang';
   if (GENERIC_BASIC_WORDS.has(word) || TEXTBOOK_CONTEXT_RE.test(text)) return 'generic_basic';
   return 'unknown';
 }
