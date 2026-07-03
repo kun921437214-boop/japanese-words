@@ -25,6 +25,7 @@ import { applyFavoriteAction } from '../functions/favorites.js';
 import {
   applyAiCardGenerationResult,
   isAiCardStalePending,
+  selectAiCardTargets,
   selectTodayAiCardTargets,
   summarizeTodayAiCards
 } from '../functions/ai-cards.js';
@@ -571,6 +572,31 @@ test('ai-cards 批量选择最多 5 个且跳过非 today 词', () => {
   assert.equal(selection.targets.length, 5);
   assert.equal(selection.skipped.notToday.includes('不属于今日'), true);
   assert.deepEqual(selection.skipped.limited, workflow.todaySnapshot.words.slice(5, 7));
+});
+
+test('ai-cards words 模式支持非今日词局部保存', () => {
+  const workflow = makeCardWorkflow();
+  const nonTodayWord = '候选池词';
+  workflow.candidatePool[nonTodayWord] = {
+    kanji: nonTodayWord,
+    meaning: '适合生成词卡的候选词',
+    aiCard: { cardStatus: 'none' }
+  };
+  const selection = selectAiCardTargets(workflow, { mode: 'words', words: [nonTodayWord, '不存在'], maxWords: 5 });
+  assert.deepEqual(selection.targets, [nonTodayWord]);
+  assert.deepEqual(selection.skipped.missingEntry, ['不存在']);
+  assert.deepEqual(selection.skipped.notToday, []);
+
+  const result = applyAiCardGenerationResult(workflow, {
+    targets: selection.targets,
+    usage: { model: 'deepseek-test', createdAt: '2026-06-21T03:30:00.000Z' },
+    items: [{ kanji: nonTodayWord, aiCard: readyCard }],
+    force: true
+  });
+  assert.equal(result.savedCount, 1);
+  assert.equal(result.workflow.candidatePool[nonTodayWord].aiCard.cardStatus, 'ready');
+  assert.deepEqual(result.workflow.todaySnapshot.words, workflow.todaySnapshot.words);
+  assert.deepEqual(result.workflow.words, workflow.words);
 });
 
 test('ai-cards ready 默认不重复生成，force=true 才允许', () => {

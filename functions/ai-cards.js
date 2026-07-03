@@ -136,9 +136,13 @@ export function summarizeTodayAiCards(workflow = {}, options = {}) {
 }
 
 export function selectTodayAiCardTargets(workflow = {}, options = {}) {
+  return selectAiCardTargets(workflow, { ...options, mode: 'today' });
+}
+
+export function selectAiCardTargets(workflow = {}, options = {}) {
   const cleanWorkflow = cleanStoredWorkflow(workflow);
   const mode = cleanText(options.mode || 'today', 40);
-  if (mode !== 'today') throw new Error('Only mode=today is supported');
+  if (!['today', 'words'].includes(mode)) throw new Error('Only mode=today or mode=words is supported');
 
   const todayWords = cleanWords(cleanWorkflow.todaySnapshot?.words).slice(0, 20);
   const todaySet = new Set(todayWords);
@@ -148,9 +152,8 @@ export function selectTodayAiCardTargets(workflow = {}, options = {}) {
   const retryStalePending = Boolean(options.retryStalePending);
   const nowMs = Number.isFinite(options.nowMs) ? options.nowMs : Date.now();
   const maxWords = clamp(toInt(options.maxWords, MAX_WORDS_PER_REQUEST), 1, MAX_WORDS_PER_REQUEST);
-  const candidateWords = requestedWords.length ? requestedWords.filter(word => todaySet.has(word)) : todayWords;
   const skipped = {
-    notToday: requestedWords.filter(word => !todaySet.has(word)),
+    notToday: mode === 'today' ? requestedWords.filter(word => !todaySet.has(word)) : [],
     ready: [],
     failed: [],
     pending: [],
@@ -159,6 +162,13 @@ export function selectTodayAiCardTargets(workflow = {}, options = {}) {
     limited: []
   };
   const targets = [];
+  const candidateWords = mode === 'today'
+    ? (requestedWords.length ? requestedWords.filter(word => todaySet.has(word)) : todayWords)
+    : requestedWords.filter(word => {
+      const exists = Boolean(cleanWorkflow.candidatePool?.[word]);
+      if (!exists) skipped.missingEntry.push(word);
+      return exists;
+    });
 
   candidateWords.forEach(kanji => {
     const entry = cleanWorkflow.candidatePool?.[kanji];
@@ -334,7 +344,7 @@ export function applyAiCardGenerationResult(workflow = {}, result = {}) {
 }
 
 export async function generateTodayAiCards({ origin, workflow, options = {}, callEndpoint = callJsonEndpoint }) {
-  const selection = selectTodayAiCardTargets(workflow, options);
+  const selection = selectAiCardTargets(workflow, options);
   if (!selection.targets.length) {
     return {
       workflow: cleanStoredWorkflow(workflow),

@@ -6594,14 +6594,9 @@ function markAiCardStatus(kanjis, status, message = '') {
 }
 
 async function generateDeepSeekWordCards(kanjis, options = {}) {
-  const targetKanjis = getUniqueWords(kanjis);
+  const targetKanjis = buildWordCardPayloadItems(getUniqueWords(kanjis)).map(item => item.kanji);
   if (!targetKanjis.length) {
     if (!options.silent) showToast('先选择要生成词卡的候选词');
-    return 0;
-  }
-  const payload = buildWordCardRequestPayload(targetKanjis);
-  if (!payload.context.words.length) {
-    if (!options.silent) showToast('没有找到可生成词卡的候选词');
     return 0;
   }
   const force = Boolean(options.force);
@@ -6609,62 +6604,40 @@ async function generateDeepSeekWordCards(kanjis, options = {}) {
   markAiCardStatus(targetKanjis, 'pending', 'DeepSeek 词卡生成中');
   saveLocalWorkflow();
   if (!silent) refreshCurrentGrid();
-  if (!silent) showToast(`正在生成 ${payload.context.words.length} 个 DeepSeek 词卡…`);
+  if (!silent) showToast(`正在生成 ${targetKanjis.length} 个 DeepSeek 词卡…`);
   try {
-    const response = await fetch(getAiCandidatesEndpoint(), {
-      method: 'POST',
-      headers: {
-        Accept: 'application/json',
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify(payload)
-    });
-    const data = await response.json().catch(() => ({}));
-    if (!response.ok || data.error) throw new Error(data.error?.message || data.error || `HTTP ${response.status}`);
     let savedCount = 0;
-    safeArray(data.items).forEach((item, index) => {
-      const kanji = cleanShortText(item.kanji || payload.context.words[index]?.kanji, 80);
-      if (kanji && saveGeneratedAiCard(kanji, item.aiCard || item.card || item, data.usage || {}, force)) savedCount += 1;
-    });
-    const trace = getAiTraceFromUsage(data.usage || {}, payload);
-    const batch = cleanAiBatch({
-      id: `card_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
-      action: payload.action,
-      model: data.usage?.model || 'deepseek-v4-flash',
-      createdAt: data.usage?.createdAt || nowIso(),
-      itemCount: payload.context.words.length,
-      importedCount: savedCount,
-      skippedCount: Math.max(0, payload.context.words.length - savedCount),
-      ...trace,
-      promptSummary: targetKanjis.slice(0, 20).join('、'),
-      trendNotes: data.summary?.trendNotes || ''
-    });
-    aiBatches = [batch, ...cleanAiBatches(aiBatches).filter(item => item.id !== batch.id)].slice(0, 100);
-    saveLocalWorkflow();
+    for (let index = 0; index < targetKanjis.length; index += 5) {
+      const batch = targetKanjis.slice(index, index + 5);
+      const response = await fetch(getAiCardsEndpoint(), {
+        method: 'POST',
+        headers: {
+          Accept: 'application/json',
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          mode: 'words',
+          words: batch,
+          force,
+          retryFailed: true,
+          retryStalePending: true,
+          maxWords: 5
+        })
+      });
+      const data = await response.json().catch(() => ({}));
+      await loadCloudWorkflow(false);
+      if (!response.ok || data.error) throw new Error(data.error?.message || data.error || `HTTP ${response.status}`);
+      savedCount += toInt(data.savedCount, 0);
+    }
+    updateAllBadges();
+    refreshCurrentGrid();
     if (!silent) renderCandidatePool();
     if (!silent && currentWordForModal && targetKanjis.includes(currentWordForModal.kanji)) openDetail(currentWordForModal.kanji);
-    if (!silent) saveCloudWorkflow(false);
     if (!silent) showToast(savedCount ? `已生成 ${savedCount} 个 DeepSeek 词卡` : 'DeepSeek 没有返回可保存的词卡');
     return savedCount;
   } catch (error) {
     console.warn('DeepSeek 词卡生成失败', error);
-    targetKanjis.forEach(kanji => {
-      const entry = ensureCandidatePoolEntryForCard(kanji);
-      const previousCard = cleanAiCard(entry?.aiCard || {});
-      if (!entry || previousCard?.cardStatus === 'ready') return;
-      candidatePool[kanji] = cleanCandidatePoolEntry(kanji, {
-        ...entry,
-        aiCard: {
-          cardStatus: 'failed',
-          cardSource: 'deepseek_api',
-          cardModel: '',
-          generatedAt: nowIso(),
-          summary: cleanShortText(error.message || '生成失败', 300)
-        },
-        updatedAt: nowIso()
-      });
-    });
-    saveLocalWorkflow();
+    await loadCloudWorkflow(false);
     if (!silent) refreshCurrentGrid();
     if (!silent && currentWordForModal && targetKanjis.includes(currentWordForModal.kanji)) openDetail(currentWordForModal.kanji);
     if (!silent) showToast(`词卡生成失败：${error.message || '服务暂时不可用'}`);
