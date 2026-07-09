@@ -649,6 +649,26 @@ export function cleanTeamDismissed(dismissed = {}) {
   };
 }
 
+export function cleanDailyRefreshTriggerState(state = {}) {
+  const source = state && typeof state === 'object' ? state : {};
+  const dateKey = /^\d{4}-\d{2}-\d{2}$/.test(cleanText(source.dateKey, 20)) ? cleanText(source.dateKey, 20) : '';
+  return {
+    status: cleanEnum(source.status, ['running', 'accepted', 'completed', 'failed', 'skipped'], ''),
+    dateKey,
+    reason: cleanText(source.reason, 120),
+    triggeredAt: isIsoLike(source.triggeredAt) ? source.triggeredAt : '',
+    finishedAt: isIsoLike(source.finishedAt) ? source.finishedAt : '',
+    updatedAt: isIsoLike(source.updatedAt) ? source.updatedAt : '',
+    cron: cleanText(source.cron, 80),
+    endpoint: cleanText(source.endpoint, 240),
+    httpStatus: clamp(toInt(source.httpStatus, 0), 0, 599),
+    responseText: cleanText(source.responseText, 500),
+    error: cleanText(source.error, 500),
+    siteUrlConfigured: Boolean(source.siteUrlConfigured),
+    autoRefreshSecretConfigured: Boolean(source.autoRefreshSecretConfigured)
+  };
+}
+
 export function cleanTodaySnapshot(snapshot = {}) {
   const dateKey = /^\d{4}-\d{2}-\d{2}$/.test(cleanText(snapshot?.dateKey, 20)) ? cleanText(snapshot.dateKey, 20) : '';
   const words = cleanWords(snapshot?.words).slice(0, 20);
@@ -799,6 +819,7 @@ export function cleanStoredWorkflow(data = {}) {
     todayDismissed: cleanTeamDismissed(source.todayDismissed || source.teamDismissed),
     historySnapshots,
     todaySnapshotHistory,
+    dailyRefreshTrigger: cleanDailyRefreshTriggerState(source.dailyRefreshTrigger),
     updated: isIsoLike(source.updated) ? source.updated : null,
     schemaVersion: clamp(toInt(source.schemaVersion, SCHEMA_VERSION), 1, 999)
   };

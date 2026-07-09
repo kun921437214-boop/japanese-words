@@ -25,6 +25,7 @@ const AI_CARD_BATCH_CRONS = new Set([
   '0 17 * * *'
 ]);
 const AI_CARD_BATCH_MAX_WORDS = 5;
+const GLOBAL_FAVORITES_KEY = 'favorites:global';
 
 function jsonResponse(body, status = 200) {
   return new Response(JSON.stringify(body), {
@@ -41,29 +42,98 @@ async function readLimitedText(response, maxLength = 500) {
   return text.slice(0, maxLength);
 }
 
-async function triggerDailyRefresh(env) {
+async function writeDailyRefreshTriggerState(env, patch = {}) {
+  if (!env.FAVORITES) return;
+  try {
+    const now = new Date().toISOString();
+    const current = cleanStoredWorkflow(await env.FAVORITES.get(GLOBAL_FAVORITES_KEY, 'json'));
+    const next = cleanStoredWorkflow({
+      ...current,
+      dailyRefreshTrigger: {
+        ...(current.dailyRefreshTrigger || {}),
+        ...patch,
+        updatedAt: now
+      },
+      updated: current.updated || now
+    });
+    await env.FAVORITES.put(GLOBAL_FAVORITES_KEY, JSON.stringify(next));
+  } catch (error) {
+    console.warn('daily refresh trigger state write failed', error?.message || error);
+  }
+}
+
+async function triggerDailyRefresh(env, options = {}) {
   const siteUrl = String(env.SITE_URL || '').trim().replace(/\/+$/, '');
   const autoRefreshSecret = String(env.AUTO_REFRESH_SECRET || '').trim();
+  const triggeredAt = new Date().toISOString();
+  const triggerBase = {
+    dateKey: dateKey(new Date()),
+    triggeredAt,
+    cron: String(options.cron || DAILY_REFRESH_CRON),
+    siteUrlConfigured: Boolean(siteUrl),
+    autoRefreshSecretConfigured: Boolean(autoRefreshSecret)
+  };
   if (!siteUrl || !autoRefreshSecret) {
     console.warn('daily refresh trigger skipped because SITE_URL or AUTO_REFRESH_SECRET is missing');
+    await writeDailyRefreshTriggerState(env, {
+      ...triggerBase,
+      status: 'skipped',
+      reason: 'missing_config',
+      finishedAt: new Date().toISOString()
+    });
     return;
   }
 
   const refreshUrl = new URL(`${siteUrl}/daily-refresh`);
   refreshUrl.searchParams.set('mode', 'manual');
   refreshUrl.searchParams.set('skipCards', 'true');
-  const response = await fetch(refreshUrl.toString(), {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${autoRefreshSecret}`
-    }
+  await writeDailyRefreshTriggerState(env, {
+    ...triggerBase,
+    status: 'running',
+    endpoint: refreshUrl.toString()
   });
-  if (!response.ok) {
+  try {
+    const response = await fetch(refreshUrl.toString(), {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${autoRefreshSecret}`
+      }
+    });
     const text = await readLimitedText(response);
-    console.warn('daily refresh trigger returned non-OK', response.status, text);
-    return;
+    if (!response.ok) {
+      console.warn('daily refresh trigger returned non-OK', response.status, text);
+      await writeDailyRefreshTriggerState(env, {
+        ...triggerBase,
+        status: 'failed',
+        reason: 'non_ok_response',
+        endpoint: refreshUrl.toString(),
+        httpStatus: response.status,
+        responseText: text,
+        finishedAt: new Date().toISOString()
+      });
+      return;
+    }
+    await writeDailyRefreshTriggerState(env, {
+      ...triggerBase,
+      status: 'accepted',
+      reason: 'request_accepted',
+      endpoint: refreshUrl.toString(),
+      httpStatus: response.status,
+      responseText: text,
+      finishedAt: new Date().toISOString()
+    });
+    console.log('daily refresh trigger completed', response.status);
+  } catch (error) {
+    await writeDailyRefreshTriggerState(env, {
+      ...triggerBase,
+      status: 'failed',
+      reason: 'request_error',
+      endpoint: refreshUrl.toString(),
+      error: error?.message || 'daily refresh trigger failed',
+      finishedAt: new Date().toISOString()
+    });
+    throw error;
   }
-  console.log('daily refresh trigger completed', response.status);
 }
 
 async function triggerTodayAiCardBatch(env) {
@@ -85,8 +155,23 @@ async function triggerTodayAiCardBatch(env) {
   const readyCount = Number.parseInt(status?.readyCount, 10) || 0;
   const missingCount = Number.parseInt(status?.missingCount, 10) || 0;
   const pendingCount = Number.parseInt(status?.pendingCount, 10) || 0;
-  console.log('ai card batch status', { readyCount, missingCount, pendingCount });
+  console.log('ai card batch status', {
+    readyCount,
+    missingCount,
+    pendingCount,
+    currentDateKey: status?.currentDateKey || '',
+    todaySnapshotDateKey: status?.todaySnapshot?.dateKey || '',
+    isStaleTodaySnapshot: Boolean(status?.isStaleTodaySnapshot)
+  });
 
+  if (status?.isStaleTodaySnapshot) {
+    console.warn('ai card batch skipped because todaySnapshot is stale', {
+      currentDateKey: status.currentDateKey || '',
+      todaySnapshotDateKey: status.todaySnapshot?.dateKey || '',
+      staleDays: Number.parseInt(status.staleDays, 10) || 0
+    });
+    return;
+  }
   if (missingCount <= 0) return;
   if (pendingCount > 0) {
     console.warn('ai card batch skipped because cards are pending', { missingCount, pendingCount });
@@ -490,7 +575,7 @@ export default {
     const cron = String(controller?.cron || '').trim();
     if (cron === DAILY_REFRESH_CRON) {
       ctx.waitUntil(
-        triggerDailyRefresh(env).catch(error => console.warn('daily refresh trigger failed', error?.message || error))
+        triggerDailyRefresh(env, { cron }).catch(error => console.warn('daily refresh trigger failed', error?.message || error))
       );
     }
 

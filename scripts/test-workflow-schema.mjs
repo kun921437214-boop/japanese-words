@@ -76,6 +76,10 @@ test('scheduled Worker 分离日更和 aiCard 批量 cron', () => {
   assert.ok(workerSource.includes("new URL(`${siteUrl}/ai-cards`)"));
   assert.ok(workerSource.includes("mode: 'today'"));
   assert.ok(workerSource.includes('maxWords: AI_CARD_BATCH_MAX_WORDS'));
+  assert.ok(workerSource.includes('writeDailyRefreshTriggerState'));
+  assert.ok(workerSource.includes('dailyRefreshTrigger'));
+  assert.ok(workerSource.includes('isStaleTodaySnapshot'));
+  assert.ok(workerSource.includes('ai card batch skipped because todaySnapshot is stale'));
   assert.ok(workerSource.includes('if (missingCount <= 0) return;'));
   assert.ok(workerSource.includes('if (pendingCount > 0)'));
   assert.ok(workerSource.includes('cron !== DAILY_REFRESH_CRON'));
@@ -205,7 +209,49 @@ test('cleanStoredWorkflow 补齐缺失字段', () => {
   assert.deepEqual(cleaned.candidatePool, {});
   assert.deepEqual(cleaned.aiBatches, []);
   assert.deepEqual(cleaned.todaySnapshot.words, []);
+  assert.deepEqual(cleaned.dailyRefreshTrigger, {
+    status: '',
+    dateKey: '',
+    reason: '',
+    triggeredAt: '',
+    finishedAt: '',
+    updatedAt: '',
+    cron: '',
+    endpoint: '',
+    httpStatus: 0,
+    responseText: '',
+    error: '',
+    siteUrlConfigured: false,
+    autoRefreshSecretConfigured: false
+  });
   assert.equal(cleaned.schemaVersion, 1);
+});
+
+test('cleanStoredWorkflow 保留 daily-refresh 触发状态且不保存敏感信息', () => {
+  const cleaned = cleanStoredWorkflow({
+    dailyRefreshTrigger: {
+      status: 'failed',
+      dateKey: '2026-07-09',
+      reason: 'non_ok_response',
+      triggeredAt: '2026-07-08T16:00:00.000Z',
+      finishedAt: '2026-07-08T16:00:02.000Z',
+      updatedAt: '2026-07-08T16:00:02.000Z',
+      cron: '0 16 * * *',
+      endpoint: 'https://jiyimianbao.pages.dev/daily-refresh?mode=manual&skipCards=true',
+      httpStatus: 401,
+      responseText: '{"error":"Unauthorized"}',
+      error: '',
+      siteUrlConfigured: true,
+      autoRefreshSecretConfigured: true,
+      authorization: 'Bearer should-not-survive'
+    }
+  });
+  assert.equal(cleaned.dailyRefreshTrigger.status, 'failed');
+  assert.equal(cleaned.dailyRefreshTrigger.dateKey, '2026-07-09');
+  assert.equal(cleaned.dailyRefreshTrigger.httpStatus, 401);
+  assert.equal(cleaned.dailyRefreshTrigger.siteUrlConfigured, true);
+  assert.equal(cleaned.dailyRefreshTrigger.autoRefreshSecretConfigured, true);
+  assert.equal(Object.hasOwn(cleaned.dailyRefreshTrigger, 'authorization'), false);
 });
 
 test('cleanStoredWorkflow 不删除 candidatePool.aiCard', () => {
@@ -674,6 +720,27 @@ test('ai-cards stale pending 汇总统计正确', () => {
   assert.equal(summary.stalePendingCount, 1);
   assert.equal(summary.items[0].stalePending, true);
   assert.equal(summary.items[1].stalePending, false);
+});
+
+test('ai-cards 汇总提示 todaySnapshot 已过期', () => {
+  const workflow = makeCardWorkflow({
+    todaySnapshot: {
+      dateKey: '2026-06-21',
+      words: makeCardWorkflow().todaySnapshot.words,
+      generatedAt: '2026-06-21T02:57:40.000Z',
+      generatorVersion: TODAY_SNAPSHOT_GENERATOR_VERSION,
+      version: 1
+    }
+  });
+  const summary = summarizeTodayAiCards(workflow, {
+    nowMs: Date.parse('2026-06-23T01:00:00.000Z')
+  });
+  assert.equal(summary.currentDateKey, '2026-06-23');
+  assert.equal(summary.todaySnapshot.dateKey, '2026-06-21');
+  assert.equal(summary.isCurrentDate, false);
+  assert.equal(summary.isStaleTodaySnapshot, true);
+  assert.equal(summary.staleDays, 2);
+  assert.ok(summary.healthWarnings.some(text => text.includes('todaySnapshot_stale:2026-06-21->2026-06-23')));
 });
 
 test('ai-cards stale pending 重试写回不改变 todaySnapshot / favorites', () => {

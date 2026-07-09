@@ -7,6 +7,7 @@ import {
   cleanWords
 } from '../shared/workflow-schema.mjs';
 import { getAccountLearningSummary } from '../shared/account-learning.mjs';
+import { dateKey as getAppDateKey } from '../shared/rankings.mjs';
 
 const CORS_HEADERS = {
   'Access-Control-Allow-Origin': '*',
@@ -93,6 +94,38 @@ function parseTimeMs(value) {
   return Number.isFinite(timestamp) ? timestamp : 0;
 }
 
+function parseDateKeyMs(value) {
+  const match = String(value || '').trim().match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!match) return 0;
+  const [, year, month, day] = match;
+  return Date.UTC(Number(year), Number(month) - 1, Number(day));
+}
+
+function getSnapshotFreshness(snapshotDateKey, options = {}) {
+  const nowMs = Number.isFinite(options.nowMs) ? options.nowMs : Date.now();
+  const currentDateKey = options.currentDateKey || getAppDateKey(new Date(nowMs));
+  const snapshotMs = parseDateKeyMs(snapshotDateKey);
+  const currentMs = parseDateKeyMs(currentDateKey);
+  const staleDays = snapshotMs && currentMs && currentMs > snapshotMs
+    ? Math.floor((currentMs - snapshotMs) / 86400000)
+    : 0;
+  const isCurrentDate = Boolean(snapshotDateKey && snapshotDateKey === currentDateKey);
+  const healthWarnings = [];
+  if (!snapshotDateKey) {
+    healthWarnings.push('todaySnapshot_missing');
+  } else if (!isCurrentDate) {
+    healthWarnings.push(`todaySnapshot_stale:${snapshotDateKey}->${currentDateKey}`);
+  }
+  return {
+    currentDateKey,
+    snapshotDateKey,
+    isCurrentDate,
+    isStaleTodaySnapshot: Boolean(snapshotDateKey && !isCurrentDate),
+    staleDays,
+    healthWarnings
+  };
+}
+
 export function isAiCardStalePending(entry = {}, nowMs = Date.now()) {
   const aiCard = cleanAiCard(entry.aiCard || entry || {});
   if (aiCard.cardStatus !== 'pending') return false;
@@ -104,6 +137,8 @@ export function summarizeTodayAiCards(workflow = {}, options = {}) {
   const cleanWorkflow = cleanStoredWorkflow(workflow);
   const words = cleanWords(cleanWorkflow.todaySnapshot?.words).slice(0, 20);
   const nowMs = Number.isFinite(options.nowMs) ? options.nowMs : Date.now();
+  const snapshotDateKey = cleanWorkflow.todaySnapshot?.dateKey || '';
+  const freshness = getSnapshotFreshness(snapshotDateKey, { ...options, nowMs });
   const items = words.map(kanji => {
     const entry = cleanWorkflow.candidatePool?.[kanji] || {};
     const aiCard = cleanAiCard(entry.aiCard || {});
@@ -123,9 +158,14 @@ export function summarizeTodayAiCards(workflow = {}, options = {}) {
   const stalePendingCount = items.filter(item => item.stalePending).length;
   return {
     todaySnapshot: {
-      dateKey: cleanWorkflow.todaySnapshot?.dateKey || '',
+      dateKey: snapshotDateKey,
       words
     },
+    currentDateKey: freshness.currentDateKey,
+    isCurrentDate: freshness.isCurrentDate,
+    isStaleTodaySnapshot: freshness.isStaleTodaySnapshot,
+    staleDays: freshness.staleDays,
+    healthWarnings: freshness.healthWarnings,
     items,
     readyCount,
     missingCount: Math.max(0, items.length - readyCount - failedCount - pendingCount),
