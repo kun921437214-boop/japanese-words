@@ -127,6 +127,19 @@ function isTemporaryNetworkError(error) {
     || message.includes('etimedout');
 }
 
+export function shouldUseCandidatePoolFallback(error = {}, callLabel = '') {
+  const cleanCallLabel = cleanText(callLabel, 120);
+  if (cleanCallLabel && cleanCallLabel !== 'initial_candidates') return false;
+  const message = String(error?.message || error || '').toLowerCase();
+  const reason = String(error?.reason || '').toLowerCase();
+  const status = cleanInteger(error?.status, 0, 0, 599);
+  return reason === 'timeout'
+    || message.includes('timed out')
+    || message.includes('timeout')
+    || isRetryableHttpStatus(status)
+    || isTemporaryNetworkError(error);
+}
+
 async function readJsonBody(request) {
   const contentType = request.headers.get('Content-Type') || '';
   if (!contentType.includes('application/json')) return {};
@@ -906,6 +919,8 @@ function cleanRefreshRunState(state = {}) {
     lastAiCallPath: cleanText(record.lastAiCallPath, 120),
     lastAiCallAttempt: cleanInteger(record.lastAiCallAttempt, 0, 0, 10),
     lastAiCallError: cleanText(record.lastAiCallError, 500),
+    candidatePoolFallbackUsed: Boolean(record.candidatePoolFallbackUsed),
+    candidatePoolFallbackReason: cleanText(record.candidatePoolFallbackReason, 500),
     todayCount: cleanInteger(record.todayCount, 0, 0, 1000),
     generatedCards: cleanInteger(record.generatedCards, 0, 0, 1000),
     queuedCards: cleanInteger(record.queuedCards, 0, 0, 1000),
@@ -1013,6 +1028,8 @@ async function runDailyRefreshJob({ origin, env, key, today, options = {}, reque
     lastAiCallPath: '',
     lastAiCallAttempt: 0,
     lastAiCallError: '',
+    candidatePoolFallbackUsed: false,
+    candidatePoolFallbackReason: '',
     todayCount: 0,
     generatedCards: 0,
     queuedCards: 0,
@@ -1109,36 +1126,62 @@ async function runDailyRefreshJob({ origin, env, key, today, options = {}, reque
 
     await writeStep('generate_candidates_start');
     const initialExclusionContext = getExclusionContext(stored);
-    const generated = await generateCandidates(origin, stored, {
-      callLabel: 'initial_candidates',
-      onAttempt: writeAiAttempt,
-      onRetry: writeAiRetry,
-      onFailure: writeAiFailure,
-      count: runState.count,
-      exclusionContext: initialExclusionContext,
-      batchHint: '首批每日热门候选：请避开禁止列表，生成新的低风险日语表达。'
-    });
-    recordGeneratedWords(noveltyStats, generated.items);
-    let totalGenerated = generated.items.length;
-    await writeStep('generate_candidates_done', { generatedCandidates: totalGenerated, ...getNoveltyPatch() });
-    const workflowWithBatch = cleanStoredWorkflow({
-      ...stored,
-      aiBatches: [generated.batch, ...safeArray(stored.aiBatches)].slice(0, 100)
-    });
-    await writeStep('import_candidates_start', { generatedCandidates: totalGenerated, ...getNoveltyPatch() });
-    let imported = importAiCandidates(workflowWithBatch, generated.items, generated.batch, {
-      exclusionContext: initialExclusionContext
-    });
-    mergeImportNoveltyStats(noveltyStats, imported.stats);
-    let totalImported = imported.stats.imported;
-    await writeStep('import_candidates_done', {
-      generatedCandidates: totalGenerated,
-      importedCandidates: totalImported,
-      ...getNoveltyPatch()
-    });
+    let totalGenerated = 0;
+    let totalImported = 0;
+    let imported = { workflow: stored, stats: { imported: 0 } };
+    let candidatePoolFallbackUsed = false;
+    let candidatePoolFallbackReason = '';
+    try {
+      const generated = await generateCandidates(origin, stored, {
+        callLabel: 'initial_candidates',
+        onAttempt: writeAiAttempt,
+        onRetry: writeAiRetry,
+        onFailure: writeAiFailure,
+        count: runState.count,
+        exclusionContext: initialExclusionContext,
+        batchHint: '首批每日热门候选：请避开禁止列表，生成新的低风险日语表达。'
+      });
+      recordGeneratedWords(noveltyStats, generated.items);
+      totalGenerated = generated.items.length;
+      await writeStep('generate_candidates_done', { generatedCandidates: totalGenerated, ...getNoveltyPatch() });
+      const workflowWithBatch = cleanStoredWorkflow({
+        ...stored,
+        aiBatches: [generated.batch, ...safeArray(stored.aiBatches)].slice(0, 100)
+      });
+      await writeStep('import_candidates_start', { generatedCandidates: totalGenerated, ...getNoveltyPatch() });
+      imported = importAiCandidates(workflowWithBatch, generated.items, generated.batch, {
+        exclusionContext: initialExclusionContext
+      });
+      mergeImportNoveltyStats(noveltyStats, imported.stats);
+      totalImported = imported.stats.imported;
+      await writeStep('import_candidates_done', {
+        generatedCandidates: totalGenerated,
+        importedCandidates: totalImported,
+        ...getNoveltyPatch()
+      });
+    } catch (error) {
+      if (!shouldUseCandidatePoolFallback(error, 'initial_candidates')) throw error;
+      candidatePoolFallbackUsed = true;
+      candidatePoolFallbackReason = cleanText(error?.message || 'initial candidate generation failed', 500);
+      await writeStep('generate_candidates_done', {
+        generatedCandidates: 0,
+        candidatePoolFallbackUsed,
+        candidatePoolFallbackReason,
+        lastAiCallError: candidatePoolFallbackReason,
+        ...getNoveltyPatch()
+      });
+      await writeStep('import_candidates_done', {
+        importedCandidates: 0,
+        candidatePoolFallbackUsed,
+        candidatePoolFallbackReason,
+        ...getNoveltyPatch()
+      });
+    }
     await writeStep('select_today_start', {
       generatedCandidates: totalGenerated,
       importedCandidates: totalImported,
+      candidatePoolFallbackUsed,
+      candidatePoolFallbackReason,
       ...getNoveltyPatch()
     });
     let snapshot = generateTodaySnapshot(
@@ -1149,10 +1192,12 @@ async function runDailyRefreshJob({ origin, env, key, today, options = {}, reque
       generatedCandidates: totalGenerated,
       importedCandidates: totalImported,
       todayCount: safeArray(snapshot.workflow.todaySnapshot?.words).length,
+      candidatePoolFallbackUsed,
+      candidatePoolFallbackReason,
       ...getNoveltyPatch()
     });
 
-    for (let round = 0; snapshot.result.shortage && round < runState.maxTopUpRounds; round += 1) {
+    for (let round = 0; !candidatePoolFallbackUsed && snapshot.result.shortage && round < runState.maxTopUpRounds; round += 1) {
       await writeStep('top_up_generate_start', {
         topUpTriggered: true,
         topUpRoundsUsed: round,
@@ -1227,6 +1272,8 @@ async function runDailyRefreshJob({ origin, env, key, today, options = {}, reque
       generatedCandidates: totalGenerated,
       importedCandidates: totalImported,
       todayCount: safeArray(finalWorkflow.todaySnapshot?.words).length,
+      candidatePoolFallbackUsed,
+      candidatePoolFallbackReason,
       ...getNoveltyPatch()
     });
     await env.FAVORITES.put(key, JSON.stringify(finalWorkflow));
@@ -1237,6 +1284,8 @@ async function runDailyRefreshJob({ origin, env, key, today, options = {}, reque
       importedCandidates: totalImported,
       todayCount: todayWords.length,
       queuedCards: cardTargets.length,
+      candidatePoolFallbackUsed,
+      candidatePoolFallbackReason,
       ...getNoveltyPatch()
     };
     if (runState.skipCards) {

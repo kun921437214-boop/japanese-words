@@ -28,6 +28,7 @@ import {
   selectTodayAiCardTargets,
   summarizeTodayAiCards
 } from '../functions/ai-cards.js';
+import { shouldUseCandidatePoolFallback } from '../functions/daily-refresh.js';
 
 function test(name, fn) {
   try {
@@ -82,6 +83,28 @@ test('scheduled Worker 分离日更和 aiCard 批量 cron', () => {
   assert.equal(workerSource.includes('force: true'), false);
   assert.equal(workerSource.includes('retryFailed: true'), false);
   assert.equal(workerSource.includes('retryStalePending: true'), false);
+});
+
+test('daily-refresh 首轮 DeepSeek 超时时才启用候选池兜底', () => {
+  const dailyRefreshSource = fs.readFileSync(new URL('../functions/daily-refresh.js', import.meta.url), 'utf8');
+  assert.equal(
+    shouldUseCandidatePoolFallback(
+      new Error('AI call initial_candidates failed after 2 attempts: /ai-candidates timed out after 90000ms'),
+      'initial_candidates'
+    ),
+    true
+  );
+  assert.equal(shouldUseCandidatePoolFallback({ status: 503, message: 'HTTP 503' }, 'initial_candidates'), true);
+  assert.equal(
+    shouldUseCandidatePoolFallback(
+      new Error('AI call top_up_candidates_round_1 failed after 2 attempts: /ai-candidates timed out after 90000ms'),
+      'top_up_candidates_round_1'
+    ),
+    false
+  );
+  assert.equal(shouldUseCandidatePoolFallback(new Error('initial_candidates returned invalid JSON'), 'initial_candidates'), false);
+  assert.ok(dailyRefreshSource.includes('candidatePoolFallbackUsed'));
+  assert.ok(dailyRefreshSource.includes('for (let round = 0; !candidatePoolFallbackUsed && snapshot.result.shortage'));
 });
 
 function makeQualityCandidate(kanji, overrides = {}) {
