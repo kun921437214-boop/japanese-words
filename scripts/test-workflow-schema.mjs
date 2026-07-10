@@ -28,6 +28,7 @@ import {
   selectTodayAiCardTargets,
   summarizeTodayAiCards
 } from '../functions/ai-cards.js';
+import { getTodayAiCardBatchPlan } from '../worker/favorites-worker.js';
 
 function test(name, fn) {
   try {
@@ -76,12 +77,35 @@ test('scheduled Worker 分离日更和 aiCard 批量 cron', () => {
   assert.ok(workerSource.includes("new URL(`${siteUrl}/ai-cards`)"));
   assert.ok(workerSource.includes("mode: 'today'"));
   assert.ok(workerSource.includes('maxWords: AI_CARD_BATCH_MAX_WORDS'));
-  assert.ok(workerSource.includes('if (missingCount <= 0) return;'));
-  assert.ok(workerSource.includes('if (pendingCount > 0)'));
+  assert.ok(workerSource.includes('retryStalePending: plan.retryStalePending'));
+  assert.ok(workerSource.includes('if (plan.activePendingCount > 0)'));
   assert.ok(workerSource.includes('cron !== DAILY_REFRESH_CRON'));
   assert.equal(workerSource.includes('force: true'), false);
   assert.equal(workerSource.includes('retryFailed: true'), false);
-  assert.equal(workerSource.includes('retryStalePending: true'), false);
+});
+
+test('scheduled Worker retries stale pending cards without blocking missing cards', () => {
+  const plan = getTodayAiCardBatchPlan({
+    readyCount: 1,
+    missingCount: 14,
+    pendingCount: 5,
+    stalePendingCount: 5
+  });
+  assert.equal(plan.activePendingCount, 0);
+  assert.equal(plan.retryStalePending, true);
+  assert.equal(plan.shouldRun, true);
+});
+
+test('scheduled Worker still waits while card generation is actively pending', () => {
+  const plan = getTodayAiCardBatchPlan({
+    readyCount: 8,
+    missingCount: 10,
+    pendingCount: 2,
+    stalePendingCount: 1
+  });
+  assert.equal(plan.activePendingCount, 1);
+  assert.equal(plan.retryStalePending, true);
+  assert.equal(plan.shouldRun, false);
 });
 
 function makeQualityCandidate(kanji, overrides = {}) {

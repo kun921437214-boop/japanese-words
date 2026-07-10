@@ -26,6 +26,30 @@ const AI_CARD_BATCH_CRONS = new Set([
 ]);
 const AI_CARD_BATCH_MAX_WORDS = 5;
 
+function toCount(value) {
+  return Math.max(0, Number.parseInt(value, 10) || 0);
+}
+
+export function getTodayAiCardBatchPlan(status = {}) {
+  const readyCount = toCount(status?.readyCount);
+  const missingCount = toCount(status?.missingCount);
+  const pendingCount = toCount(status?.pendingCount);
+  const stalePendingCount = Math.min(pendingCount, toCount(status?.stalePendingCount));
+  const activePendingCount = Math.max(0, pendingCount - stalePendingCount);
+  const retryStalePending = stalePendingCount > 0;
+  const workCount = missingCount + stalePendingCount;
+
+  return {
+    readyCount,
+    missingCount,
+    pendingCount,
+    stalePendingCount,
+    activePendingCount,
+    retryStalePending,
+    shouldRun: workCount > 0 && activePendingCount === 0
+  };
+}
+
 function jsonResponse(body, status = 200) {
   return new Response(JSON.stringify(body), {
     status,
@@ -82,14 +106,12 @@ async function triggerTodayAiCardBatch(env) {
   }
 
   const status = await statusResponse.json().catch(() => null);
-  const readyCount = Number.parseInt(status?.readyCount, 10) || 0;
-  const missingCount = Number.parseInt(status?.missingCount, 10) || 0;
-  const pendingCount = Number.parseInt(status?.pendingCount, 10) || 0;
-  console.log('ai card batch status', { readyCount, missingCount, pendingCount });
+  const plan = getTodayAiCardBatchPlan(status);
+  console.log('ai card batch status', plan);
 
-  if (missingCount <= 0) return;
-  if (pendingCount > 0) {
-    console.warn('ai card batch skipped because cards are pending', { missingCount, pendingCount });
+  if (plan.missingCount <= 0 && plan.stalePendingCount <= 0) return;
+  if (plan.activePendingCount > 0) {
+    console.warn('ai card batch skipped because cards are actively pending', plan);
     return;
   }
 
@@ -100,7 +122,8 @@ async function triggerTodayAiCardBatch(env) {
     },
     body: JSON.stringify({
       mode: 'today',
-      maxWords: AI_CARD_BATCH_MAX_WORDS
+      maxWords: AI_CARD_BATCH_MAX_WORDS,
+      retryStalePending: plan.retryStalePending
     })
   });
   if (!response.ok) {
@@ -113,8 +136,9 @@ async function triggerTodayAiCardBatch(env) {
   console.log('ai card batch completed', {
     status: response.status,
     savedCount: Number.parseInt(result?.savedCount, 10) || 0,
-    missingCount,
-    readyCount
+    missingCount: plan.missingCount,
+    readyCount: plan.readyCount,
+    stalePendingCount: plan.stalePendingCount
   });
 }
 
