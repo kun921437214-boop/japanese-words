@@ -96,29 +96,54 @@ async function readLimitedText(response, maxLength = 500) {
   return text.slice(0, maxLength);
 }
 
-async function triggerDailyRefresh(env) {
+export async function triggerDailyPublishOrFallback(env, fetchImpl = fetch) {
   const siteUrl = String(env.SITE_URL || '').trim().replace(/\/+$/, '');
   const autoRefreshSecret = String(env.AUTO_REFRESH_SECRET || '').trim();
   if (!siteUrl || !autoRefreshSecret) {
-    console.warn('daily refresh trigger skipped because SITE_URL or AUTO_REFRESH_SECRET is missing');
-    return;
+    console.warn('daily publish skipped because SITE_URL or AUTO_REFRESH_SECRET is missing');
+    return { ok: false, source: 'skipped' };
+  }
+
+  const targetDateKey = dateKey(new Date());
+  const codexUrl = new URL(`${siteUrl}/codex-daily`);
+  codexUrl.searchParams.set('date', targetDateKey);
+  try {
+    const codexResponse = await fetchImpl(codexUrl.toString(), {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${autoRefreshSecret}`
+      },
+      body: JSON.stringify({ action: 'promote', targetDateKey })
+    });
+    const result = await codexResponse.json().catch(() => null);
+    if (codexResponse.ok && result?.published) {
+      console.log('Codex daily draft promoted', targetDateKey, result.source || 'codex_draft');
+      return { ok: true, source: 'codex', status: codexResponse.status };
+    }
+    console.warn('Codex daily draft unavailable; using DeepSeek fallback', codexResponse.status, result?.error?.code || 'UNKNOWN');
+  } catch (error) {
+    console.warn('Codex daily draft promotion failed; using DeepSeek fallback', error?.message || error);
   }
 
   const refreshUrl = new URL(`${siteUrl}/daily-refresh`);
   refreshUrl.searchParams.set('mode', 'manual');
   refreshUrl.searchParams.set('skipCards', 'true');
-  const response = await fetch(refreshUrl.toString(), {
+  const response = await fetchImpl(refreshUrl.toString(), {
     method: 'POST',
     headers: {
+      'Content-Type': 'application/json',
       Authorization: `Bearer ${autoRefreshSecret}`
-    }
+    },
+    body: JSON.stringify({ action: 'scheduled_fallback', targetDateKey })
   });
   if (!response.ok) {
     const text = await readLimitedText(response);
     console.warn('daily refresh trigger returned non-OK', response.status, text);
-    return;
+    return { ok: false, source: 'deepseek', status: response.status };
   }
   console.log('daily refresh trigger completed', response.status);
+  return { ok: true, source: 'deepseek', status: response.status };
 }
 
 async function triggerTodayAiCardBatch(env) {
@@ -640,7 +665,7 @@ export default {
     const cron = String(controller?.cron || '').trim();
     if (cron === DAILY_REFRESH_CRON) {
       ctx.waitUntil(
-        triggerDailyRefresh(env).catch(error => console.warn('daily refresh trigger failed', error?.message || error))
+        triggerDailyPublishOrFallback(env).catch(error => console.warn('daily publish trigger failed', error?.message || error))
       );
     }
 

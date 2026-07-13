@@ -45,7 +45,8 @@ const TEXTBOOK_POLITE_WORDS = new Set([
   'すみません',
   'いただきます',
   'お邪魔します',
-  'お世話になります'
+  'お世話になります',
+  '失礼します'
 ]);
 
 const EMOTION_STATE_WORDS = new Set([
@@ -133,7 +134,11 @@ const BEAUTY_PRODUCT_WORDS = new Set([
   'マスカラ',
   'アイシャドウ',
   'ベースメイク',
-  'ネイル'
+  'ネイル',
+  'ツヤ肌',
+  '涙袋メイク',
+  'シェーディング',
+  'ノーファンデ'
 ]);
 
 const CUTE_SLANG_WORDS = new Set([
@@ -154,10 +159,14 @@ const GENERIC_BASIC_WORDS = new Set([
   '生活',
   '料理',
   '旅行',
-  '買い物'
+  '買い物',
+  'テンション',
+  '頑張る',
+  '集中',
+  '充実'
 ]);
 
-const BEAUTY_PRODUCT_RE = /リップ|チーク|ファンデ|マスカラ|アイシャドウ|ネイル|ベースメイク|メイク用品|化粧品|美妆品类|美妝品類/;
+const BEAUTY_PRODUCT_RE = /リップ|チーク|ファンデ|マスカラ|アイシャドウ|ネイル|ベースメイク|涙袋メイク|シェーディング|ノーファンデ|ツヤ肌|メイク用品|化粧品|美妆品类|美妝品類/;
 const FANDOM_RE = /推し|尊|神回|布教|沼落ち|解釈一致|現場|参戦|同担|オタ|痛バ|追星|圈层|圈層/;
 const EMOTION_RE = /しんみり|ほのぼの|わくわく|モヤ|もにょ|だるい|しょんぼり|ときめ|胸きゅん|ドキドキ|そわそわ|ぽかぽか|気持ち|心情|情绪|情緒|状态|狀態/;
 const SOCIAL_RE = /気が合う|気が置けない|気を遣う|気遣い|気配り|距離感|空気|察する|きまづい|気が利く|人际|人際|社交|语感|語感|关系|關係/;
@@ -202,6 +211,7 @@ export function getDailyQualityCategory(entry = {}) {
   if (TEXTBOOK_POLITE_WORDS.has(word)) return 'textbook_polite';
   if (BEAUTY_PRODUCT_WORDS.has(word) || BEAUTY_PRODUCT_RE.test(text)) return 'beauty_product';
   if (CUTE_SLANG_WORDS.has(word) || CUTE_SLANG_RE.test(text)) return 'cute_slang';
+  if (GENERIC_BASIC_WORDS.has(word)) return 'generic_basic';
   if (SOCIAL_NUANCE_WORDS.has(word)) return 'social_nuance';
   if (LIFE_STATE_WORDS.has(word)) return 'life_state';
   if (EMOTION_STATE_WORDS.has(word)) return 'emotion_state';
@@ -209,7 +219,7 @@ export function getDailyQualityCategory(entry = {}) {
   if (LIFE_RE.test(text)) return 'life_state';
   if (EMOTION_RE.test(text)) return 'emotion_state';
   if (FANDOM_WORDS.has(word) || FANDOM_RE.test(text)) return 'fandom_circle';
-  if (GENERIC_BASIC_WORDS.has(word) || TEXTBOOK_CONTEXT_RE.test(text)) return 'generic_basic';
+  if (TEXTBOOK_CONTEXT_RE.test(text)) return 'generic_basic';
   return 'unknown';
 }
 
@@ -218,6 +228,11 @@ export function getDailySemanticCluster(entry = {}) {
   const text = `${word} ${getContextText(entry)}`;
   if (!word) return 'unknown';
   if (BASIC_GREETING_WORDS.has(word)) return 'basic_greeting_cluster';
+  if (/^(モヤる|もやもや|モヤモヤ)$/.test(word)) return 'moya_cluster';
+  if (/^(テンション|テンション上がる|テンション下がる)$/.test(word)) return 'tension_cluster';
+  if (/^(空気読む|空気を読む|空気読める)$/.test(word)) return 'read_the_room_cluster';
+  if (/^(気を遣う|気遣い)$/.test(word)) return 'consideration_cluster';
+  if (/^(推し|自担|同担)$/.test(word)) return 'fandom_identity_cluster';
   if (/お疲れ/.test(word)) return 'otsukare_cluster';
   if (TEXTBOOK_POLITE_WORDS.has(word) || TEXTBOOK_CONTEXT_RE.test(text)) return 'textbook_polite_cluster';
   if (BEAUTY_PRODUCT_WORDS.has(word) || BEAUTY_PRODUCT_RE.test(text)) return 'beauty_product_cluster';
@@ -232,6 +247,11 @@ export function getDailyClusterLimit(cluster) {
     textbook_polite_cluster: 1,
     otsukare_cluster: 1,
     beauty_product_cluster: 1,
+    moya_cluster: 1,
+    tension_cluster: 1,
+    read_the_room_cluster: 1,
+    consideration_cluster: 1,
+    fandom_identity_cluster: 2,
     kiga_expression_cluster: 2,
     fandom_oshi_cluster: 2
   }[cluster] || WORDS_PER_DAY;
@@ -304,6 +324,13 @@ export function getDailyQualityScoreDelta(entry = {}, context = {}) {
   return clamp(categoryDelta + titleDelta + recentClusterDelta, -60, 36);
 }
 
+export function hasStrongXhsExpressionValue(entry = {}) {
+  const category = getDailyQualityCategory(entry);
+  const text = `${getWord(entry)} ${getContextText(entry)}`;
+  if (['emotion_state', 'social_nuance', 'life_state', 'cute_slang', 'fandom_circle'].includes(category)) return true;
+  return TITLE_VALUE_RE.test(text) && !LOW_TITLE_VALUE_RE.test(text);
+}
+
 export function buildDailyQualitySummary(entries = [], options = {}) {
   const categoryCounts = QUALITY_CATEGORIES.reduce((result, category) => ({ ...result, [category]: 0 }), {});
   const clusterCounts = {};
@@ -314,6 +341,8 @@ export function buildDailyQualitySummary(entries = [], options = {}) {
     clusterCounts[cluster] = (clusterCounts[cluster] || 0) + 1;
   });
   const warnings = [];
+  const categoryConcentrationWarnings = [];
+  const healthWarnings = [];
   const relaxedReasons = [];
   const basicTextbookCount = (categoryCounts.basic_greeting || 0) + (categoryCounts.textbook_polite || 0);
   const maxChecks = [
@@ -324,7 +353,9 @@ export function buildDailyQualitySummary(entries = [], options = {}) {
   ];
   maxChecks.forEach(([name, count, max]) => {
     if (count > max) {
-      warnings.push(`${name} quota exceeded: ${count}/${max}`);
+      const warning = `${name} quota exceeded: ${count}/${max}`;
+      warnings.push(warning);
+      categoryConcentrationWarnings.push(warning);
       relaxedReasons.push(`${name}_quota_exceeded`);
     }
   });
@@ -342,6 +373,16 @@ export function buildDailyQualitySummary(entries = [], options = {}) {
       relaxedReasons.push(`${cluster}_cluster_exceeded`);
     }
   });
+  const duplicateClusters = Object.entries(clusterCounts)
+    .filter(([cluster, count]) => (
+      count > getDailyClusterLimit(cluster)
+      && !['basic_greeting_cluster', 'textbook_polite_cluster', 'otsukare_cluster', 'beauty_product_cluster'].includes(cluster)
+    ))
+    .map(([cluster, count]) => ({ cluster, count, limit: getDailyClusterLimit(cluster) }));
+  const duplicateClusterCount = duplicateClusters.length;
+  const beautyCategoryCount = categoryCounts.beauty_product || 0;
+  const basicPoliteCount = basicTextbookCount;
+  const genericBasicCount = categoryCounts.generic_basic || 0;
   const penalty = relaxedReasons.length * 8
     + Math.max(0, basicTextbookCount - DAILY_QUALITY_MAXIMA.basicTextbook) * 12
     + Math.max(0, (categoryCounts.beauty_product || 0) - DAILY_QUALITY_MAXIMA.beauty_product) * 8
@@ -350,11 +391,30 @@ export function buildDailyQualitySummary(entries = [], options = {}) {
     + Math.min(categoryCounts.social_nuance || 0, DAILY_QUALITY_MINIMA.social_nuance)
     + Math.min(categoryCounts.life_state || 0, DAILY_QUALITY_MINIMA.life_state);
   const score = clamp(62 + positiveCoverage * 3 - penalty, 0, 100);
+  const estimatedPenalty = Math.min(18,
+    duplicateClusterCount * 6
+      + Math.max(0, beautyCategoryCount - 1) * 5
+      + basicPoliteCount * 6
+      + genericBasicCount * 3
+  );
+  const estimatedHumanQualityScore = clamp(100 - estimatedPenalty, 0, 100);
+  if (duplicateClusterCount > 0) healthWarnings.push(`存在 ${duplicateClusterCount} 组同日语义重复`);
+  if (beautyCategoryCount > 1) healthWarnings.push(`美妆品类同日集中：${beautyCategoryCount}/1`);
+  if (basicPoliteCount > 0) healthWarnings.push(`基础寒暄或教材礼貌词：${basicPoliteCount}`);
+  if (genericBasicCount > 0) healthWarnings.push(`泛基础词：${genericBasicCount}`);
   const relaxed = Boolean(options.relaxed || relaxedReasons.length);
   return {
     score,
     categoryCounts,
     clusterCounts,
+    duplicateClusterCount,
+    duplicateClusters,
+    beautyCategoryCount,
+    basicPoliteCount,
+    genericBasicCount,
+    categoryConcentrationWarnings: categoryConcentrationWarnings.slice(0, 12),
+    healthWarnings: healthWarnings.slice(0, 12),
+    estimatedHumanQualityScore,
     warnings: warnings.slice(0, 12),
     relaxed,
     relaxedReasons: [...new Set([...(options.relaxedReasons || []), ...relaxedReasons])].slice(0, 12)

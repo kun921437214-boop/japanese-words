@@ -44,9 +44,9 @@ const EVIDENCE_TYPE_OPTIONS = ['common_usage', 'ai_inferred', 'user_material', '
 const DISPLAY_BUCKET_OPTIONS = ['today', 'meme_fast', 'long_term', 'seasonal', 'review', 'blocked'];
 const EMOTION_TONE_OPTIONS = ['positive', 'neutral', 'negative', 'aesthetic', 'lifestyle', 'fandom'];
 const REVIEW_REASON_TYPE_OPTIONS = ['uncertain_usage', 'too_niche', 'possible_wrong_meaning', 'ip_brand_role', 'privacy_sensitive', 'offensive', 'too_basic'];
-const SOURCE_TYPE_OPTIONS = ['deepseek_generated', 'deepseek_reviewed', 'manual_keep', 'audit_missing'];
+const SOURCE_TYPE_OPTIONS = ['codex_generated', 'deepseek_generated', 'deepseek_reviewed', 'manual_keep', 'audit_missing'];
 const SOURCE_PROMPT_OPTIONS = ['stable_today', 'wild_ideas', 'generate_candidates', 'extract_from_materials', 'enrich_words', 'generate_word_card', 'rerank_candidates', 'audit_library_for_delete', 'audit_missing_library_words'];
-const RECOMMENDATION_ORIGIN_TYPES = ['deepseek_new', 'candidate_pool', 'history_fallback', 'local_word_bank', 'manual_added', 'today_backfill', 'dedup_relaxed', 'unknown'];
+const RECOMMENDATION_ORIGIN_TYPES = ['codex_generated', 'deepseek_new', 'candidate_pool', 'history_fallback', 'local_word_bank', 'manual_added', 'today_backfill', 'dedup_relaxed', 'unknown'];
 const RECOMMENDATION_LEVEL_OPTIONS = ['S', 'A', 'B', 'C', ''];
 const PROMPT_VERSION_BY_ACTION = {
   stable_today: 'candidate-v3',
@@ -264,6 +264,18 @@ function cleanCoverSuggestion(coverSuggestion = {}) {
   };
 }
 
+export function cleanReferenceImage(referenceImage = {}) {
+  return {
+    status: cleanEnum(referenceImage?.status, ['missing', 'ready', 'failed'], 'missing'),
+    url: cleanText(referenceImage?.url, 1000),
+    key: cleanText(referenceImage?.key, 500),
+    visualBrief: cleanText(referenceImage?.visualBrief, 1000),
+    prompt: cleanText(referenceImage?.prompt, 4000),
+    provider: cleanText(referenceImage?.provider, 80),
+    generatedAt: isIsoLike(referenceImage?.generatedAt) ? referenceImage.generatedAt : ''
+  };
+}
+
 export function cleanAiCard(card = {}) {
   const hasContent = Boolean(card && Object.keys(card || {}).length);
   const status = cleanEnum(card?.cardStatus, ['none', 'pending', 'ready', 'failed', 'stale'], hasContent ? 'ready' : 'none');
@@ -274,6 +286,7 @@ export function cleanAiCard(card = {}) {
     cardModel: cleanText(card?.cardModel, 120),
     cardVersion: clamp(toInt(card?.cardVersion, 1), 1, 99),
     generatedAt: isIsoLike(card?.generatedAt) ? card.generatedAt : '',
+    referenceImage: cleanReferenceImage(card?.referenceImage || {}),
     summary: cleanText(card?.summary, 500),
     explanation: cleanText(card?.explanation, 1600),
     usageScenes: uniqueStrings(card?.usageScenes, 120, 8),
@@ -329,6 +342,7 @@ function cleanRecommendationAuditTrace(trace = {}) {
     fromHistoryFallback: Boolean(trace?.fromHistoryFallback),
     fromLocalFallback: Boolean(trace?.fromLocalFallback),
     fromManual: Boolean(trace?.fromManual),
+    fromCodex: Boolean(trace?.fromCodex),
     isBackfill: Boolean(trace?.isBackfill),
     isDedupRelaxed: Boolean(trace?.isDedupRelaxed),
     dedupDaysUsed: clamp(toInt(trace?.dedupDaysUsed, 0), 0, 365),
@@ -357,6 +371,10 @@ function cleanRecommendationAuditItem(item = {}) {
     expressionValueScore: clamp(toInt(item?.expressionValueScore, 0), 0, 100),
     chineseTransparencyScore: clamp(toInt(item?.chineseTransparencyScore, 0), 0, 100),
     genericTopicPenalty: clamp(toInt(item?.genericTopicPenalty, 0), 0, 100),
+    semanticClusterKey: cleanText(item?.semanticClusterKey, 120),
+    qualityCategory: cleanText(item?.qualityCategory, 80),
+    isDuplicateCluster: Boolean(item?.isDuplicateCluster),
+    sLevelEligible: Boolean(item?.sLevelEligible),
     selectedReason: cleanText(item?.selectedReason, 1000),
     diagnosis: safeArray(item?.diagnosis).map(text => cleanText(text, 240)).filter(Boolean).slice(0, 8)
   };
@@ -406,7 +424,12 @@ function cleanRecommendationAuditSummary(audit = {}) {
     'aLevelCount',
     'bLevelCount',
     'cLevelCount',
-    'score'
+    'score',
+    'duplicateClusterCount',
+    'beautyCategoryCount',
+    'basicPoliteCount',
+    'genericBasicCount',
+    'estimatedHumanQualityScore'
   ];
   const qualitySummary = audit?.qualitySummary || {};
   return {
@@ -419,6 +442,13 @@ function cleanRecommendationAuditSummary(audit = {}) {
       categoryCounts: cleanCountMap(qualitySummary?.categoryCounts, 20),
       clusterCounts: cleanCountMap(qualitySummary?.clusterCounts, 50),
       warnings: uniqueStrings(qualitySummary?.warnings, 240, 12),
+      duplicateClusters: safeArray(qualitySummary?.duplicateClusters).map(item => ({
+        cluster: cleanText(item?.cluster, 120),
+        count: clamp(toInt(item?.count, 0), 0, 20),
+        limit: clamp(toInt(item?.limit, 0), 0, 20)
+      })).filter(item => item.cluster).slice(0, 12),
+      categoryConcentrationWarnings: uniqueStrings(qualitySummary?.categoryConcentrationWarnings, 240, 12),
+      healthWarnings: uniqueStrings(qualitySummary?.healthWarnings, 240, 12),
       relaxed: Boolean(qualitySummary?.relaxed),
       relaxedReasons: uniqueStrings(qualitySummary?.relaxedReasons, 120, 12)
     },
@@ -699,7 +729,7 @@ export function cleanTodaySnapshot(snapshot = {}) {
     batchIds: uniqueStrings(snapshot?.batchIds, 120, 30),
     version: clamp(toInt(snapshot?.version, words.length ? TODAY_SNAPSHOT_VERSION : 0), 0, 999),
     generatorVersion: cleanText(snapshot?.generatorVersion, 80),
-    createdBy: cleanEnum(snapshot?.createdBy, ['server', 'frontend', 'worker', 'manual'], ''),
+    createdBy: cleanEnum(snapshot?.createdBy, ['server', 'frontend', 'worker', 'manual', 'codex'], ''),
     dedupDaysUsed: clamp(toInt(snapshot?.dedupDaysUsed, 0), 0, 365),
     relaxedDedup: Boolean(snapshot?.relaxedDedup),
     shortage: Boolean(snapshot?.shortage),
@@ -723,7 +753,7 @@ export function cleanHistorySnapshot(snapshot = {}, fallbackDateKey = '') {
     batchIds: uniqueStrings(snapshot?.batchIds, 120, 30),
     version: clamp(toInt(snapshot?.version, words.length ? TODAY_SNAPSHOT_VERSION : 1), 1, 999),
     generatorVersion: cleanText(snapshot?.generatorVersion, 80),
-    createdBy: cleanEnum(snapshot?.createdBy, ['server', 'frontend', 'worker', 'manual'], ''),
+    createdBy: cleanEnum(snapshot?.createdBy, ['server', 'frontend', 'worker', 'manual', 'codex'], ''),
     dedupDaysUsed: clamp(toInt(snapshot?.dedupDaysUsed, 0), 0, 365),
     relaxedDedup: Boolean(snapshot?.relaxedDedup),
     shortage: Boolean(snapshot?.shortage),

@@ -47,6 +47,7 @@ let activeFeedbackMenuKanji = null;
 let lastCloudSyncAt = '';
 let lastLocalCacheAt = '';
 let cloudWorkflowFailed = false;
+let codexTomorrowDraftStatus = null;
 
 const FAVORITES_STORAGE_KEY = 'kotoba_favorites';
 const FAVORITE_STATUSES_STORAGE_KEY = 'kotoba_favorite_statuses';
@@ -115,6 +116,7 @@ const AI_ACTION_LABELS = {
   audit_missing_library_words: '历史种子复核'
 };
 const RECOMMENDATION_ORIGIN_LABELS = {
+  codex_generated: 'Codex 次日草稿',
   deepseek_new: 'DeepSeek 新生成',
   candidate_pool: 'AI 候选池旧词',
   history_fallback: '历史热门回流',
@@ -438,6 +440,7 @@ const CANDIDATE_SECTION_LABELS = {
 };
 const CANDIDATE_SOURCE_FILTER_LABELS = {
   all: '全部来源',
+  codex_generated: 'Codex 生成词',
   deepseek_generated: 'DeepSeek 生成词',
   deepseek_reviewed: 'DeepSeek 审核词',
   manual_keep: '手动保留词'
@@ -834,7 +837,7 @@ function isLegacyLibraryWord(kanji, entry = null) {
 function getLibraryAuditRecord(kanji, entry = candidatePool[kanji] || {}) {
   const cleanKanji = cleanShortText(kanji, 80);
   if (!cleanKanji) return null;
-  if (entry?.sourceType === 'deepseek_generated' || entry?.sourceType === 'deepseek_api') return { kanji: cleanKanji, source: 'candidatePool.generated' };
+  if (['codex_generated', 'deepseek_generated', 'deepseek_api'].includes(entry?.sourceType)) return { kanji: cleanKanji, source: 'candidatePool.generated' };
   if (entry?.sourceType === 'manual_keep' || entry?.protected) return { kanji: cleanKanji, source: 'candidatePool.protected', libraryReviewStatus: 'protected', action: 'protect' };
   if (entry?.sourceType === 'deepseek_reviewed') return { kanji: cleanKanji, source: 'candidatePool.sourceType' };
   if (entry?.reviewSource === 'deepseek_library_audit') return { kanji: cleanKanji, source: 'candidatePool.reviewSource' };
@@ -1191,10 +1194,19 @@ function cleanAiCard(card = {}) {
   if (!status && !card.summary && !card.explanation) return null;
   return {
     cardStatus: status || 'ready',
-    cardSource: card.cardSource === 'deepseek_api' ? 'deepseek_api' : '',
+    cardSource: ['codex', 'deepseek_api'].includes(card.cardSource) ? card.cardSource : '',
     cardModel: cleanShortText(card.cardModel, 120),
     cardVersion: clamp(toInt(card.cardVersion, 1), 1, 99),
     generatedAt: typeof card.generatedAt === 'string' ? card.generatedAt : '',
+    referenceImage: {
+      status: normalizeEnumValue(card.referenceImage?.status, ['missing', 'ready', 'failed'], 'missing'),
+      url: cleanShortText(card.referenceImage?.url, 1000),
+      key: cleanShortText(card.referenceImage?.key, 500),
+      visualBrief: cleanShortText(card.referenceImage?.visualBrief, 1000),
+      prompt: cleanShortText(card.referenceImage?.prompt, 4000),
+      provider: cleanShortText(card.referenceImage?.provider, 80),
+      generatedAt: typeof card.referenceImage?.generatedAt === 'string' ? card.referenceImage.generatedAt : ''
+    },
     summary: cleanShortText(card.summary, 500),
     explanation: cleanShortText(card.explanation, 1600),
     usageScenes: getUniqueWords(card.usageScenes || []).map(item => cleanShortText(item, 120)).slice(0, 8),
@@ -1358,17 +1370,19 @@ function getRecommendationAuditTrace(entry = {}, context = {}) {
   const existingWords = context.existingWords || new Set();
   const sourceType = cleanShortText(cleanEntry.sourceType, 80);
   const sourceBatchId = cleanEntry.aiBatchId || cleanEntry.sourceBatchId || '';
+  const fromCodex = sourceType === 'codex_generated';
   const fromDeepSeekNew = sourceType === 'deepseek_generated' && sourceBatchId && freshBatchIds.has(sourceBatchId);
   const fromManual = sourceType === 'manual_keep' || sourceType === 'manual';
   const fromHistoryFallback = Boolean(cleanEntry.historicalBackfill);
   const fromLocalFallback = Boolean(cleanEntry.fromLocalFallback || cleanEntry.lastOrigin === 'local' || sourceType === 'original' || sourceType === 'audit_missing');
-  const fromCandidatePool = !fromDeepSeekNew && !fromManual && !fromHistoryFallback && !fromLocalFallback;
+  const fromCandidatePool = !fromCodex && !fromDeepSeekNew && !fromManual && !fromHistoryFallback && !fromLocalFallback;
   const isBackfill = Boolean(cleanEntry.historicalBackfill)
     || (context.mode === 'fill' && cleanEntry.kanji && !existingWords.has(cleanEntry.kanji))
     || (cleanEntry.displayBucket && cleanEntry.displayBucket !== 'today');
   const isDedupRelaxed = Boolean(cleanEntry.historicalBackfill || context.relaxedDedup || (context.dedupDaysUsed && context.dedupDaysUsed < TODAY_HISTORY_DEDUP_DAYS));
   let originType = 'candidate_pool';
-  if (fromDeepSeekNew) originType = 'deepseek_new';
+  if (fromCodex) originType = 'codex_generated';
+  else if (fromDeepSeekNew) originType = 'deepseek_new';
   else if (fromHistoryFallback) originType = 'history_fallback';
   else if (fromLocalFallback) originType = 'local_word_bank';
   else if (fromManual) originType = 'manual_added';
@@ -1386,6 +1400,7 @@ function getRecommendationAuditTrace(entry = {}, context = {}) {
     fromHistoryFallback,
     fromLocalFallback,
     fromManual,
+    fromCodex,
     isBackfill,
     isDedupRelaxed,
     dedupDaysUsed: context.dedupDaysUsed || cleanEntry.dedupDaysUsed || TODAY_HISTORY_DEDUP_DAYS,
@@ -1740,7 +1755,7 @@ function normalizeCandidateSourceType(entry = {}, knownWord = null, kanji = '') 
   const raw = String(entry.sourceType || '').trim();
   if (raw === 'deepseek_api') return 'deepseek_generated';
   if (raw === 'manual') return 'manual_keep';
-  if (['deepseek_generated', 'deepseek_reviewed', 'manual_keep'].includes(raw)) return raw;
+  if (['codex_generated', 'deepseek_generated', 'deepseek_reviewed', 'manual_keep'].includes(raw)) return raw;
   if (raw === 'original' || raw === 'audit_missing') {
     if (entry.reviewSource === 'deepseek_library_audit' || entry.libraryReviewStatus) return 'deepseek_reviewed';
     const record = libraryReviewRecords[kanji || entry.kanji || knownWord?.kanji];
@@ -2051,6 +2066,7 @@ function cleanRecommendationAuditTrace(trace = {}) {
     fromHistoryFallback: Boolean(trace.fromHistoryFallback),
     fromLocalFallback: Boolean(trace.fromLocalFallback),
     fromManual: Boolean(trace.fromManual),
+    fromCodex: Boolean(trace.fromCodex),
     isBackfill: Boolean(trace.isBackfill),
     isDedupRelaxed: Boolean(trace.isDedupRelaxed),
     dedupDaysUsed: clamp(toInt(trace.dedupDaysUsed, TODAY_HISTORY_DEDUP_DAYS), 0, 365),
@@ -2073,6 +2089,10 @@ function cleanRecommendationAuditItem(item = {}) {
     expressionValueScore: clamp(toInt(item.expressionValueScore, 0), 0, 100),
     chineseTransparencyScore: clamp(toInt(item.chineseTransparencyScore, 0), 0, 100),
     genericTopicPenalty: clamp(toInt(item.genericTopicPenalty, 0), 0, 100),
+    semanticClusterKey: cleanShortText(item.semanticClusterKey, 120),
+    qualityCategory: cleanShortText(item.qualityCategory, 80),
+    isDuplicateCluster: Boolean(item.isDuplicateCluster),
+    sLevelEligible: Boolean(item.sLevelEligible),
     selectedReason: cleanShortText(item.selectedReason || trace.selectedReason, 1000),
     diagnosis: safeArray(item.diagnosis).map(text => cleanShortText(text, 300)).filter(Boolean).slice(0, 8)
   };
@@ -2093,12 +2113,21 @@ function cleanRecommendationAuditSummary(audit = {}) {
     'sLevelCount',
     'aLevelCount',
     'bLevelCount',
-    'cLevelCount'
+    'cLevelCount',
+    'score',
+    'duplicateClusterCount',
+    'beautyCategoryCount',
+    'basicPoliteCount',
+    'genericBasicCount',
+    'estimatedHumanQualityScore'
   ];
   const qualitySummary = qualityKeys.reduce((result, key) => ({
     ...result,
     [key]: clamp(toInt(audit.qualitySummary?.[key], 0), 0, 1000)
   }), {});
+  qualitySummary.healthWarnings = safeArray(audit.qualitySummary?.healthWarnings).map(text => cleanShortText(text, 240)).filter(Boolean).slice(0, 12);
+  qualitySummary.categoryConcentrationWarnings = safeArray(audit.qualitySummary?.categoryConcentrationWarnings).map(text => cleanShortText(text, 240)).filter(Boolean).slice(0, 12);
+  qualitySummary.duplicateClusters = safeArray(audit.qualitySummary?.duplicateClusters).slice(0, 12);
   return {
     date: cleanShortText(audit.date, 20),
     total: clamp(toInt(audit.total, 0), 0, 1000),
@@ -2115,7 +2144,7 @@ function cleanCandidatePoolEntry(kanji, entry = {}) {
   const cleanKanji = normalizeKanjiSpelling(rawKanji);
   const knownWord = getWordByKanji(cleanKanji) || getWordByKanji(rawKanji);
   const sourceType = normalizeCandidateSourceType(entry, knownWord, cleanKanji);
-  const hasAiLexicalFields = Boolean(entry.kana || entry.romaji || entry.meaning || ['deepseek_generated', 'deepseek_api', 'deepseek_reviewed', 'manual_keep'].includes(sourceType || entry.sourceType));
+  const hasAiLexicalFields = Boolean(entry.kana || entry.romaji || entry.meaning || ['codex_generated', 'deepseek_generated', 'deepseek_api', 'deepseek_reviewed', 'manual_keep'].includes(sourceType || entry.sourceType));
   if (!cleanKanji || (knownWord && !isWordApproved(knownWord)) || (PURE_KANJI_RE.test(cleanKanji) && !knownWord && !hasAiLexicalFields)) return null;
   const riskLevel = normalizeEnumValue(entry.riskLevel, RISK_LEVEL_OPTIONS, 'low');
   const freshness = normalizeEnumValue(entry.freshness, FRESHNESS_OPTIONS, '');
@@ -2136,6 +2165,7 @@ function cleanCandidatePoolEntry(kanji, entry = {}) {
   const xhsFitScore = clamp(toInt(normalizedAi?.xhsFitScore ?? entry.xhsFitScore, entry.lastScore || knownWord?.popularity || 60), 0, 100);
   let sourceTags = getUniqueWords(entry.sourceTags || []).slice(0, 12);
   if (sourceType === 'deepseek_generated' && !sourceTags.includes('DeepSeek生成')) sourceTags.unshift('DeepSeek生成');
+  if (sourceType === 'codex_generated' && !sourceTags.includes('Codex生成')) sourceTags.unshift('Codex生成');
   if (sourceType === 'deepseek_reviewed' && !sourceTags.includes('DeepSeek审核')) sourceTags.unshift('DeepSeek审核');
   if (sourceType === 'deepseek_reviewed' && !sourceTags.includes('已审核词库')) sourceTags.unshift('已审核词库');
   if (sourceType === 'manual_keep' && !sourceTags.includes('受保护')) sourceTags.unshift('受保护');
@@ -3325,6 +3355,27 @@ function getAiCardsEndpoint() {
 
 function getTodaySnapshotEndpoint() {
   return SYNC_API_URL ? `${SYNC_API_URL}/today-snapshot` : '/today-snapshot';
+}
+
+function getCodexDailyEndpoint(targetDateKey = addDaysToDateKey(todayKey(), 1)) {
+  const base = SYNC_API_URL ? `${SYNC_API_URL}/codex-daily` : '/codex-daily';
+  const url = new URL(base, window.location.origin);
+  url.searchParams.set('date', targetDateKey);
+  url.searchParams.set('view', 'status');
+  return url.toString();
+}
+
+async function loadCodexTomorrowDraftStatus() {
+  try {
+    const response = await apiFetch(getCodexDailyEndpoint(), { headers: { Accept: 'application/json' } }, { cancelKey: 'codex-draft-status' });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const data = await response.json();
+    codexTomorrowDraftStatus = data.draft || null;
+  } catch {
+    codexTomorrowDraftStatus = null;
+  }
+  if (document.body.dataset.activeTab === 'today') renderDailyHot();
+  return codexTomorrowDraftStatus;
 }
 
 function getLegacySyncEndpoint() {
@@ -5200,7 +5251,7 @@ function buildRecommendedWord(word, origin = 'global', candidateMeta = null) {
   const freshnessBonus = getFreshnessBonus(candidateMeta);
   const candidateTypeBonus = getCandidateTypeBonus(candidateMeta);
   const riskPenalty = getRiskPenalty(candidateMeta);
-  const aiBaseScore = candidateMeta?.sourceType === 'deepseek_generated'
+  const aiBaseScore = ['codex_generated', 'deepseek_generated'].includes(candidateMeta?.sourceType)
     ? clamp(toInt(candidateMeta.xhsFitScore, platformHeatScore), 0, 100)
     : null;
   const finalScore = clamp(Math.round(
@@ -5273,6 +5324,9 @@ function buildRecommendedWord(word, origin = 'global', candidateMeta = null) {
   };
   return {
     ...word,
+    imageUrl: aiCard?.referenceImage?.status === 'ready' && aiCard.referenceImage.url
+      ? aiCard.referenceImage.url
+      : word.imageUrl,
     origin,
     dataScore,
     platformHeatScore,
@@ -5368,7 +5422,7 @@ function isTodayCandidateEligible(entry = {}, options = {}) {
   if (blocked.has(cleanEntry.kanji) || dismissed.has(cleanEntry.kanji)) return false;
   if (recentBlocked.has(cleanEntry.kanji)) return false;
   if (isLibraryAuditRemoved(cleanEntry)) return false;
-  if (!['deepseek_generated', 'deepseek_reviewed', 'manual_keep'].includes(cleanEntry.sourceType)) return false;
+  if (!['codex_generated', 'deepseek_generated', 'deepseek_reviewed', 'manual_keep'].includes(cleanEntry.sourceType)) return false;
   if (cleanEntry.sourceType === 'deepseek_reviewed' && ['delete', 'deleted', 'archived'].includes(cleanEntry.libraryReviewStatus)) return false;
   if (['review', 'blocked'].includes(cleanEntry.displayBucket)) return false;
   if (cleanEntry.riskLevel === 'high') return false;
@@ -5567,10 +5621,10 @@ function hydrateTodayWordsFromSnapshot() {
       const sourceEntry = candidatePool[kanji] || { kanji };
       const word = buildTodayWordFromCandidateEntry({
         ...sourceEntry,
-        recommendationAudit: sourceEntry.recommendationAudit || auditItem || {}
+        recommendationAudit: { ...(sourceEntry.recommendationAudit || {}), ...(auditItem || {}) }
       }, { snapshotDisplay: true });
       if (!word) return null;
-      const audit = word.candidateMeta?.recommendationAudit || auditItem || {};
+      const audit = auditItem || word.candidateMeta?.recommendationAudit || {};
       return {
         ...word,
         recommendationAudit: audit,
@@ -7409,6 +7463,8 @@ function getDailyHotTeamState(word = {}) {
 
 function getRecommendationGrade(word = {}) {
   const entry = word.candidateMeta || {};
+  const auditedGrade = word.recommendationAudit?.recommendationLevel || entry.recommendationAudit?.recommendationLevel;
+  if (['S', 'A', 'B', 'C'].includes(auditedGrade)) return auditedGrade;
   const score = Number(word.finalScore || entry.lastScore || entry.xhsFitScore || word.dataScore || word.heat || 0);
   const riskLevel = word.riskLevel || entry.riskLevel || '';
   const reviewState = word.reviewState || entry.lastReviewState || '';
@@ -7678,9 +7734,9 @@ function buildHistoryArchivedWord(kanji, dateKeyValue, index) {
   }], `history_snapshot_${dateKeyValue}`)[0];
   const recommended = buildRecommendedWord(enriched, 'history', {
     ...(candidateMeta || {}),
-    recommendationAudit: candidateMeta?.recommendationAudit || auditItem || {}
+    recommendationAudit: { ...(candidateMeta?.recommendationAudit || {}), ...(auditItem || {}) }
   });
-  const audit = recommended.candidateMeta?.recommendationAudit || auditItem || {};
+  const audit = auditItem || recommended.candidateMeta?.recommendationAudit || {};
   return {
     ...recommended,
     recommendationAudit: audit,
@@ -7729,6 +7785,7 @@ function getCurrentDailyHotAudit() {
     ? cleanTodaySnapshot(todaySnapshot)
     : cleanHistorySnapshot(historySnapshots[dateKeyValue] || {}, dateKeyValue);
   const words = getCurrentDailyHotWords();
+  if (snapshot.recommendationAudit?.total === words.length) return snapshot.recommendationAudit;
   const batchIds = getUniqueWords(snapshot.batchIds || []);
   const freshBatchIds = new Set(batchIds.length ? batchIds : [...getFreshAiBatchIdsForDate(dateKeyValue)]);
   const context = {
@@ -7915,7 +7972,11 @@ function renderDailyHot() {
       const snapshotMeta = hasTodaySnapshotForToday(snapshot)
         ? `今天的固定推荐 · 今日固定 ${snapshot.words.length} 个 · 第 ${snapshot.version || 1} 版`
         : '今天还没有固定推荐，可以从 AI 候选库生成今日推荐。';
-      todayDate.textContent = `${formatDisplayDate(todayKey())} · ${snapshotMeta}`;
+      const draft = codexTomorrowDraftStatus;
+      const draftMeta = draft
+        ? ` · 明日草稿 ${draft.status === 'missing' ? '未提交' : `${draft.wordCount || 0} 词 / 卡片 ${draft.cardReadyCount || 0} / 图片 ${draft.imageReadyCount || 0}`}`
+        : '';
+      todayDate.textContent = `${formatDisplayDate(todayKey())} · ${snapshotMeta}${draftMeta}`;
     } else {
       todayDate.textContent = `正在查看 ${currentDailyHotDateKey} 的历史推荐 · ${getHistorySourceLabel(currentDailyHotDateKey)}`;
     }
@@ -8456,7 +8517,7 @@ function openDetail(idOrKanji) {
     const basicKana = entry.kana || word.kana || word.reading || '';
     document.getElementById('modalContainer').innerHTML = `
       <div class="modal-hero modal-hero-recommendation">
-        <img class="modal-hero-img" src="${escapeHTML(getHeroImageUrl(word.kanji))}" alt="${escapeHTML(word.kanji)}" onerror="this.src='${fallbackHero}'">
+        <img class="modal-hero-img" src="${escapeHTML(word.imageUrl || getHeroImageUrl(word.kanji))}" alt="${escapeHTML(word.kanji)}" onerror="this.src='${fallbackHero}'">
         <div class="modal-hero-overlay"></div>
         <div class="modal-hero-content">
           <div class="modal-kanji">${escapeHTML(word.kanji)}</div>
@@ -8512,7 +8573,7 @@ function openDetail(idOrKanji) {
   const avoidScenarioText = displayCover.avoid || entry.riskWarning || '';
   document.getElementById('modalContainer').innerHTML = `
     <div class="modal-hero modal-hero-recommendation">
-      <img class="modal-hero-img" src="${escapeHTML(getHeroImageUrl(word.kanji))}" alt="${escapeHTML(word.kanji)}" onerror="this.src='${fallbackHero}'">
+      <img class="modal-hero-img" src="${escapeHTML(word.imageUrl || getHeroImageUrl(word.kanji))}" alt="${escapeHTML(word.kanji)}" onerror="this.src='${fallbackHero}'">
       <div class="modal-hero-overlay"></div>
       <div class="modal-hero-content">
         <div class="modal-kanji">${escapeHTML(word.kanji)}</div>
@@ -8581,7 +8642,7 @@ function openDetail(idOrKanji) {
       <div class="modal-meta-bar">
         <div class="modal-meta-item">📍 来源：${escapeHTML(word.source || '未知')}</div>
         <div class="modal-meta-item">📚 分类：${escapeHTML(word.category || '未分类')}</div>
-        <div class="modal-meta-item">🤖 词卡：DeepSeek 生成</div>
+        <div class="modal-meta-item">🤖 词卡：${escapeHTML(aiCard.cardSource === 'codex' ? 'Codex 生成' : 'DeepSeek 生成')}</div>
       </div>
       <div class="modal-footer-actions">
         <button class="btn btn-primary" onclick="markPending('${safeKanjiAction}')">标记待发布</button>
@@ -9192,6 +9253,7 @@ async function refreshData() {
   if (!synced) generateFallbackRankings();
   const workflowSynced = await loadCloudWorkflow({ mode: 'remote-first', showMessages: false });
   if (!workflowSynced) loadLocalWorkflow();
+  await loadCodexTomorrowDraftStatus();
   hydrateTodayWordsFromSnapshot();
   updateAllBadges();
   refreshCurrentGrid();
@@ -9334,6 +9396,7 @@ async function init() {
     updateSyncStatus('云端同步失败，正在使用本地缓存，可能与队友不一致。', '#c0392b');
     showToast('云端同步失败，正在使用本地缓存');
   }
+  void loadCodexTomorrowDraftStatus();
   verifyDeepSeekLibraryAuditCoverage();
   hydrateTodayWordsFromSnapshot();
   updateAllBadges();

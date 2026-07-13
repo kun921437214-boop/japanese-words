@@ -73,9 +73,12 @@ test('scheduled Worker 分离日更和 aiCard 批量 cron', () => {
   assert.ok(workerConfig.includes('"0 17 * * *"'));
   assert.ok(workerSource.includes("const DAILY_REFRESH_CRON = '0 16 * * *';"));
   assert.ok(workerSource.includes("const AI_CARD_BATCH_MAX_WORDS = 5;"));
+  assert.ok(workerSource.includes("new URL(`${siteUrl}/codex-daily`)"));
+  assert.ok(workerSource.includes("action: 'promote'"));
   assert.ok(workerSource.includes("new URL(`${siteUrl}/daily-refresh`)"));
   assert.ok(workerSource.includes("refreshUrl.searchParams.set('mode', 'manual')"));
   assert.ok(workerSource.includes("refreshUrl.searchParams.set('skipCards', 'true')"));
+  assert.ok(workerSource.includes("'Content-Type': 'application/json'"));
   assert.ok(workerSource.includes('Authorization: `Bearer ${autoRefreshSecret}`'));
   assert.ok(workerSource.includes("new URL(`${siteUrl}/ai-cards`)"));
   assert.ok(workerSource.includes("mode: 'today'"));

@@ -250,6 +250,13 @@ export async function authorizeRequest(request, env = {}, options = {}) {
     }
   }
 
+  if (options.allowCodexAutomation) {
+    const codexSecret = cleanText(env.CODEX_AUTOMATION_SECRET, 2000);
+    if (codexSecret && bearer && constantTimeEqual(bearer, codexSecret)) {
+      return { ok: true, actor: 'codex-automation', method: 'codex_automation_secret' };
+    }
+  }
+
   const accessIdentity = await getAccessIdentity(request, env, options);
   if (accessIdentity) return { ok: true, ...accessIdentity };
 
@@ -268,7 +275,7 @@ export async function authorizeRequest(request, env = {}, options = {}) {
     ok: false,
     actor: '',
     method: '',
-    reason: adminToken || env.TEAM_ACCESS_EMAILS || (options.allowAutomation && env.AUTO_REFRESH_SECRET)
+    reason: adminToken || env.TEAM_ACCESS_EMAILS || (options.allowAutomation && env.AUTO_REFRESH_SECRET) || (options.allowCodexAutomation && env.CODEX_AUTOMATION_SECRET)
       ? '凭证无效或当前账号不在允许列表中'
       : '服务端尚未配置团队认证'
   };
@@ -327,6 +334,8 @@ export async function enforceRateLimit(kv, key, options = {}) {
 export const API_LIMITS = Object.freeze({
   ai: 512 * 1024,
   command: 256 * 1024,
+  codexDraft: 4 * 1024 * 1024,
+  image: 5 * 1024 * 1024,
   published: 2 * 1024 * 1024,
   workflow: 8 * 1024 * 1024
 });
