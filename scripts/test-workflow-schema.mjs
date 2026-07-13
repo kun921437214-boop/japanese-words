@@ -28,7 +28,10 @@ import {
   selectTodayAiCardTargets,
   summarizeTodayAiCards
 } from '../functions/ai-cards.js';
-import { getTodayAiCardBatchPlan } from '../worker/favorites-worker.js';
+import {
+  AI_CARD_FAILED_RETRY_TTL_MS,
+  getTodayAiCardBatchPlan
+} from '../worker/favorites-worker.js';
 
 function test(name, fn) {
   try {
@@ -78,10 +81,11 @@ test('scheduled Worker 分离日更和 aiCard 批量 cron', () => {
   assert.ok(workerSource.includes("mode: 'today'"));
   assert.ok(workerSource.includes('maxWords: AI_CARD_BATCH_MAX_WORDS'));
   assert.ok(workerSource.includes('retryStalePending: plan.retryStalePending'));
-  assert.ok(workerSource.includes('if (plan.activePendingCount > 0)'));
+  assert.ok(workerSource.includes('retryFailed: plan.retryFailed'));
+  assert.ok(workerSource.includes('words: plan.targetWords'));
+  assert.ok(workerSource.includes('if (!plan.shouldRun)'));
   assert.ok(workerSource.includes('cron !== DAILY_REFRESH_CRON'));
   assert.equal(workerSource.includes('force: true'), false);
-  assert.equal(workerSource.includes('retryFailed: true'), false);
 });
 
 test('scheduled Worker retries stale pending cards without blocking missing cards', () => {
@@ -105,6 +109,50 @@ test('scheduled Worker still waits while card generation is actively pending', (
   });
   assert.equal(plan.activePendingCount, 1);
   assert.equal(plan.retryStalePending, true);
+  assert.equal(plan.shouldRun, false);
+});
+
+test('scheduled Worker retries old failed cards from the observed daily state', () => {
+  const nowMs = Date.parse('2026-07-12T00:40:00.000Z');
+  const failedWords = ['沼', '残暑', '手料理', '絶賛'];
+  const plan = getTodayAiCardBatchPlan({
+    readyCount: 16,
+    missingCount: 0,
+    failedCount: 4,
+    pendingCount: 0,
+    stalePendingCount: 0,
+    items: [
+      { kanji: '懐かしい', cardStatus: 'ready', generatedAt: '2026-07-11T16:11:38.627Z' },
+      ...failedWords.map(kanji => ({
+        kanji,
+        cardStatus: 'failed',
+        generatedAt: '2026-06-11T08:09:19.000Z'
+      }))
+    ]
+  }, { nowMs });
+  assert.equal(plan.retryableFailedCount, 4);
+  assert.equal(plan.retryFailed, true);
+  assert.deepEqual(plan.targetWords, failedWords);
+  assert.equal(plan.shouldRun, true);
+});
+
+test('scheduled Worker waits before retrying a fresh failed card', () => {
+  const nowMs = Date.parse('2026-07-12T00:40:00.000Z');
+  const plan = getTodayAiCardBatchPlan({
+    readyCount: 19,
+    missingCount: 0,
+    failedCount: 1,
+    pendingCount: 0,
+    stalePendingCount: 0,
+    items: [{
+      kanji: '絶賛',
+      cardStatus: 'failed',
+      generatedAt: new Date(nowMs - AI_CARD_FAILED_RETRY_TTL_MS + 1000).toISOString()
+    }]
+  }, { nowMs });
+  assert.equal(plan.retryableFailedCount, 0);
+  assert.equal(plan.retryFailed, false);
+  assert.deepEqual(plan.targetWords, []);
   assert.equal(plan.shouldRun, false);
 });
 

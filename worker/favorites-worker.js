@@ -25,27 +25,60 @@ const AI_CARD_BATCH_CRONS = new Set([
   '0 17 * * *'
 ]);
 const AI_CARD_BATCH_MAX_WORDS = 5;
+export const AI_CARD_FAILED_RETRY_TTL_MS = 30 * 60 * 1000;
 
 function toCount(value) {
   return Math.max(0, Number.parseInt(value, 10) || 0);
 }
 
-export function getTodayAiCardBatchPlan(status = {}) {
+function parseTimeMs(value) {
+  const timestamp = Date.parse(String(value || ''));
+  return Number.isFinite(timestamp) ? timestamp : 0;
+}
+
+function isRetryableFailedItem(item = {}, nowMs = Date.now()) {
+  if (item?.cardStatus !== 'failed') return false;
+  const failedAtMs = parseTimeMs(item?.generatedAt);
+  return !failedAtMs || nowMs - failedAtMs >= AI_CARD_FAILED_RETRY_TTL_MS;
+}
+
+export function getTodayAiCardBatchPlan(status = {}, options = {}) {
   const readyCount = toCount(status?.readyCount);
   const missingCount = toCount(status?.missingCount);
+  const failedCount = toCount(status?.failedCount);
   const pendingCount = toCount(status?.pendingCount);
   const stalePendingCount = Math.min(pendingCount, toCount(status?.stalePendingCount));
   const activePendingCount = Math.max(0, pendingCount - stalePendingCount);
+  const nowMs = Number.isFinite(options.nowMs) ? options.nowMs : Date.now();
+  const items = Array.isArray(status?.items) ? status.items : [];
+  const retryableFailedWords = items
+    .filter(item => isRetryableFailedItem(item, nowMs))
+    .map(item => String(item?.kanji || '').trim())
+    .filter(Boolean);
+  const retryableFailedSet = new Set(retryableFailedWords);
+  const targetWords = items
+    .filter(item => (
+      item?.cardStatus === 'none'
+      || Boolean(item?.stalePending)
+      || retryableFailedSet.has(String(item?.kanji || '').trim())
+    ))
+    .map(item => String(item?.kanji || '').trim())
+    .filter(Boolean);
   const retryStalePending = stalePendingCount > 0;
-  const workCount = missingCount + stalePendingCount;
+  const retryFailed = retryableFailedWords.length > 0;
+  const workCount = missingCount + stalePendingCount + retryableFailedWords.length;
 
   return {
     readyCount,
     missingCount,
+    failedCount,
     pendingCount,
     stalePendingCount,
     activePendingCount,
     retryStalePending,
+    retryFailed,
+    retryableFailedCount: retryableFailedWords.length,
+    targetWords,
     shouldRun: workCount > 0 && activePendingCount === 0
   };
 }
@@ -109,9 +142,10 @@ async function triggerTodayAiCardBatch(env) {
   const plan = getTodayAiCardBatchPlan(status);
   console.log('ai card batch status', plan);
 
-  if (plan.missingCount <= 0 && plan.stalePendingCount <= 0) return;
-  if (plan.activePendingCount > 0) {
-    console.warn('ai card batch skipped because cards are actively pending', plan);
+  if (!plan.shouldRun) {
+    if (plan.activePendingCount > 0) {
+      console.warn('ai card batch skipped because cards are actively pending', plan);
+    }
     return;
   }
 
@@ -123,7 +157,9 @@ async function triggerTodayAiCardBatch(env) {
     body: JSON.stringify({
       mode: 'today',
       maxWords: AI_CARD_BATCH_MAX_WORDS,
-      retryStalePending: plan.retryStalePending
+      retryStalePending: plan.retryStalePending,
+      retryFailed: plan.retryFailed,
+      words: plan.targetWords
     })
   });
   if (!response.ok) {
@@ -138,7 +174,8 @@ async function triggerTodayAiCardBatch(env) {
     savedCount: Number.parseInt(result?.savedCount, 10) || 0,
     missingCount: plan.missingCount,
     readyCount: plan.readyCount,
-    stalePendingCount: plan.stalePendingCount
+    stalePendingCount: plan.stalePendingCount,
+    retryableFailedCount: plan.retryableFailedCount
   });
 }
 
