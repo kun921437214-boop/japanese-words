@@ -13,3 +13,16 @@ crons = ["0 16 * * *", "10,20,30,40,50 16 * * *", "0 17 * * *"]
 [[kv_namespaces]]
 binding = "FAVORITES"
 id = "969904de6cf24fe6982d2b8ee01c9b1a"
+
+[env.preview]
+name = "japanese-words-sync-preview"
+workers_dev = true
+preview_urls = false
+
+[env.preview.vars]
+SITE_URL = "https://jiyimianbao.pages.dev"
+ENABLE_LEGACY_WORKER_API = "false"
+
+[[env.preview.kv_namespaces]]
+binding = "FAVORITES"
+id = "d4d4852d9be04115830789aaffbf4aca"

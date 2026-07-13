@@ -17,6 +17,8 @@ let aiBatches = [];
 let todaySnapshot = {};
 let historySnapshots = {};
 let todaySnapshotHistory = [];
+let workflowRevision = 0;
+let workflowAuditLog = [];
 let libraryReviewRecords = {};
 let libraryAuditCoverage = {
   total: 0,
@@ -809,7 +811,7 @@ function cleanLibraryReviewRecords(records = {}) {
 
 async function loadLibraryReviewRecords() {
   try {
-    const response = await fetch('data/library-review.json', { cache: 'no-store' });
+    const response = await apiFetch('data/library-review.json', { cache: 'no-store' }, { cancelKey: 'library-review' });
     if (!response.ok) {
       libraryReviewRecords = {};
       return false;
@@ -1084,7 +1086,7 @@ async function rerunDeepSeekLibraryAudit() {
     for (let index = 0; index < missingWords.length; index += 50) {
       const batchWords = missingWords.slice(index, index + 50);
       const words = buildLibraryAuditPayloadItems(batchWords);
-      const response = await fetch(getAiCandidatesEndpoint(), {
+      const response = await apiFetch(getAiCandidatesEndpoint(), {
         method: 'POST',
         headers: {
           Accept: 'application/json',
@@ -1111,7 +1113,7 @@ async function rerunDeepSeekLibraryAudit() {
             existingCandidates: words
           }
         })
-      });
+      }, { timeoutMs: 100000, cancelKey: 'library-audit' });
       const data = await response.json().catch(() => ({}));
       if (!response.ok || data.error) throw new Error(data.error?.message || data.error || `HTTP ${response.status}`);
       const applied = applyLibraryAuditResults(data.items || []);
@@ -2589,8 +2591,18 @@ function cleanStoredWorkflow(data = {}) {
     todayDismissed: cleanTeamDismissedState(data.todayDismissed || data.teamDismissed || {}),
     historySnapshots: cleanHistorySnapshots(data.historySnapshots),
     todaySnapshotHistory: cleanTodaySnapshotHistory(data.todaySnapshotHistory),
+    revision: clamp(toInt(data.revision, 0), 0, Number.MAX_SAFE_INTEGER),
+    auditLog: safeArray(data.auditLog).map((event, index) => ({
+      id: cleanShortText(event?.id || `legacy-event-${index}`, 120),
+      action: cleanShortText(event?.action || 'workflow.update', 120),
+      actor: cleanShortText(event?.actor || 'unknown', 320),
+      at: typeof event?.at === 'string' ? event.at : '',
+      target: cleanShortText(event?.target, 240),
+      summary: cleanShortText(event?.summary, 500),
+      revision: clamp(toInt(event?.revision, 0), 0, Number.MAX_SAFE_INTEGER)
+    })).filter(event => event.id).slice(0, 100),
     updated: typeof data.updated === 'string' ? data.updated : null,
-    schemaVersion: clamp(toInt(data.schemaVersion, 1), 1, 999)
+    schemaVersion: clamp(toInt(data.schemaVersion, 2), 1, 999)
   };
 }
 
@@ -3065,7 +3077,7 @@ function updateAiBatchImportStats(batchId, importedDelta = 0, skippedDelta = 0) 
 
 function loadLocalWorkflow(options = {}) {
   const includeLegacyLocal = Boolean(options.includeLegacyLocal);
-  let workflow = { words: [], statuses: {}, feedback: {}, publishedRecords: [], candidatePool: {}, aiBatches: [], aiPreview: {}, todaySnapshot: {}, todayDismissed: {}, historySnapshots: {}, todaySnapshotHistory: [], schemaVersion: 1 };
+  let workflow = { words: [], statuses: {}, feedback: {}, publishedRecords: [], candidatePool: {}, aiBatches: [], aiPreview: {}, todaySnapshot: {}, todayDismissed: {}, historySnapshots: {}, todaySnapshotHistory: [], revision: 0, auditLog: [], schemaVersion: 2 };
   try {
     const storedWorkflow = localStorage.getItem(WORKFLOW_STORAGE_KEY);
     if (storedWorkflow) {
@@ -3108,6 +3120,8 @@ function loadLocalWorkflow(options = {}) {
   todayDismissed = workflow.todayDismissed;
   historySnapshots = workflow.historySnapshots;
   todaySnapshotHistory = workflow.todaySnapshotHistory;
+  workflowRevision = workflow.revision;
+  workflowAuditLog = workflow.auditLog;
   migrateOriginalWordsAfterAudit();
   ensureReviewedSeedWordsInCandidatePool();
   archiveStaleTodaySnapshot();
@@ -3155,8 +3169,10 @@ function saveLocalWorkflow() {
     todayDismissed,
     historySnapshots,
     todaySnapshotHistory,
+    revision: workflowRevision,
+    auditLog: workflowAuditLog,
     updated: nowIso(),
-    schemaVersion: 1
+    schemaVersion: 2
   };
   localStorage.setItem(FAVORITES_STORAGE_KEY, JSON.stringify(favorites));
   localStorage.setItem(FAVORITE_STATUSES_STORAGE_KEY, JSON.stringify(favoriteStatuses));
@@ -3187,16 +3203,101 @@ function cacheCurrentWorkflow(updatedAt = nowIso()) {
     todayDismissed,
     historySnapshots,
     todaySnapshotHistory,
+    revision: workflowRevision,
+    auditLog: workflowAuditLog,
     updated: updatedAt,
-    schemaVersion: 1
+    schemaVersion: 2
   });
   localStorage.setItem(FAVORITES_STORAGE_KEY, JSON.stringify(payload.words));
   localStorage.setItem(FAVORITE_STATUSES_STORAGE_KEY, JSON.stringify(payload.statuses));
   localStorage.setItem(WORKFLOW_STORAGE_KEY, JSON.stringify(payload));
   localStorage.setItem(AI_PREVIEW_STORAGE_KEY, JSON.stringify(payload.aiPreview));
   localStorage.setItem(TODAY_DISMISSED_STORAGE_KEY, JSON.stringify(payload.todayDismissed));
+  workflowRevision = payload.revision;
+  workflowAuditLog = payload.auditLog;
   lastLocalCacheAt = payload.updated || updatedAt;
   return payload;
+}
+
+const activeApiControllers = new Map();
+const uiOperationsInFlight = new Set();
+let hasUnsavedFormChanges = false;
+let cloudSaveEpoch = 0;
+let cloudSaveQueue = Promise.resolve(false);
+let pendingCloudSaveCount = 0;
+
+function createOperationId(prefix = 'web') {
+  const randomId = globalThis.crypto?.randomUUID?.()
+    || `${Date.now()}-${Math.random().toString(36).slice(2, 12)}`;
+  return `${prefix}-${randomId}`.slice(0, 120);
+}
+
+function getApiErrorMessage(data, status = 0) {
+  if (typeof data?.error === 'string') return data.error;
+  if (typeof data?.error?.message === 'string') return data.error.message;
+  if (status === 401) return '团队身份验证失败，请重新登录';
+  if (status === 409) return '团队数据已更新，请刷新后重试';
+  if (status === 429) return '请求过于频繁，请稍后重试';
+  return status ? `HTTP ${status}` : '网络请求失败';
+}
+
+function createApiError(data, status = 0) {
+  const error = new Error(getApiErrorMessage(data, status));
+  error.status = status;
+  error.code = data?.error?.code || '';
+  error.retryable = Boolean(data?.error?.retryable);
+  return error;
+}
+
+async function apiFetch(endpoint, options = {}, config = {}) {
+  const timeoutMs = clamp(toInt(config.timeoutMs, 20000), 1000, 120000);
+  const cancelKey = cleanShortText(config.cancelKey, 120);
+  if (cancelKey) activeApiControllers.get(cancelKey)?.abort();
+  const controller = new AbortController();
+  if (cancelKey) activeApiControllers.set(cancelKey, controller);
+  const externalSignal = options.signal;
+  const abortFromExternal = () => controller.abort(externalSignal?.reason);
+  externalSignal?.addEventListener('abort', abortFromExternal, { once: true });
+  const timeout = setTimeout(() => controller.abort(new DOMException('Request timed out', 'TimeoutError')), timeoutMs);
+  const headers = new Headers(options.headers || {});
+  if (config.workflowMutation) {
+    headers.set('X-Operation-Id', config.operationId || createOperationId(config.operationPrefix || 'workflow'));
+    headers.set('X-Workflow-Revision', String(workflowRevision));
+  }
+
+  try {
+    return await fetch(endpoint, {
+      ...options,
+      credentials: options.credentials || 'same-origin',
+      headers,
+      signal: controller.signal
+    });
+  } catch (error) {
+    if (controller.signal.aborted) {
+      const timeoutError = new Error('请求超时或已取消');
+      timeoutError.code = 'REQUEST_ABORTED';
+      throw timeoutError;
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+    externalSignal?.removeEventListener('abort', abortFromExternal);
+    if (cancelKey && activeApiControllers.get(cancelKey) === controller) activeApiControllers.delete(cancelKey);
+  }
+}
+
+async function runUiOperation(key, operation) {
+  const cleanKey = cleanShortText(key, 160);
+  if (uiOperationsInFlight.has(cleanKey)) {
+    showToast('操作正在处理中，请稍候');
+    return false;
+  }
+  uiOperationsInFlight.add(cleanKey);
+  try {
+    return await operation();
+  } finally {
+    uiOperationsInFlight.delete(cleanKey);
+  }
 }
 
 function getSyncEndpoint() {
@@ -3237,7 +3338,7 @@ async function loadLegacyCloudFavorites() {
   const endpoint = getLegacySyncEndpoint();
   if (!endpoint) return [];
   try {
-    const response = await fetch(endpoint, { headers: { Accept: 'application/json' } });
+    const response = await apiFetch(endpoint, { headers: { Accept: 'application/json' } }, { cancelKey: 'legacy-workflow' });
     if (!response.ok) return [];
     const data = await response.json();
     return filterKnownFavorites(data.words);
@@ -3265,7 +3366,7 @@ async function loadCloudWorkflow(options = false) {
 
   try {
     if (showMessages) updateSyncStatus('正在同步工作流数据...');
-    const response = await fetch(endpoint, { headers: { Accept: 'application/json' } });
+    const response = await apiFetch(endpoint, { headers: { Accept: 'application/json' } }, { cancelKey: 'workflow-load' });
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     const remoteData = cleanStoredWorkflow(await response.json());
 
@@ -3281,6 +3382,8 @@ async function loadCloudWorkflow(options = false) {
     todayDismissed = cleanTeamDismissedState(remoteData.todayDismissed || {});
     historySnapshots = remoteData.historySnapshots;
     todaySnapshotHistory = remoteData.todaySnapshotHistory;
+    workflowRevision = remoteData.revision;
+    workflowAuditLog = remoteData.auditLog;
     cloudWorkflowFailed = false;
     lastCloudSyncAt = nowIso();
     archiveStaleTodaySnapshot();
@@ -3306,7 +3409,36 @@ async function loadCloudWorkflow(options = false) {
   }
 }
 
-async function saveCloudWorkflow(showMessages = false) {
+function buildCloudWorkflowPayload() {
+  ensureReviewedSeedWordsInCandidatePool();
+  ensureFavoriteWordsHaveCandidateEntries();
+  if (cleanTodaySnapshot(todaySnapshot).words.length) archiveTodaySnapshot(todaySnapshot);
+  aiPreview = cleanAiPreviewState({
+    ...aiPreview,
+    items: aiPreviewItems,
+    selected: aiPreviewSelected
+  });
+  todayDismissed = cleanTeamDismissedState(todayDismissed);
+  return {
+    words: filterKnownFavorites(favorites, candidatePool),
+    statuses: favoriteStatuses,
+    feedback: cleanWordFeedback(wordFeedback),
+    publishedRecords: cleanPublishedRecords(publishedRecords),
+    candidatePool: cleanCandidatePool(candidatePool),
+    aiBatches: cleanAiBatches(aiBatches),
+    aiPreview,
+    todaySnapshot: cleanTodaySnapshot(todaySnapshot),
+    todayDismissed,
+    historySnapshots: cleanHistorySnapshots(historySnapshots),
+    todaySnapshotHistory: cleanTodaySnapshotHistory(todaySnapshotHistory),
+    revision: workflowRevision,
+    auditLog: workflowAuditLog,
+    updated: nowIso(),
+    schemaVersion: 2
+  };
+}
+
+async function performCloudWorkflowSave(showMessages, payload, queuedEpoch) {
   const endpoint = getSyncEndpoint();
   if (!endpoint) {
     cloudWorkflowFailed = true;
@@ -3314,40 +3446,17 @@ async function saveCloudWorkflow(showMessages = false) {
     return false;
   }
   try {
-    ensureReviewedSeedWordsInCandidatePool();
-    ensureFavoriteWordsHaveCandidateEntries();
-    if (cleanTodaySnapshot(todaySnapshot).words.length) archiveTodaySnapshot(todaySnapshot);
-    aiPreview = cleanAiPreviewState({
-      ...aiPreview,
-      items: aiPreviewItems,
-      selected: aiPreviewSelected
-    });
-    todayDismissed = cleanTeamDismissedState(todayDismissed);
-    const payload = {
-      words: filterKnownFavorites(favorites, candidatePool),
-      statuses: favoriteStatuses,
-      feedback: cleanWordFeedback(wordFeedback),
-      publishedRecords: cleanPublishedRecords(publishedRecords),
-      candidatePool: cleanCandidatePool(candidatePool),
-      aiBatches: cleanAiBatches(aiBatches),
-      aiPreview,
-      todaySnapshot: cleanTodaySnapshot(todaySnapshot),
-      todayDismissed,
-      historySnapshots: cleanHistorySnapshots(historySnapshots),
-      todaySnapshotHistory: cleanTodaySnapshotHistory(todaySnapshotHistory),
-      updated: nowIso(),
-      schemaVersion: 1
-      };
-    const response = await fetch(endpoint, {
+    const response = await apiFetch(endpoint, {
       method: 'PUT',
       headers: {
         Accept: 'application/json',
         'Content-Type': 'application/json'
       },
       body: JSON.stringify(payload)
-    });
-    if (!response.ok) throw new Error(`HTTP ${response.status}`);
-    const savedData = cleanStoredWorkflow(await response.json().catch(() => payload));
+    }, { workflowMutation: true, operationPrefix: 'workflow-save', timeoutMs: 30000 });
+    const responseData = await response.json().catch(() => payload);
+    if (!response.ok) throw createApiError(responseData, response.status);
+    const savedData = cleanStoredWorkflow(responseData);
     favorites = filterKnownFavorites(savedData.words, savedData.candidatePool);
     favoriteStatuses = savedData.statuses;
     wordFeedback = savedData.feedback;
@@ -3360,6 +3469,8 @@ async function saveCloudWorkflow(showMessages = false) {
     todayDismissed = cleanTeamDismissedState(savedData.todayDismissed || todayDismissed);
     historySnapshots = savedData.historySnapshots;
     todaySnapshotHistory = savedData.todaySnapshotHistory;
+    workflowRevision = savedData.revision;
+    workflowAuditLog = savedData.auditLog;
     hydrateTodayWordsFromSnapshot();
     cloudWorkflowFailed = false;
     lastCloudSyncAt = nowIso();
@@ -3371,11 +3482,35 @@ async function saveCloudWorkflow(showMessages = false) {
     return true;
   } catch (error) {
     console.warn('保存工作流失败', error);
+    if (error.status === 409) {
+      cloudSaveEpoch = Math.max(cloudSaveEpoch, queuedEpoch + 1);
+      await loadCloudWorkflow({ mode: 'remote-first', showMessages: false });
+    }
     cloudWorkflowFailed = true;
     updateSyncStatus('团队同步失败，本次修改未保存到团队后台', '#c0392b');
     showToast('团队同步失败，本次修改未保存到团队后台');
     return false;
   }
+}
+
+function saveCloudWorkflow(showMessages = false) {
+  if (!getSyncEndpoint()) {
+    cloudWorkflowFailed = true;
+    if (showMessages) showToast('云端后端还没有配置，团队同步失败');
+    return Promise.resolve(false);
+  }
+  const payload = buildCloudWorkflowPayload();
+  const queuedEpoch = cloudSaveEpoch;
+  const queuedSave = cloudSaveQueue.then(() => {
+    if (queuedEpoch !== cloudSaveEpoch) return false;
+    return performCloudWorkflowSave(showMessages, payload, queuedEpoch);
+  });
+  pendingCloudSaveCount += 1;
+  const trackedSave = queuedSave.finally(() => {
+    pendingCloudSaveCount = Math.max(0, pendingCloudSaveCount - 1);
+  });
+  cloudSaveQueue = trackedSave.catch(() => false);
+  return trackedSave;
 }
 
 async function refreshPublishedMetrics(recordId = '') {
@@ -3387,7 +3522,7 @@ async function refreshPublishedMetrics(recordId = '') {
 
   try {
     updateSyncStatus(recordId ? '正在尝试更新这条已发布记录...' : '正在尝试更新已发布数据...');
-    const response = await fetch(endpoint, {
+    const response = await apiFetch(endpoint, {
       method: 'POST',
       headers: {
         Accept: 'application/json',
@@ -3397,10 +3532,11 @@ async function refreshPublishedMetrics(recordId = '') {
         recordId,
         publishedRecords: cleanPublishedRecords(publishedRecords)
       })
-    });
-    if (!response.ok) throw new Error(`HTTP ${response.status}`);
-    const data = await response.json();
+    }, { workflowMutation: true, operationPrefix: 'published-refresh', timeoutMs: 30000 });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) throw createApiError(data, response.status);
     publishedRecords = mergePublishedRecords(publishedRecords, data.publishedRecords);
+    workflowRevision = clamp(toInt(data.revision, workflowRevision), 0, Number.MAX_SAFE_INTEGER);
     saveLocalWorkflow();
     updateAllBadges();
     renderPublished();
@@ -3423,7 +3559,7 @@ async function syncFavoriteChange(kanji, action) {
   if (!endpoint) return false;
   try {
     ensureFavoriteWordsHaveCandidateEntries();
-    const response = await fetch(endpoint, {
+    const response = await apiFetch(endpoint, {
       method: 'POST',
       headers: {
         Accept: 'application/json',
@@ -3438,9 +3574,10 @@ async function syncFavoriteChange(kanji, action) {
         aiBatches: cleanAiBatches(aiBatches),
         aiPreview
       })
-    });
-    if (!response.ok) throw new Error(`HTTP ${response.status}`);
-    const data = cleanStoredWorkflow(await response.json());
+    }, { workflowMutation: true, operationPrefix: `favorite-${action}` });
+    const responseData = await response.json().catch(() => ({}));
+    if (!response.ok) throw createApiError(responseData, response.status);
+    const data = cleanStoredWorkflow(responseData);
     favorites = data.words;
     favoriteStatuses = data.statuses;
     wordFeedback = data.feedback;
@@ -3453,6 +3590,8 @@ async function syncFavoriteChange(kanji, action) {
     todayDismissed = cleanTeamDismissedState(data.todayDismissed || todayDismissed);
     historySnapshots = data.historySnapshots;
     todaySnapshotHistory = data.todaySnapshotHistory;
+    workflowRevision = data.revision;
+    workflowAuditLog = data.auditLog;
     cloudWorkflowFailed = false;
     lastCloudSyncAt = nowIso();
     hydrateTodayWordsFromSnapshot();
@@ -3462,6 +3601,7 @@ async function syncFavoriteChange(kanji, action) {
     return true;
   } catch (error) {
     console.warn('收藏同步失败', error);
+    if (error.status === 409) await loadCloudWorkflow({ mode: 'remote-first', showMessages: false });
     cloudWorkflowFailed = true;
     showToast('团队同步失败，本次修改未保存到团队后台');
     return false;
@@ -3473,7 +3613,7 @@ async function syncFavoriteStatus(kanji, status) {
   if (!endpoint) return false;
   try {
     ensureFavoriteWordsHaveCandidateEntries();
-    const response = await fetch(endpoint, {
+    const response = await apiFetch(endpoint, {
       method: 'POST',
       headers: {
         Accept: 'application/json',
@@ -3489,9 +3629,10 @@ async function syncFavoriteStatus(kanji, status) {
         aiBatches: cleanAiBatches(aiBatches),
         aiPreview
       })
-    });
-    if (!response.ok) throw new Error(`HTTP ${response.status}`);
-    const data = cleanStoredWorkflow(await response.json());
+    }, { workflowMutation: true, operationPrefix: 'favorite-status' });
+    const responseData = await response.json().catch(() => ({}));
+    if (!response.ok) throw createApiError(responseData, response.status);
+    const data = cleanStoredWorkflow(responseData);
     favorites = data.words;
     favoriteStatuses = data.statuses;
     wordFeedback = data.feedback;
@@ -3504,6 +3645,8 @@ async function syncFavoriteStatus(kanji, status) {
     todayDismissed = cleanTeamDismissedState(data.todayDismissed || todayDismissed);
     historySnapshots = data.historySnapshots;
     todaySnapshotHistory = data.todaySnapshotHistory;
+    workflowRevision = data.revision;
+    workflowAuditLog = data.auditLog;
     cloudWorkflowFailed = false;
     lastCloudSyncAt = nowIso();
     hydrateTodayWordsFromSnapshot();
@@ -3513,6 +3656,7 @@ async function syncFavoriteStatus(kanji, status) {
     return true;
   } catch (error) {
     console.warn('状态同步失败', error);
+    if (error.status === 409) await loadCloudWorkflow({ mode: 'remote-first', showMessages: false });
     cloudWorkflowFailed = true;
     showToast('团队同步失败，本次修改未保存到团队后台');
     return false;
@@ -4125,7 +4269,7 @@ async function loadCloudRankings(showMessages = false) {
   const endpoint = getRankingsEndpoint();
   if (!endpoint) return false;
   try {
-    const response = await fetch(endpoint, { headers: { Accept: 'application/json' } });
+    const response = await apiFetch(endpoint, { headers: { Accept: 'application/json' } }, { cancelKey: 'rankings-load' });
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     const data = await response.json();
     const applied = applyCloudRankings(data.days);
@@ -4302,7 +4446,7 @@ function getBlockedTodayWords() {
   return blocked;
 }
 
-function getRecentHistoryBlockedWords(days = TODAY_REPEAT_BLOCK_DAYS) {
+function getRecentHistoryBlockedWords(days = TODAY_HISTORY_DEDUP_DAYS) {
   const blocked = new Set();
   safeArray(rankingHistoryDates).slice(0, Math.max(0, days)).forEach(dateKeyValue => {
     safeArray(rankingHistoryWords[dateKeyValue]).forEach(word => {
@@ -5785,7 +5929,6 @@ function normalizeAiPreviewItem(item = {}, batchId = '', sourceText = '', action
     sourceText,
     sourceTags,
     aiBatchId: batchId,
-    importedAt: null,
     updatedAt: nowIso(),
     importState: ['new', 'imported', 'skipped'].includes(item.importState) ? item.importState : 'new',
     importedAt: typeof item.importedAt === 'string' ? item.importedAt : '',
@@ -5908,14 +6051,14 @@ async function generateAiCandidates(forceRegenerate = false) {
   if (button) button.disabled = true;
   setAiStatus(forceRegenerate ? '重试中…' : '生成中…', 'loading');
   try {
-    const response = await fetch(getAiCandidatesEndpoint(), {
+    const response = await apiFetch(getAiCandidatesEndpoint(), {
       method: 'POST',
       headers: {
         Accept: 'application/json',
         'Content-Type': 'application/json'
       },
       body: JSON.stringify(payload)
-    });
+    }, { timeoutMs: 100000, cancelKey: 'ai-candidates' });
     const data = await response.json().catch(() => ({}));
     if (!response.ok || data.error) throw new Error(data.error?.message || data.error || `HTTP ${response.status}`);
     const batchId = `ai_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
@@ -6068,14 +6211,14 @@ function buildAutoAiCandidatePayload() {
 
 async function autoGenerateAiCandidates() {
   const payload = buildAutoAiCandidatePayload();
-  const response = await fetch(getAiCandidatesEndpoint(), {
+  const response = await apiFetch(getAiCandidatesEndpoint(), {
     method: 'POST',
     headers: {
       Accept: 'application/json',
       'Content-Type': 'application/json'
     },
     body: JSON.stringify(payload)
-  });
+  }, { timeoutMs: 100000 });
   const data = await response.json().catch(() => ({}));
   if (!response.ok || data.error) throw new Error(data.error?.message || data.error || `HTTP ${response.status}`);
   const batchId = `auto_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
@@ -6312,7 +6455,7 @@ async function generateTodayAiCardsOnServer(kanjis = [], options = {}) {
   targets.forEach(kanji => aiCardAutoInFlight.add(kanji));
   renderToday();
   try {
-    const response = await fetch(endpoint, {
+    const response = await apiFetch(endpoint, {
       method: 'POST',
       headers: {
         Accept: 'application/json',
@@ -6326,13 +6469,13 @@ async function generateTodayAiCardsOnServer(kanjis = [], options = {}) {
         retryStalePending: Boolean(options.retryStalePending),
         maxWords: clamp(toInt(options.maxWords, 5), 1, 5)
       })
-    });
+    }, { workflowMutation: true, operationPrefix: 'today-ai-cards', timeoutMs: 110000 });
     const data = await response.json().catch(() => ({}));
     await loadCloudWorkflow(false);
     updateAllBadges();
     renderToday();
     if (currentWordForModal && targets.includes(currentWordForModal.kanji)) openDetail(currentWordForModal.kanji);
-    if (!response.ok || data.error) throw new Error(data.error || `HTTP ${response.status}`);
+    if (!response.ok || data.error) throw new Error(getApiErrorMessage(data, response.status));
     const savedCount = toInt(data.savedCount, 0);
     showToast(savedCount ? `已生成 ${savedCount} 个今日词卡` : '没有需要生成的今日词卡');
     return savedCount;
@@ -6611,14 +6754,14 @@ async function generateDeepSeekWordCards(kanjis, options = {}) {
   if (!silent) refreshCurrentGrid();
   if (!silent) showToast(`正在生成 ${payload.context.words.length} 个 DeepSeek 词卡…`);
   try {
-    const response = await fetch(getAiCandidatesEndpoint(), {
+    const response = await apiFetch(getAiCandidatesEndpoint(), {
       method: 'POST',
       headers: {
         Accept: 'application/json',
         'Content-Type': 'application/json'
       },
       body: JSON.stringify(payload)
-    });
+    }, { timeoutMs: 100000 });
     const data = await response.json().catch(() => ({}));
     if (!response.ok || data.error) throw new Error(data.error?.message || data.error || `HTTP ${response.status}`);
     let savedCount = 0;
@@ -6863,6 +7006,7 @@ function getManualWordExistingState(kanji) {
 }
 
 function openManualWordModal() {
+  hasUnsavedFormChanges = false;
   document.getElementById('modalContainer').innerHTML = `
     <div class="modal-shell record-shell">
       <div class="modal-header settings-header">
@@ -7013,21 +7157,32 @@ async function submitManualWord() {
   await addManualWordToFavorites(kanji, options);
 }
 
-function toggleFavorite(kanji, forceState = null) {
-  const exists = favorites.includes(kanji);
-  const shouldFavorite = forceState === null ? !exists : Boolean(forceState);
-  if (!shouldFavorite && exists) {
-    favorites = favorites.filter(item => item !== kanji);
-    delete favoriteStatuses[kanji];
-    showToast('已从选题池移除');
-    syncFavoriteChange(kanji, 'remove');
-  } else if (shouldFavorite && !exists) {
-    favorites.unshift(kanji);
-    const entry = ensureManualKeepEntry(kanji);
-    removeWordFromTodaySnapshot(kanji);
-    showToast('已加入选题池');
-    syncFavoriteChange(kanji, 'add');
-    if (cleanAiCard(entry?.aiCard || {})?.cardStatus !== 'ready') {
+async function toggleFavorite(kanji, forceState = null) {
+  return runUiOperation(`favorite:${kanji}`, async () => {
+    const exists = favorites.includes(kanji);
+    const shouldFavorite = forceState === null ? !exists : Boolean(forceState);
+    let action = '';
+    let entry = null;
+    if (!shouldFavorite && exists) {
+      favorites = favorites.filter(item => item !== kanji);
+      delete favoriteStatuses[kanji];
+      action = 'remove';
+      showToast('正在从选题池移除');
+    } else if (shouldFavorite && !exists) {
+      favorites.unshift(kanji);
+      entry = ensureManualKeepEntry(kanji);
+      removeWordFromTodaySnapshot(kanji);
+      action = 'add';
+      showToast('正在加入选题池');
+    }
+    if (!action) return true;
+    saveLocalWorkflow();
+    updateAllBadges();
+    refreshCurrentGrid();
+    const synced = await syncFavoriteChange(kanji, action);
+    if (!synced) return false;
+    showToast(action === 'add' ? '已加入选题池' : '已从选题池移除');
+    if (action === 'add' && cleanAiCard(entry?.aiCard || {})?.cardStatus !== 'ready') {
       void generateDeepSeekWordCards([kanji], { force: false, silent: true }).then(savedCount => {
         if (savedCount > 0) showToast(`已为「${kanji}」生成 DeepSeek 词卡`);
         saveLocalWorkflow();
@@ -7035,13 +7190,12 @@ function toggleFavorite(kanji, forceState = null) {
         refreshCurrentGrid();
       });
     }
-  }
-  saveLocalWorkflow();
-  updateAllBadges();
-  refreshCurrentGrid();
+    return true;
+  });
 }
 
-function markPending(kanji) {
+async function markPending(kanji) {
+  if (uiOperationsInFlight.has(`status:${kanji}`)) return;
   ensureFavoriteWord(kanji);
   ensureManualKeepEntry(kanji);
   favoriteStatuses[kanji] = 'pending';
@@ -7051,10 +7205,11 @@ function markPending(kanji) {
   updateAllBadges();
   refreshCurrentGrid();
   showToast('已标记为待发布');
-  syncFavoriteStatus(kanji, 'pending');
+  await runUiOperation(`status:${kanji}`, () => syncFavoriteStatus(kanji, 'pending'));
 }
 
-function markPublishedStatusOnly(kanji) {
+async function markPublishedStatusOnly(kanji) {
+  if (uiOperationsInFlight.has(`status:${kanji}`)) return;
   ensureFavoriteWord(kanji);
   ensureManualKeepEntry(kanji);
   favoriteStatuses[kanji] = 'published';
@@ -7062,7 +7217,7 @@ function markPublishedStatusOnly(kanji) {
   saveLocalWorkflow();
   updateAllBadges();
   refreshCurrentGrid();
-  syncFavoriteStatus(kanji, 'published');
+  await runUiOperation(`status:${kanji}`, () => syncFavoriteStatus(kanji, 'published'));
 }
 
 function renderStatusControl(kanji) {
@@ -7114,7 +7269,8 @@ function refreshStatusControls() {
   });
 }
 
-function selectFavoriteStatus(kanji, status) {
+async function selectFavoriteStatus(kanji, status) {
+  if (uiOperationsInFlight.has(`status:${kanji}`)) return;
   ensureFavoriteWord(kanji);
   const nextStatus = cleanFavoriteStatus(status);
   activeStatusMenuKanji = null;
@@ -7125,7 +7281,7 @@ function selectFavoriteStatus(kanji, status) {
   updateAllBadges();
   refreshCurrentGrid();
   showToast(nextStatus === 'published' ? '已移到已发布页面' : `状态已更新为：${FAVORITE_STATUS_LABELS[nextStatus]}`);
-  syncFavoriteStatus(kanji, nextStatus);
+  await runUiOperation(`status:${kanji}`, () => syncFavoriteStatus(kanji, nextStatus));
 }
 
 function renderFeedbackControl(kanji) {
@@ -7794,16 +7950,16 @@ async function finishTodaySnapshotGeneration(result, actionLabel, options = {}) 
 }
 
 async function generateTodaySnapshotOnServer(mode) {
-  const response = await fetch(getTodaySnapshotEndpoint(), {
+  const response = await apiFetch(getTodaySnapshotEndpoint(), {
     method: 'POST',
     headers: {
       Accept: 'application/json',
       'Content-Type': 'application/json'
     },
     body: JSON.stringify({ mode })
-  });
+  }, { workflowMutation: true, operationPrefix: `today-${mode}`, timeoutMs: 30000 });
   const data = await response.json().catch(() => ({}));
-  if (!response.ok || data.error) throw new Error(data.error || `HTTP ${response.status}`);
+  if (!response.ok || data.error) throw new Error(getApiErrorMessage(data, response.status));
   await loadCloudWorkflow(false);
   return data;
 }
@@ -8516,6 +8672,7 @@ function openLibraryCleanupModal() {
 }
 
 function openPublishedRecordModal(recordId = '', presetKanji = '') {
+  hasUnsavedFormChanges = false;
   const record = recordId ? cleanPublishedRecords(publishedRecords).find(item => item.id === recordId) : null;
   currentPublishedRecordId = record?.id || null;
   const initialWord = record?.word || presetKanji || '';
@@ -8726,6 +8883,7 @@ function savePublishedRecord() {
     showToast('请先填写关联词');
     return;
   }
+  hasUnsavedFormChanges = false;
   ensureFavoriteWord(word);
   const existingRecord = currentPublishedRecordId
     ? cleanPublishedRecords(publishedRecords).find(item => item.id === currentPublishedRecordId)
@@ -8855,6 +9013,7 @@ function closeModal() {
   document.body.style.overflow = '';
   currentWordForModal = null;
   currentPublishedRecordId = null;
+  hasUnsavedFormChanges = false;
 }
 
 function closeModalOutside(event) {
@@ -8943,6 +9102,60 @@ function exportSelected() {
   });
 }
 
+function selectWorkflowBackupForRestore() {
+  const input = document.getElementById('workflowRestoreInput');
+  if (!input) return;
+  input.value = '';
+  input.click();
+}
+
+async function restoreWorkflowBackup(event) {
+  const file = event?.target?.files?.[0];
+  if (!file) return;
+  if (file.size > 10 * 1024 * 1024) {
+    showToast('备份文件不能超过 10 MB');
+    return;
+  }
+  try {
+    const raw = JSON.parse(await file.text());
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new Error('备份根节点必须是 JSON 对象');
+    const restored = cleanStoredWorkflow(raw);
+    const summary = `选题 ${restored.words.length} 个、候选 ${Object.keys(restored.candidatePool).length} 个、发布记录 ${restored.publishedRecords.length} 条、今日推荐 ${restored.todaySnapshot.words.length} 个`;
+    if (!window.confirm(`备份校验通过：${summary}。\n\n确认用这份备份覆盖当前团队工作流吗？`)) return;
+
+    const currentRevision = workflowRevision;
+    const currentAuditLog = workflowAuditLog;
+    favorites = restored.words;
+    favoriteStatuses = restored.statuses;
+    wordFeedback = restored.feedback;
+    publishedRecords = restored.publishedRecords;
+    candidatePool = restored.candidatePool;
+    aiBatches = restored.aiBatches;
+    aiPreview = restored.aiPreview;
+    syncAiPreviewGlobalsFromWorkflow();
+    todaySnapshot = restored.todaySnapshot;
+    todayDismissed = restored.todayDismissed;
+    historySnapshots = restored.historySnapshots;
+    todaySnapshotHistory = restored.todaySnapshotHistory;
+    workflowRevision = currentRevision;
+    workflowAuditLog = currentAuditLog;
+    saveLocalWorkflow();
+    const saved = await saveCloudWorkflow(false);
+    if (!saved) {
+      await loadCloudWorkflow({ mode: 'remote-first', showMessages: false });
+      throw new Error('团队后台拒绝了恢复操作，已重新载入云端数据');
+    }
+    updateAllBadges();
+    refreshCurrentGrid();
+    showToast(`备份恢复完成：${summary}`);
+  } catch (error) {
+    console.warn('恢复 workflow 备份失败', error);
+    showToast(`备份恢复失败：${error.message || '文件格式无效'}`);
+  } finally {
+    if (event?.target) event.target.value = '';
+  }
+}
+
 function exportWorkflowBackup() {
   const backup = cleanStoredWorkflow({
     words: filterKnownFavorites(favorites),
@@ -8956,8 +9169,10 @@ function exportWorkflowBackup() {
     todayDismissed,
     historySnapshots,
     todaySnapshotHistory,
+    revision: workflowRevision,
+    auditLog: workflowAuditLog,
     updated: nowIso(),
-    schemaVersion: 1
+    schemaVersion: 2
   });
   const blob = new Blob([JSON.stringify(backup, null, 2)], { type: 'application/json;charset=utf-8' });
   const url = URL.createObjectURL(blob);
@@ -9076,6 +9291,31 @@ document.addEventListener('click', event => {
   }
 });
 
+document.addEventListener('input', event => {
+  if (event.target instanceof Element && event.target.matches('.modal-container input, .modal-container textarea, .modal-container select')) {
+    hasUnsavedFormChanges = true;
+  }
+});
+
+window.addEventListener('beforeunload', event => {
+  if (!hasUnsavedFormChanges && pendingCloudSaveCount === 0) return;
+  event.preventDefault();
+  event.returnValue = '';
+});
+
+window.addEventListener('error', event => {
+  console.error('页面运行异常', event.error || event.message);
+  updateSyncStatus('页面发生异常，请刷新后重试。', '#c0392b');
+  showToast('页面发生异常，请刷新后重试');
+});
+
+window.addEventListener('unhandledrejection', event => {
+  if (event.reason?.code === 'REQUEST_ABORTED') return;
+  console.error('未处理的异步异常', event.reason);
+  updateSyncStatus('后台操作发生异常，请刷新数据后重试。', '#c0392b');
+  showToast('后台操作失败，请刷新后重试');
+});
+
 async function init() {
   if (!getAllWords().length) {
     console.error('ALL_WORDS not loaded! Check words-data.js');
@@ -9114,6 +9354,8 @@ async function init() {
 }
 
 window.addEventListener('pageshow', () => {
+  activeApiControllers.forEach(controller => controller.abort());
+  activeApiControllers.clear();
   resetTransientUiState();
   ensureTodayGridVisible();
 });

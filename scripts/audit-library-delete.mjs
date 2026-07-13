@@ -290,7 +290,9 @@ function cleanAuditResponse(response, batch, protectedWords) {
 }
 
 function sleep(ms) {
-  return new Promise(resolve => setTimeout(resolve, ms));
+  return new Promise(resolve => {
+    setTimeout(resolve, ms);
+  });
 }
 
 async function auditBatchWithRecovery(endpoint, batch, protectedWords, workflow, options, label = '') {

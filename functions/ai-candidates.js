@@ -1,11 +1,15 @@
 import { getAccountLearningPromptContext } from '../shared/account-learning.mjs';
-
-const CORS_HEADERS = {
-  'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Methods': 'POST, OPTIONS',
-  'Access-Control-Allow-Headers': 'Content-Type',
-  'Access-Control-Max-Age': '86400'
-};
+import {
+  API_LIMITS,
+  authorizeRequest,
+  enforceRateLimit,
+  errorResponse,
+  getRequestId,
+  jsonResponse,
+  optionsResponse,
+  readJsonBody,
+  unauthorizedResponse
+} from '../shared/api-security.mjs';
 
 const ACTIONS = ['stable_today', 'wild_ideas', 'generate_candidates', 'extract_from_materials', 'enrich_words', 'generate_word_card', 'rerank_candidates', 'audit_library_for_delete', 'audit_missing_library_words'];
 const CANDIDATE_TYPES = ['稳定候选', '新鲜梗词', '审美氛围词', '美妆穿搭词', '追星兴趣词', '生活方式词', '网络口语词', '圈层词', '高风险话题词'];
@@ -276,16 +280,6 @@ const AESTHETIC_TONE_PATTERN = /抜け感|透け感|こなれ|しっとり|ふ�
 const LIFESTYLE_TONE_PATTERN = /朝活|朝焼け|家計簿|断捨離|時短料理|勉強法|おうち時間|生活方式|学习|學習|料理|收纳|整理|日常管理/i;
 const FANDOM_TONE_PATTERN = /推し|自担|同担|箱推し|痛バ|聖地巡礼|グッズ|追星|二次元|偶像|アイドル/i;
 
-function jsonResponse(body, status = 200) {
-  return new Response(JSON.stringify(body), {
-    status,
-    headers: {
-      ...CORS_HEADERS,
-      'Content-Type': 'application/json; charset=utf-8'
-    }
-  });
-}
-
 function cleanText(value, maxLength = 1000) {
   return String(value || '').trim().slice(0, maxLength);
 }
@@ -433,14 +427,6 @@ function cleanArray(value, max = 20) {
 function cleanEnum(value, options, fallback) {
   const cleanValue = cleanText(value, 80);
   return options.includes(cleanValue) ? cleanValue : fallback;
-}
-
-async function readJson(request) {
-  try {
-    return await request.json();
-  } catch (error) {
-    return null;
-  }
 }
 
 function buildSystemPrompt() {
@@ -1657,21 +1643,35 @@ async function callDeepSeek(env, payload) {
 }
 
 export async function onRequest({ request, env }) {
+  const methods = ['POST', 'OPTIONS'];
+  const requestId = getRequestId(request);
+  const respond = (body, status = 200) => jsonResponse(request, env, body, status, { methods, requestId });
+  const fail = (status, code, message, options = {}) => errorResponse(request, env, status, code, message, { methods, requestId, ...options });
+
   if (request.method === 'OPTIONS') {
-    return new Response(null, { headers: CORS_HEADERS });
+    return optionsResponse(request, env, methods);
   }
   if (request.method !== 'POST') {
-    return jsonResponse({ error: { message: 'Method not allowed' } }, 405);
-  }
-  if (!env.DEEPSEEK_API_KEY) {
-    return jsonResponse({ error: { message: 'DEEPSEEK_API_KEY is not configured' } }, 500);
+    return fail(405, 'METHOD_NOT_ALLOWED', 'Method not allowed');
   }
 
-  const body = await readJson(request);
-  if (!body) return jsonResponse({ error: { message: 'Invalid JSON body' } }, 400);
+  const authorization = await authorizeRequest(request, env, { allowAutomation: true });
+  if (!authorization.ok) return unauthorizedResponse(request, env, authorization, { methods, requestId });
+  if (!env.DEEPSEEK_API_KEY) {
+    return fail(503, 'AI_NOT_CONFIGURED', 'DEEPSEEK_API_KEY is not configured');
+  }
+
+  const rateLimit = await enforceRateLimit(env.FAVORITES, `ai:${authorization.actor}`, { limit: 12, windowSeconds: 60 });
+  if (!rateLimit.ok) {
+    return fail(429, 'RATE_LIMITED', 'AI 请求过于频繁，请稍后重试', { retryable: true });
+  }
+
+  const parsed = await readJsonBody(request, { maxBytes: API_LIMITS.ai });
+  if (!parsed.ok) return fail(parsed.status, parsed.code, parsed.message);
+  const body = parsed.value;
 
   const action = ACTIONS.includes(body.action) ? body.action : '';
-  if (!action) return jsonResponse({ error: { message: 'Invalid action' } }, 400);
+  if (!action) return fail(400, 'INVALID_ACTION', 'Invalid action');
 
   const payload = {
     action,
@@ -1689,11 +1689,14 @@ export async function onRequest({ request, env }) {
 
   const result = await callDeepSeek(env, payload);
   if (!result.ok) {
-    return jsonResponse({
+    const status = result.status || 502;
+    return respond({
+      ok: false,
       error: {
+        code: status === 429 ? 'AI_RATE_LIMITED' : 'AI_REQUEST_FAILED',
         message: result.error,
         details: result.details || '',
-        retryable: true
+        retryable: status === 429 || status >= 500
       },
       items: [],
       summary: {
@@ -1711,8 +1714,8 @@ export async function onRequest({ request, env }) {
         normalizedOutput: '',
         reviewResult: 'rejected'
       }
-    }, result.status || 502);
+    }, status);
   }
 
-  return jsonResponse(result.data);
+  return respond({ ok: true, ...result.data });
 }

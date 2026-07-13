@@ -1,22 +1,20 @@
 import { cleanStoredWorkflow, generateTodaySnapshot } from '../shared/today-snapshot.mjs';
 import { addDays, buildRankingForDate, cleanStoredRanking, dateKey } from '../shared/rankings.mjs';
-
-const CORS_HEADERS = {
-  'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-  'Access-Control-Allow-Headers': 'Content-Type, Authorization',
-  'Access-Control-Max-Age': '86400'
-};
-
-function jsonResponse(body, status = 200) {
-  return new Response(JSON.stringify(body), {
-    status,
-    headers: {
-      ...CORS_HEADERS,
-      'Content-Type': 'application/json; charset=utf-8'
-    }
-  });
-}
+import {
+  API_LIMITS,
+  authorizeRequest,
+  errorResponse,
+  getRequestId,
+  jsonResponse,
+  optionsResponse,
+  readJsonBody,
+  unauthorizedResponse
+} from '../shared/api-security.mjs';
+import {
+  getWorkflowMutationMetadata,
+  inspectWorkflowMutation,
+  prepareWorkflowMutation
+} from '../shared/workflow-mutation.mjs';
 
 function cleanSyncCode(value) {
   return String(value || '').trim().replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 64);
@@ -63,41 +61,29 @@ async function readRankingHistoryWords(env, todayDateKey, days = 30) {
   return rankingHistoryWords;
 }
 
-async function readJson(request) {
-  try {
-    return await request.json();
-  } catch (error) {
-    return {};
-  }
-}
-
-function isAuthorized(request, env, url) {
-  const token = String(env.TODAY_ADMIN_TOKEN || '').trim();
-  if (!token) return true;
-  const header = request.headers.get('Authorization') || '';
-  const queryToken = String(url.searchParams.get('token') || '').trim();
-  return header === `Bearer ${token}` || queryToken === token;
-}
-
 export async function onRequest({ request, env }) {
+  const methods = ['GET', 'POST', 'OPTIONS'];
+  const requestId = getRequestId(request);
+  const respond = (body, status = 200) => jsonResponse(request, env, body, status, { methods, requestId });
+  const fail = (status, code, message) => errorResponse(request, env, status, code, message, { methods, requestId });
+
   if (request.method === 'OPTIONS') {
-    return new Response(null, { headers: CORS_HEADERS });
+    return optionsResponse(request, env, methods);
   }
 
   if (!env.FAVORITES) {
-    return jsonResponse({ error: 'KV namespace FAVORITES is not configured' }, 500);
+    return fail(500, 'STORAGE_NOT_CONFIGURED', 'KV namespace FAVORITES is not configured');
   }
 
   const url = new URL(request.url);
-  if (!isAuthorized(request, env, url)) {
-    return jsonResponse({ error: 'Unauthorized' }, 401);
-  }
+  const authorization = await authorizeRequest(request, env, { allowAutomation: true });
+  if (!authorization.ok) return unauthorizedResponse(request, env, authorization, { methods, requestId });
 
   const key = getStorageKey(url);
   const stored = cleanStoredWorkflow(await env.FAVORITES.get(key, 'json'));
 
   if (request.method === 'GET') {
-    return jsonResponse({
+    return respond({
       todaySnapshot: stored.todaySnapshot,
       candidateCount: Object.keys(stored.candidatePool || {}).length,
       favoriteCount: stored.words.length,
@@ -106,14 +92,57 @@ export async function onRequest({ request, env }) {
   }
 
   if (request.method !== 'POST') {
-    return jsonResponse({ error: 'Method not allowed' }, 405);
+    return fail(405, 'METHOD_NOT_ALLOWED', 'Method not allowed');
   }
 
-  const body = await readJson(request);
+  const parsed = await readJsonBody(request, { maxBytes: API_LIMITS.command });
+  if (!parsed.ok) return fail(parsed.status, parsed.code, parsed.message);
+  const body = parsed.value;
   const mode = ['create', 'fill', 'regenerate'].includes(body?.mode) ? body.mode : 'create';
+  const mutationMetadata = getWorkflowMutationMetadata(request, body, {
+    action: `today.${mode}`,
+    actor: authorization.actor,
+    target: dateKey()
+  });
+  const inspection = inspectWorkflowMutation(stored, mutationMetadata);
+  if (inspection.conflict) {
+    return respond({
+      ok: false,
+      error: { code: 'REVISION_CONFLICT', message: '今日推荐已被其他人更新，请刷新后重试', retryable: true },
+      currentRevision: inspection.currentRevision
+    }, 409);
+  }
+  if (inspection.duplicate) {
+    const selectedCount = stored.todaySnapshot?.words?.length || 0;
+    return respond({
+      ok: true,
+      mode,
+      selectedCount,
+      shortage: selectedCount < 20,
+      todaySnapshot: stored.todaySnapshot,
+      recommendationAudit: stored.todaySnapshot?.recommendationAudit || null,
+      revision: stored.revision,
+      mutation: { duplicate: true, operationId: inspection.event?.id || '' }
+    });
+  }
   const rankingHistoryWords = await readRankingHistoryWords(env, dateKey(), 30);
-  const { workflow, result } = generateTodaySnapshot({ ...stored, rankingHistoryWords }, { mode, createdBy: 'server' });
+  const generated = generateTodaySnapshot({ ...stored, rankingHistoryWords }, { mode, createdBy: 'server' });
+  const mutation = prepareWorkflowMutation(stored, generated.workflow, {
+    ...mutationMetadata,
+    summary: `今日推荐 ${generated.result.todaySnapshot?.words?.length || 0} 个词`
+  });
+  if (mutation.conflict) {
+    return respond({
+      ok: false,
+      error: { code: 'REVISION_CONFLICT', message: '今日推荐已被其他人更新，请刷新后重试', retryable: true },
+      currentRevision: mutation.currentRevision
+    }, 409);
+  }
 
-  await env.FAVORITES.put(key, JSON.stringify(workflow));
-  return jsonResponse(result);
+  if (!mutation.duplicate) await env.FAVORITES.put(key, JSON.stringify(mutation.workflow));
+  return respond({
+    ...generated.result,
+    revision: mutation.workflow.revision,
+    mutation: { duplicate: mutation.duplicate, operationId: mutation.event?.id || '' }
+  });
 }

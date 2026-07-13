@@ -3,11 +3,14 @@
 ## Local Setup
 
 ```bash
-npm install
-npm run build:words
+npm ci
+npm run lint
+npm run typecheck
+npm test
+npm run build
 ```
 
-The app is a static frontend. You can open `index.html` directly or serve the project root with a static HTTP server.
+The production static artifact is written to `dist/`. It contains an explicit allowlist of public files, so source data, scripts, and operational documentation are not uploaded with the site.
 
 ## Production
 
@@ -36,7 +39,13 @@ Configure these in Cloudflare, not in source code:
 - `DEEPSEEK_API_KEY`：DeepSeek API key.
 - `DEEPSEEK_MODEL`：optional, default is `deepseek-v4-flash`.
 - `AUTO_REFRESH_SECRET`：secret for protected daily refresh endpoint.
+- `ADMIN_API_TOKEN`：separate token for backup, restore, and emergency administration.
+- `TEAM_ACCESS_EMAILS`：comma-separated team emails allowed after Access verification.
+- `CF_ACCESS_TEAM_DOMAIN`：Cloudflare Access team domain.
+- `CF_ACCESS_AUD`：Cloudflare Access application audience tag.
+- `ALLOWED_ORIGINS`：allowed browser origins; do not use `*`.
 - `SITE_URL`：production site URL, usually `https://jiyimianbao.pages.dev`.
+- `ENABLE_LEGACY_WORKER_API`：leave `false` unless a reviewed legacy HTTP migration requires it.
 
 Use `.env.example` only as a reference template.
 
@@ -71,10 +80,10 @@ The scheduled Worker calls this endpoint. Cloudflare cron uses UTC time. Check `
 
 ### Wrangler authentication fails
 
-Run:
+Run the pinned local Wrangler through the project scripts:
 
 ```bash
-npx -y wrangler login
+npx wrangler login
 ```
 
 Then retry deployment.
@@ -94,3 +103,10 @@ Make sure the Worker and Pages project use the same `AUTO_REFRESH_SECRET`.
 ### Workflow fields disappear
 
 Inspect `/favorites` and verify the response still includes `candidatePool`, `aiBatches`, `todaySnapshot`, and `publishedRecords`.
+
+## Health And Recovery
+
+- `GET /healthz` checks whether required bindings are present without reading workflow data.
+- `npm run backup:workflow` creates a validated mode-`0600` backup and performs no write.
+- `npm run restore:workflow -- <file>` is a dry run. A write additionally requires `--apply --confirm=RESTORE` and an up-to-date workflow revision.
+- See `docs/SYSTEM_HARDENING.md` for deployment order, rollback, and the remaining Cloudflare KV concurrency limitation.

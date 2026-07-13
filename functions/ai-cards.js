@@ -7,26 +7,24 @@ import {
   cleanWords
 } from '../shared/workflow-schema.mjs';
 import { getAccountLearningSummary } from '../shared/account-learning.mjs';
-
-const CORS_HEADERS = {
-  'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-  'Access-Control-Allow-Headers': 'Content-Type',
-  'Access-Control-Max-Age': '86400'
-};
+import {
+  API_LIMITS,
+  authorizeRequest,
+  errorResponse,
+  getRequestId,
+  jsonResponse,
+  optionsResponse,
+  readJsonBody,
+  unauthorizedResponse
+} from '../shared/api-security.mjs';
+import {
+  getWorkflowMutationMetadata,
+  inspectWorkflowMutation,
+  prepareWorkflowMutation
+} from '../shared/workflow-mutation.mjs';
 
 const MAX_WORDS_PER_REQUEST = 5;
 export const AI_CARD_PENDING_TTL_MS = 10 * 60 * 1000;
-
-function jsonResponse(body, status = 200) {
-  return new Response(JSON.stringify(body), {
-    status,
-    headers: {
-      ...CORS_HEADERS,
-      'Content-Type': 'application/json; charset=utf-8'
-    }
-  });
-}
 
 function safeArray(value) {
   return Array.isArray(value) ? value : [];
@@ -58,20 +56,13 @@ function getStorageKey(url) {
   return code.length >= 8 ? `favorites:${code}` : 'favorites:global';
 }
 
-async function readJson(request) {
-  try {
-    return await request.json();
-  } catch (error) {
-    return null;
-  }
-}
-
-async function callJsonEndpoint(origin, path, payload) {
+async function callJsonEndpoint(origin, path, payload, authorization = '') {
   const response = await fetch(`${origin}${path}`, {
     method: 'POST',
     headers: {
       Accept: 'application/json',
-      'Content-Type': 'application/json'
+      'Content-Type': 'application/json',
+      ...(authorization ? { Authorization: authorization } : {})
     },
     body: JSON.stringify(payload)
   });
@@ -333,7 +324,7 @@ export function applyAiCardGenerationResult(workflow = {}, result = {}) {
   };
 }
 
-export async function generateTodayAiCards({ origin, workflow, options = {}, callEndpoint = callJsonEndpoint }) {
+export async function generateTodayAiCards({ origin, workflow, options = {}, callEndpoint = callJsonEndpoint, authorization = '' }) {
   const selection = selectTodayAiCardTargets(workflow, options);
   if (!selection.targets.length) {
     return {
@@ -366,7 +357,7 @@ export async function generateTodayAiCards({ origin, workflow, options = {}, cal
   }
 
   try {
-    const data = await callEndpoint(origin, '/ai-candidates', payload);
+    const data = await callEndpoint(origin, '/ai-candidates', payload, authorization);
     const applied = applyAiCardGenerationResult(workflow, {
       targets: selection.targets,
       items: safeArray(data.items),
@@ -397,34 +388,67 @@ export async function generateTodayAiCards({ origin, workflow, options = {}, cal
 }
 
 export async function onRequest({ request, env }) {
+  const methods = ['GET', 'POST', 'OPTIONS'];
+  const requestId = getRequestId(request);
+  const respond = (body, status = 200) => jsonResponse(request, env, body, status, { methods, requestId });
+  const fail = (status, code, message, options = {}) => errorResponse(request, env, status, code, message, { methods, requestId, ...options });
+
   if (request.method === 'OPTIONS') {
-    return new Response(null, { headers: CORS_HEADERS });
+    return optionsResponse(request, env, methods);
   }
 
   if (!env.FAVORITES) {
-    return jsonResponse({ error: 'KV namespace FAVORITES is not configured' }, 500);
+    return fail(500, 'STORAGE_NOT_CONFIGURED', 'KV namespace FAVORITES is not configured');
   }
+
+  const authorization = await authorizeRequest(request, env, { allowAutomation: true });
+  if (!authorization.ok) return unauthorizedResponse(request, env, authorization, { methods, requestId });
 
   const url = new URL(request.url);
   const key = getStorageKey(url);
 
   if (request.method === 'GET') {
     const workflow = cleanStoredWorkflow(await env.FAVORITES.get(key, 'json'));
-    return jsonResponse({
+    return respond({
       ok: true,
       ...summarizeTodayAiCards(workflow)
     });
   }
 
   if (request.method === 'POST') {
-    const body = await readJson(request);
-    if (!body) return jsonResponse({ error: 'Invalid JSON body' }, 400);
+    const parsed = await readJsonBody(request, { maxBytes: API_LIMITS.command });
+    if (!parsed.ok) return fail(parsed.status, parsed.code, parsed.message);
+    const body = parsed.value;
 
     const workflow = cleanStoredWorkflow(await env.FAVORITES.get(key, 'json'));
+    const mutationMetadata = getWorkflowMutationMetadata(request, body, {
+      action: 'ai-card.generate',
+      actor: authorization.actor,
+      target: cleanWords(body.words || []).join(','),
+      summary: '生成或重试今日词卡'
+    });
+    const inspection = inspectWorkflowMutation(workflow, { ...mutationMetadata, expectedRevision: null });
+    if (inspection.duplicate) {
+      return respond({
+        ok: true,
+        duplicate: true,
+        selectedWords: [],
+        savedCount: 0,
+        savedWords: [],
+        failedWords: [],
+        revision: workflow.revision,
+        ...summarizeTodayAiCards(workflow)
+      });
+    }
     const result = await generateTodayAiCards({
       origin: url.origin,
       workflow,
-      options: body
+      options: body,
+      authorization: env.AUTO_REFRESH_SECRET
+        ? `Bearer ${String(env.AUTO_REFRESH_SECRET).trim()}`
+        : env.ADMIN_API_TOKEN
+          ? `Bearer ${String(env.ADMIN_API_TOKEN).trim()}`
+          : ''
     });
 
     if (result.selection.targets.length || result.failedWords.length || result.savedWords.length) {
@@ -447,28 +471,40 @@ export async function onRequest({ request, env }) {
         batchIds.add(batch.id);
         mergedBatches.push(batch);
       });
-      const nextWorkflow = cleanStoredWorkflow({
+      const mergedWorkflow = cleanStoredWorkflow({
         ...storedAfterGeneration,
         candidatePool: mergedPool,
         aiBatches: mergedBatches.slice(0, 100),
         updated: nowIso()
       });
-      await env.FAVORITES.put(key, JSON.stringify(nextWorkflow));
+      const mutation = prepareWorkflowMutation(storedAfterGeneration, mergedWorkflow, {
+        ...mutationMetadata,
+        expectedRevision: null
+      });
+      const nextWorkflow = mutation.workflow;
+      if (!mutation.duplicate) await env.FAVORITES.put(key, JSON.stringify(nextWorkflow));
       result.workflow = nextWorkflow;
       result.summary = summarizeTodayAiCards(nextWorkflow);
     }
 
-    return jsonResponse({
+    return respond({
       ok: !result.error,
-      error: result.error || '',
+      ...(result.error ? {
+        error: {
+          code: 'AI_CARD_GENERATION_FAILED',
+          message: result.error,
+          retryable: true
+        }
+      } : {}),
       selectedWords: result.selection.targets,
       skipped: result.selection.skipped,
       savedCount: result.savedCount,
       savedWords: result.savedWords,
       failedWords: result.failedWords,
+      revision: result.workflow.revision,
       ...result.summary
     }, result.error ? 502 : 200);
   }
 
-  return jsonResponse({ error: 'Method not allowed' }, 405);
+  return fail(405, 'METHOD_NOT_ALLOWED', 'Method not allowed');
 }

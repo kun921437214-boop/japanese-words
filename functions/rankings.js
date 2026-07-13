@@ -5,23 +5,14 @@ import {
   cleanStoredRanking,
   dateKey
 } from '../shared/rankings.mjs';
-
-const CORS_HEADERS = {
-  'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Methods': 'GET, OPTIONS',
-  'Access-Control-Allow-Headers': 'Content-Type',
-  'Access-Control-Max-Age': '86400'
-};
-
-function jsonResponse(body, status = 200) {
-  return new Response(JSON.stringify(body), {
-    status,
-    headers: {
-      ...CORS_HEADERS,
-      'Content-Type': 'application/json; charset=utf-8'
-    }
-  });
-}
+import {
+  authorizeRequest,
+  errorResponse,
+  getRequestId,
+  jsonResponse,
+  optionsResponse,
+  unauthorizedResponse
+} from '../shared/api-security.mjs';
 
 function getRankingStorageKey(dateKeyValue) {
   return `rankings:${dateKeyValue}`;
@@ -79,20 +70,28 @@ async function ensureRankings(env, requestedDays) {
 }
 
 export async function onRequest({ request, env }) {
+  const methods = ['GET', 'OPTIONS'];
+  const requestId = getRequestId(request);
+  const respond = (body, status = 200) => jsonResponse(request, env, body, status, { methods, requestId });
+  const fail = (status, code, message) => errorResponse(request, env, status, code, message, { methods, requestId });
+
   if (request.method === 'OPTIONS') {
-    return new Response(null, { headers: CORS_HEADERS });
+    return optionsResponse(request, env, methods);
   }
 
   if (request.method !== 'GET') {
-    return jsonResponse({ error: 'Method not allowed' }, 405);
+    return fail(405, 'METHOD_NOT_ALLOWED', 'Method not allowed');
   }
 
   if (!env.FAVORITES) {
-    return jsonResponse({ error: 'KV namespace FAVORITES is not configured' }, 500);
+    return fail(500, 'STORAGE_NOT_CONFIGURED', 'KV namespace FAVORITES is not configured');
   }
+
+  const authorization = await authorizeRequest(request, env);
+  if (!authorization.ok) return unauthorizedResponse(request, env, authorization, { methods, requestId });
 
   const url = new URL(request.url);
   const requestedDays = cleanRankingsDays(url.searchParams.get('days'), 8);
   const data = await ensureRankings(env, requestedDays);
-  return jsonResponse(data);
+  return respond(data);
 }

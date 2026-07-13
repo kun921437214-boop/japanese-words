@@ -1,14 +1,26 @@
 {
   "name": "japanese-words",
   "private": true,
+  "type": "module",
   "scripts": {
     "build:words": "node scripts/build-words-data.mjs",
-    "build": "npm run build:words",
+    "build": "npm run build:words && node scripts/build-static.mjs",
+    "lint": "eslint app.js sync-config.js functions worker shared scripts --max-warnings=0 && node scripts/check-cycles.mjs",
+    "typecheck": "tsc -p tsconfig.json",
+    "test": "npm run test:workflow && npm run test:hardening",
+    "test:hardening": "node --test scripts/test-hardening.mjs",
     "test:workflow": "node scripts/test-workflow-schema.mjs",
     "audit:library-delete": "node scripts/audit-library-delete.mjs",
     "audit:library-delete:strict": "node scripts/audit-library-delete.mjs --strict",
+    "backup:workflow": "node scripts/workflow-backup.mjs",
+    "restore:workflow": "node scripts/workflow-restore.mjs",
     "deploy": "npm run build && node scripts/deploy-pages.mjs",
     "deploy:pages": "npm run deploy",
-    "deploy:worker": "npx -y wrangler@3 deploy --config wrangler.worker.toml"
+    "deploy:worker": "node scripts/deploy-worker.mjs"
+  },
+  "devDependencies": {
+    "eslint": "9.39.1",
+    "typescript": "5.9.3",
+    "wrangler": "4.110.0"
   }
 }

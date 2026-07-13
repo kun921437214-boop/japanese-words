@@ -277,7 +277,9 @@ test('cleanStoredWorkflow 补齐缺失字段', () => {
   assert.deepEqual(cleaned.candidatePool, {});
   assert.deepEqual(cleaned.aiBatches, []);
   assert.deepEqual(cleaned.todaySnapshot.words, []);
-  assert.equal(cleaned.schemaVersion, 1);
+  assert.equal(cleaned.schemaVersion, 2);
+  assert.equal(cleaned.revision, 0);
+  assert.deepEqual(cleaned.auditLog, []);
 });
 
 test('cleanStoredWorkflow 不删除 candidatePool.aiCard', () => {
