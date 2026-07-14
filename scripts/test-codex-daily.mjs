@@ -1,7 +1,11 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { onRequest as handleCodexDaily } from '../functions/codex-daily.js';
-import { onRequest as handleCodexImage } from '../functions/codex-image.js';
+import {
+  KV_IMAGE_MAX_BYTES,
+  KV_IMAGE_TTL_SECONDS,
+  onRequest as handleCodexImage
+} from '../functions/codex-image.js';
 import { onRequest as handleFavorites } from '../functions/favorites.js';
 import {
   promoteCodexDailyDraft,
@@ -253,6 +257,62 @@ test('reference image upload is scoped to Codex and can be read by its opaque ke
   });
   assert.equal(image.status, 200);
   assert.equal(image.headers.get('Content-Type'), 'image/webp');
+});
+
+test('reference image falls back to expiring KV storage with public edge caching', async () => {
+  const objects = new Map();
+  let writeOptions = null;
+  const kv = {
+    async put(key, bytes, options) {
+      writeOptions = options;
+      objects.set(key, { bytes, metadata: options.metadata });
+    },
+    async getWithMetadata(key, options) {
+      assert.deepEqual(options, { type: 'arrayBuffer', cacheTtl: 86400 });
+      const item = objects.get(key);
+      return item ? { value: item.bytes, metadata: item.metadata } : { value: null, metadata: null };
+    }
+  };
+  const upload = await handleCodexImage({
+    request: apiRequest('/codex-image?date=2026-07-14&word=%E4%BD%99%E8%A3%95', {
+      method: 'PUT',
+      headers: { Authorization: 'Bearer codex-secret', 'Content-Type': 'image/jpeg' },
+      body: new Uint8Array([4, 5, 6])
+    }),
+    env: { REFERENCE_IMAGES_KV: kv, CODEX_AUTOMATION_SECRET: 'codex-secret' }
+  });
+  assert.equal(upload.status, 200);
+  const uploaded = await upload.json();
+  assert.equal(uploaded.storage, 'kv');
+  assert.equal(uploaded.expiresInSeconds, KV_IMAGE_TTL_SECONDS);
+  assert.equal(writeOptions.expirationTtl, KV_IMAGE_TTL_SECONDS);
+  assert.equal(writeOptions.metadata.contentType, 'image/jpeg');
+
+  const image = await handleCodexImage({
+    request: apiRequest(uploaded.url),
+    env: { REFERENCE_IMAGES_KV: kv }
+  });
+  assert.equal(image.status, 200);
+  assert.equal(image.headers.get('Content-Type'), 'image/jpeg');
+  assert.match(image.headers.get('Cache-Control'), /s-maxage=604800/);
+});
+
+test('KV reference images reject payloads above the bounded storage budget', async () => {
+  const kv = {
+    async put() {
+      assert.fail('oversized image must not be stored');
+    }
+  };
+  const upload = await handleCodexImage({
+    request: apiRequest('/codex-image?date=2026-07-14&word=%E4%BD%99%E8%A3%95', {
+      method: 'PUT',
+      headers: { Authorization: 'Bearer codex-secret', 'Content-Type': 'image/webp' },
+      body: new Uint8Array(KV_IMAGE_MAX_BYTES + 1)
+    }),
+    env: { REFERENCE_IMAGES_KV: kv, CODEX_AUTOMATION_SECRET: 'codex-secret' }
+  });
+  assert.equal(upload.status, 413);
+  assert.equal((await upload.json()).error.code, 'IMAGE_TOO_LARGE');
 });
 
 test('midnight trigger prefers Codex and calls DeepSeek only as fallback', async () => {
