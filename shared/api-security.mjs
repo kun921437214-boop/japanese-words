@@ -237,6 +237,10 @@ export async function authorizeRequest(request, env = {}, options = {}) {
     }
   }
 
+  if (String(env.ALLOW_PUBLIC_APP || '').toLowerCase() === 'true') {
+    return { ok: true, actor: 'public-app', method: 'public_app' };
+  }
+
   const bearer = getBearerToken(request);
   const adminToken = cleanText(env.ADMIN_API_TOKEN, 2000);
   if (adminToken && bearer && constantTimeEqual(bearer, adminToken)) {
