@@ -8,9 +8,11 @@ import {
 } from '../functions/codex-image.js';
 import { onRequest as handleFavorites } from '../functions/favorites.js';
 import {
+  getCodexDraftStorageKey,
   promoteCodexDailyDraft,
   validateCodexDailyDraft
 } from '../shared/codex-daily-draft.mjs';
+import { addDays, dateKey } from '../shared/rankings.mjs';
 import { buildTodayRecommendationAudit } from '../shared/today-snapshot.mjs';
 import { triggerDailyPublishOrFallback } from '../worker/favorites-worker.js';
 
@@ -139,6 +141,51 @@ test('a complete 20-word Codex draft passes while missing images remain non-bloc
   assert.equal(draft.cardReadyCount, 20);
   assert.equal(draft.imageReadyCount, 0);
   assert.ok(draft.validation.warnings.some(message => message.includes('参考图片未全部就绪')));
+});
+
+test('tomorrow preview is public and sanitized while the full draft stays protected', async () => {
+  const targetDateKey = addDays(dateKey(), 1);
+  const storedDraft = makeDraft(CURATED_WORDS, { targetDateKey, imageReady: true });
+  storedDraft.notes = 'internal notes';
+  storedDraft.operationId = 'internal-operation';
+  const kv = makeKv({
+    'favorites:global': { words: [] },
+    [getCodexDraftStorageKey(targetDateKey)]: storedDraft
+  });
+  const env = { FAVORITES: kv, CODEX_AUTOMATION_SECRET: 'codex-secret' };
+
+  const previewResponse = await handleCodexDaily({
+    request: apiRequest(`/codex-daily?date=${targetDateKey}&view=preview`),
+    env
+  });
+  assert.equal(previewResponse.status, 200);
+  const preview = (await previewResponse.json()).draft;
+  assert.equal(preview.wordCount, 20);
+  assert.equal(preview.items.length, 20);
+  assert.equal(preview.threadId, undefined);
+  assert.equal(preview.notes, undefined);
+  assert.equal(preview.operationId, undefined);
+  assert.equal(preview.items[0].aiCard.referenceImage.prompt, undefined);
+  assert.match(preview.items[0].aiCard.referenceImage.url, /^\/codex-image\?key=/);
+
+  const statusResponse = await handleCodexDaily({
+    request: apiRequest(`/codex-daily?date=${targetDateKey}&view=preview-status`),
+    env
+  });
+  assert.equal(statusResponse.status, 200);
+  assert.equal((await statusResponse.json()).draft.items, undefined);
+
+  const fullDraftResponse = await handleCodexDaily({
+    request: apiRequest(`/codex-daily?date=${targetDateKey}&view=draft`),
+    env
+  });
+  assert.equal(fullDraftResponse.status, 401);
+
+  const wrongDateResponse = await handleCodexDaily({
+    request: apiRequest(`/codex-daily?date=${addDays(targetDateKey, 1)}&view=preview`),
+    env
+  });
+  assert.equal(wrongDateResponse.status, 404);
 });
 
 test('semantic duplicates and recent 30-day repeats block a Codex draft', () => {
