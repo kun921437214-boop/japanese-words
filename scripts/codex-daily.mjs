@@ -3,6 +3,20 @@ import path from 'node:path';
 import { addDays, cleanDateKey, dateKey } from '../shared/rankings.mjs';
 import { validateCodexDailyDraft } from '../shared/codex-daily-draft.mjs';
 
+function loadLocalAutomationEnv() {
+  const envFile = path.resolve(process.env.CODEX_DAILY_ENV_FILE || '.env.codex-daily');
+  if (!fs.existsSync(envFile)) return;
+
+  for (const line of fs.readFileSync(envFile, 'utf8').split(/\r?\n/)) {
+    const match = line.match(/^\s*(CODEX_SITE_URL|CODEX_AUTOMATION_SECRET)\s*=\s*(.*?)\s*$/);
+    if (!match || process.env[match[1]]) continue;
+    const value = match[2].replace(/^(['"])(.*)\1$/, '$2');
+    process.env[match[1]] = value;
+  }
+}
+
+loadLocalAutomationEnv();
+
 function parseArgs(argv) {
   const args = { command: argv[0] || 'help' };
   for (let index = 1; index < argv.length; index += 1) {

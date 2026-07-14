@@ -29,11 +29,12 @@
 
 ## 本地命令
 
-所有联网命令都要求显式设置站点和独立凭证，且写入命令还要求 `--confirm-submit`。
+所有联网命令都要求设置站点和独立凭证，且写入命令还要求 `--confirm-submit`。固定 Codex 任务默认从项目根目录的 `.env.codex-daily` 读取这两个值；该文件已被 Git 忽略，并应保持仅当前用户可读。也可以通过环境变量覆盖它。
 
 ```bash
-export CODEX_SITE_URL=https://jiyimianbao.pages.dev
-export CODEX_AUTOMATION_SECRET=replace-locally
+# .env.codex-daily（不要提交）
+CODEX_SITE_URL=https://jiyimianbao.pages.dev
+CODEX_AUTOMATION_SECRET=replace-locally
 
 npm run codex:daily -- context --date 2026-07-14
 npm run codex:daily -- draft --date 2026-07-14
