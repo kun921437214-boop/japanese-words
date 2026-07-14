@@ -508,6 +508,11 @@ body::before {
   min-width:190px;
 }
 
+.codex-preview-card:focus-visible {
+  outline:3px solid rgba(138, 129, 210, 0.34);
+  outline-offset:2px;
+}
+
 .action-menu {
   position:relative;
   display:inline-flex;
@@ -2420,6 +2425,182 @@ body::before {
   font-size:0.72rem;
 }
 
+.codex-preview-card {
+  border-color:rgba(207, 210, 223, 0.72);
+  border-radius:12px;
+  background:#fff;
+  box-shadow:0 5px 14px rgba(47, 48, 58, 0.07);
+}
+
+.codex-preview-card:hover {
+  transform:translateY(-2px);
+  border-color:rgba(138, 129, 210, 0.42);
+  box-shadow:0 9px 20px rgba(47, 48, 58, 0.10);
+}
+
+.codex-preview-image-wrapper {
+  position:relative;
+  width:100%;
+  aspect-ratio:3 / 4;
+  overflow:hidden;
+  background:#fff;
+}
+
+.codex-preview-image {
+  width:100%;
+  height:100%;
+  object-fit:contain;
+}
+
+.codex-preview-readonly-badge {
+  position:absolute;
+  top:8px;
+  right:8px;
+  display:inline-flex;
+  align-items:center;
+  min-height:24px;
+  padding:3px 8px;
+  border:1px solid rgba(207, 210, 223, 0.78);
+  border-radius:999px;
+  background:rgba(255,255,255,0.94);
+  color:var(--ink-500);
+  font-size:0.68rem;
+  font-weight:850;
+  box-shadow:0 5px 12px rgba(35, 31, 32, 0.08);
+}
+
+.codex-preview-card-body {
+  gap:7px;
+  padding:11px 12px 13px;
+}
+
+.codex-preview-word-row {
+  display:flex;
+  align-items:flex-start;
+  justify-content:space-between;
+  gap:8px;
+}
+
+.codex-preview-word {
+  color:var(--ink-900);
+  font-family:var(--font-japanese);
+  font-size:1.24rem;
+  font-weight:900;
+  line-height:1.2;
+}
+
+.codex-preview-reading {
+  margin-top:2px;
+  color:var(--ink-400);
+  font-family:var(--font-japanese);
+  font-size:0.74rem;
+}
+
+.codex-source-chip {
+  border-color:#c8dcf7;
+  background:#eef4ff;
+  color:#356fb0;
+}
+
+.codex-preview-modal-shell {
+  overflow:hidden;
+  background:#fff;
+}
+
+.codex-preview-modal-layout {
+  display:grid;
+  grid-template-columns:minmax(300px, 42%) minmax(0, 1fr);
+  max-height:calc(100vh - 32px);
+}
+
+.codex-preview-modal-art {
+  min-height:0;
+  border-right:1px solid rgba(229, 215, 205, 0.72);
+  background:#fffdf9;
+}
+
+.codex-preview-modal-art img {
+  display:block;
+  width:100%;
+  height:100%;
+  object-fit:contain;
+}
+
+.codex-preview-modal-content {
+  min-width:0;
+  min-height:0;
+  display:flex;
+  flex-direction:column;
+}
+
+.codex-preview-modal-header {
+  display:flex;
+  align-items:flex-start;
+  justify-content:space-between;
+  gap:16px;
+  padding:22px 22px 12px;
+}
+
+.codex-preview-modal-kicker {
+  color:var(--ink-400);
+  font-size:0.74rem;
+  font-weight:850;
+}
+
+.codex-preview-modal-word {
+  margin-top:5px;
+  color:var(--ink-900);
+  font-family:var(--font-japanese);
+  font-size:2rem;
+  line-height:1.15;
+}
+
+.codex-preview-modal-reading {
+  margin-top:4px;
+  color:var(--ink-400);
+  font-family:var(--font-japanese);
+  font-size:0.84rem;
+}
+
+.codex-preview-modal-close {
+  flex:0 0 auto;
+  width:36px;
+  height:36px;
+  border:1px solid rgba(207, 210, 223, 0.78);
+  border-radius:50%;
+  background:#fff;
+  color:var(--ink-600);
+  font-size:1.25rem;
+  line-height:1;
+}
+
+.codex-preview-modal-tags {
+  padding:0 22px 14px;
+}
+
+.codex-preview-modal-scroll {
+  min-height:0;
+  padding:0 22px 24px;
+  overflow:auto;
+}
+
+.codex-preview-section {
+  padding:16px 0;
+  border-top:1px solid rgba(229, 215, 205, 0.64);
+}
+
+.codex-preview-section h3 {
+  margin-bottom:9px;
+  color:var(--ink-700);
+  font-size:0.82rem;
+}
+
+.codex-preview-section p {
+  color:var(--ink-600);
+  font-size:0.88rem;
+  line-height:1.75;
+}
+
 .feedback-menu {
   width:160px;
 }
@@ -3366,6 +3547,42 @@ body::before {
   .daily-hot-card .card-action-btn {
     min-height:28px;
     font-size:0.70rem;
+  }
+
+  .codex-preview-card-body {
+    padding:8px 9px 10px;
+  }
+
+  .codex-preview-word {
+    font-size:1rem;
+  }
+
+  .codex-preview-card .card-meaning {
+    min-height:34px;
+    font-size:0.80rem;
+  }
+
+  .codex-preview-modal-shell {
+    overflow:auto;
+  }
+
+  .codex-preview-modal-layout {
+    display:block;
+    max-height:none;
+  }
+
+  .codex-preview-modal-art {
+    height:min(54vh, 520px);
+    border-right:0;
+    border-bottom:1px solid rgba(229, 215, 205, 0.72);
+  }
+
+  .codex-preview-modal-content {
+    max-height:none;
+  }
+
+  .codex-preview-modal-scroll {
+    overflow:visible;
   }
 
   .published-grid {
