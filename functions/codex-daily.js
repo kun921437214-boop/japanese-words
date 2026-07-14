@@ -6,7 +6,7 @@ import {
   promoteCodexDailyDraft,
   validateCodexDailyDraft
 } from '../shared/codex-daily-draft.mjs';
-import { cleanDateKey, dateKey } from '../shared/rankings.mjs';
+import { addDays, cleanDateKey, dateKey } from '../shared/rankings.mjs';
 import { cleanStoredWorkflow } from '../shared/workflow-schema.mjs';
 import {
   API_LIMITS,
@@ -53,6 +53,76 @@ function summarizeDraft(draft = {}) {
   };
 }
 
+function cleanPreviewImageUrl(value) {
+  try {
+    const url = new URL(String(value || ''), 'https://preview.invalid');
+    if (url.origin !== 'https://preview.invalid' || url.pathname !== '/codex-image' || !url.searchParams.get('key')) return '';
+    return `${url.pathname}${url.search}`;
+  } catch {
+    return '';
+  }
+}
+
+function buildPublicPreviewDraft(draft = {}, options = {}) {
+  const includeItems = options.includeItems !== false;
+  const qualitySummary = draft.validation?.qualitySummary || {};
+  const auditItems = Array.isArray(draft.validation?.recommendationAudit?.items)
+    ? draft.validation.recommendationAudit.items
+    : [];
+  return {
+    targetDateKey: draft.targetDateKey || '',
+    status: draft.status || 'missing',
+    wordCount: draft.wordCount || 0,
+    cardReadyCount: draft.cardReadyCount || 0,
+    imageReadyCount: draft.imageReadyCount || 0,
+    updatedAt: draft.updatedAt || '',
+    submittedAt: draft.submittedAt || '',
+    ...(includeItems ? {
+      items: (Array.isArray(draft.items) ? draft.items : []).map(item => ({
+        kanji: item.kanji || '',
+        kana: item.kana || item.reading || '',
+        romaji: item.romaji || '',
+        meaning: item.meaning || '',
+        aiCard: {
+          summary: item.aiCard?.summary || '',
+          explanation: item.aiCard?.explanation || '',
+          usageScenes: Array.isArray(item.aiCard?.usageScenes) ? item.aiCard.usageScenes : [],
+          examples: (Array.isArray(item.aiCard?.examples) ? item.aiCard.examples : []).map(example => ({
+            jp: example.jp || '',
+            kana: example.kana || '',
+            romaji: example.romaji || '',
+            cn: example.cn || ''
+          })),
+          suggestedTitles: Array.isArray(item.aiCard?.suggestedTitles) ? item.aiCard.suggestedTitles : [],
+          contentAngles: Array.isArray(item.aiCard?.contentAngles) ? item.aiCard.contentAngles : [],
+          wrongUsage: item.aiCard?.wrongUsage || '',
+          referenceImage: {
+            status: item.aiCard?.referenceImage?.status || 'missing',
+            url: cleanPreviewImageUrl(item.aiCard?.referenceImage?.url)
+          }
+        }
+      }))
+    } : {}),
+    validation: {
+      valid: Boolean(draft.validation?.valid),
+      qualitySummary: {
+        estimatedHumanQualityScore: qualitySummary.estimatedHumanQualityScore || 0,
+        sLevelCount: qualitySummary.sLevelCount || 0,
+        aLevelCount: qualitySummary.aLevelCount || 0,
+        bLevelCount: qualitySummary.bLevelCount || 0,
+        cLevelCount: qualitySummary.cLevelCount || 0
+      },
+      recommendationAudit: {
+        items: auditItems.map(item => ({
+          kanji: item.kanji || '',
+          recommendationLevel: item.recommendationLevel || '',
+          qualityCategory: item.qualityCategory || ''
+        }))
+      }
+    }
+  };
+}
+
 export async function onRequest({ request, env }) {
   const requestId = getRequestId(request);
   const respond = (body, status = 200) => jsonResponse(request, env, body, status, { methods: METHODS, requestId });
@@ -67,6 +137,26 @@ export async function onRequest({ request, env }) {
   const url = new URL(request.url);
   const scope = getScope(url);
   const targetDateKey = cleanDateKey(url.searchParams.get('date')) || dateKey();
+  const view = String(url.searchParams.get('view') || 'status').trim();
+
+  if (request.method === 'GET' && ['preview', 'preview-status'].includes(view)) {
+    const previewDateKey = addDays(dateKey(), 1);
+    if (targetDateKey !== previewDateKey) {
+      return fail(404, 'PREVIEW_NOT_AVAILABLE', '只提供明日草稿预览');
+    }
+    const workflowKey = getWorkflowStorageKey(scope);
+    const draftKey = getCodexDraftStorageKey(targetDateKey, scope);
+    const workflow = cleanStoredWorkflow(await env.FAVORITES.get(workflowKey, 'json'));
+    const storedDraft = await env.FAVORITES.get(draftKey, 'json');
+    if (!storedDraft) {
+      return respond({
+        ok: true,
+        draft: buildPublicPreviewDraft({ targetDateKey, status: 'missing' }, { includeItems: view === 'preview' })
+      });
+    }
+    const draft = validateCodexDailyDraft(storedDraft, { workflow, expectedDateKey: targetDateKey });
+    return respond({ ok: true, draft: buildPublicPreviewDraft(draft, { includeItems: view === 'preview' }) });
+  }
 
   if (request.method === 'POST') {
     const authorization = await authorizeRequest(request, env, { allowAutomation: true });
@@ -132,7 +222,6 @@ export async function onRequest({ request, env }) {
   const workflow = cleanStoredWorkflow(await env.FAVORITES.get(workflowKey, 'json'));
 
   if (request.method === 'GET') {
-    const view = String(url.searchParams.get('view') || 'status').trim();
     if (view === 'context') return respond({ ok: true, context: buildCodexDailyContext(workflow, targetDateKey) });
     const draftKey = getCodexDraftStorageKey(targetDateKey, scope);
     const storedDraft = await env.FAVORITES.get(draftKey, 'json');

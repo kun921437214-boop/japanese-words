@@ -3364,14 +3364,15 @@ function getCodexDailyEndpoint(targetDateKey = addDaysToDateKey(todayKey(), 1), 
   const base = SYNC_API_URL ? `${SYNC_API_URL}/codex-daily` : '/codex-daily';
   const url = new URL(base, window.location.origin);
   url.searchParams.set('date', targetDateKey);
-  url.searchParams.set('view', view === 'draft' ? 'draft' : 'status');
+  const allowedViews = new Set(['status', 'draft', 'preview-status', 'preview']);
+  url.searchParams.set('view', allowedViews.has(view) ? view : 'status');
   return url.toString();
 }
 
 async function loadCodexTomorrowDraftStatus() {
   const targetDateKey = addDaysToDateKey(todayKey(), 1);
   try {
-    const response = await apiFetch(getCodexDailyEndpoint(targetDateKey), { headers: { Accept: 'application/json' } }, { cancelKey: 'codex-draft-status' });
+    const response = await apiFetch(getCodexDailyEndpoint(targetDateKey, 'preview-status'), { headers: { Accept: 'application/json' } }, { cancelKey: 'codex-draft-status' });
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     const data = await response.json();
     codexTomorrowDraftStatus = data.draft || null;
@@ -3397,7 +3398,7 @@ async function loadCodexTomorrowDraft(options = {}) {
   codexTomorrowDraftPromise = (async () => {
     try {
       const response = await apiFetch(
-        getCodexDailyEndpoint(targetDateKey, 'draft'),
+        getCodexDailyEndpoint(targetDateKey, 'preview'),
         { headers: { Accept: 'application/json' } },
         { cancelKey: 'codex-draft-preview' }
       );
