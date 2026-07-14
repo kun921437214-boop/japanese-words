@@ -67,6 +67,25 @@ test('team authorization fails closed when no credentials are configured', async
   assert.equal((await authorizeRequest(request(), {})).ok, false);
 });
 
+test('public app mode allows same-site access without team authentication', async () => {
+  const authorization = await authorizeRequest(request(), { ALLOW_PUBLIC_APP: 'true' });
+  assert.equal(authorization.ok, true);
+  assert.equal(authorization.actor, 'public-app');
+  assert.equal(authorization.method, 'public_app');
+});
+
+test('public app mode still rejects cross-site browser writes', async () => {
+  const authorization = await authorizeRequest(request(undefined, {
+    method: 'POST',
+    headers: {
+      Origin: 'https://evil.example',
+      'Sec-Fetch-Site': 'cross-site'
+    }
+  }), { ALLOW_PUBLIC_APP: 'true' });
+  assert.equal(authorization.ok, false);
+  assert.equal(authorization.code, 'ORIGIN_NOT_ALLOWED');
+});
+
 test('admin and automation bearer tokens are scoped correctly', async () => {
   const adminRequest = request(undefined, { headers: { Authorization: 'Bearer admin-secret' } });
   assert.equal((await authorizeRequest(adminRequest, { ADMIN_API_TOKEN: 'admin-secret' })).ok, true);

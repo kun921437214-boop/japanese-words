@@ -6,7 +6,12 @@ This hardening keeps the static frontend, Pages Functions, scheduled Worker, exi
 
 ## Required Configuration Before Deploy
 
-1. Put the site or management routes behind Cloudflare Access.
+The production site can run in one of two explicit modes:
+
+- Public app mode: set `ALLOW_PUBLIC_APP=true`. Requests do not require team authentication, while cross-site browser writes remain blocked.
+- Team mode: leave `ALLOW_PUBLIC_APP` unset/false and complete the Cloudflare Access configuration below.
+
+1. For team mode, put the site or management routes behind Cloudflare Access.
 2. Set `TEAM_ACCESS_EMAILS` in Pages to the comma-separated emails allowed by Access.
 3. Set `CF_ACCESS_TEAM_DOMAIN` (for example `team.cloudflareaccess.com`) and the Access application's `CF_ACCESS_AUD`. Access assertions are rejected unless their signature, issuer, audience, expiry, and email all verify.
 4. Set a separate `ADMIN_API_TOKEN` for CLI backup and emergency administration. Never expose it in frontend code.
