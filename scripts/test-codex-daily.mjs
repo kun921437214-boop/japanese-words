@@ -167,6 +167,11 @@ test('tomorrow preview is public and sanitized while the full draft stays protec
   assert.equal(preview.operationId, undefined);
   assert.equal(preview.items[0].aiCard.referenceImage.prompt, undefined);
   assert.match(preview.items[0].aiCard.referenceImage.url, /^\/codex-image\?key=/);
+  assert.equal(preview.items[0].aiCard.targetAudience, storedDraft.items[0].aiCard.targetAudience);
+  assert.equal(preview.items[0].aiCard.referenceDirection, storedDraft.items[0].aiCard.referenceDirection);
+  assert.deepEqual(preview.items[0].aiCard.coverSuggestion, storedDraft.items[0].aiCard.coverSuggestion);
+  assert.deepEqual(preview.items[0].aiCard.similarWords, storedDraft.items[0].aiCard.similarWords);
+  assert.deepEqual(preview.items[0].aiCard.interactionPrompts, storedDraft.items[0].aiCard.interactionPrompts);
 
   const statusResponse = await handleCodexDaily({
     request: apiRequest(`/codex-daily?date=${targetDateKey}&view=preview-status`),

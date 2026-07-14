@@ -20,6 +20,9 @@
 
 - 恰好 20 个不重复词。
 - 每个词包含日语、读音、中文语感和完整词卡。
+- 完整词卡必须覆盖 `summary`、`explanation`、`usageScenes`、`examples`、`suggestedTitles`、`coverSuggestion`、`contentAngles`、`targetAudience`、`referenceDirection`、`riskWarning`、`wrongUsage`、`similarWords`、`interactionPrompts`。
+- 内容数量与 DeepSeek 词卡规则对齐：例句 2-4 条、推荐标题 3-6 条、内容角度 3-6 条、互动引导 2-4 条；相近词至少 1 个，并说明语感差异。
+- 例句必须包含自然日语、假名、罗马音、中文和简短语境说明，不能只给直译。
 - 近 30 天不能重复。
 - 同日语义簇不能重复。
 - 美妆品类最多 1 个，基础寒暄/教材礼貌词最多 1 个。

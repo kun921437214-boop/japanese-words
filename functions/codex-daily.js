@@ -83,7 +83,15 @@ function buildPublicPreviewDraft(draft = {}, options = {}) {
         kana: item.kana || item.reading || '',
         romaji: item.romaji || '',
         meaning: item.meaning || '',
+        category: item.category || '',
+        candidateType: item.candidateType || '',
+        reason: item.reason || '',
+        riskLevel: item.riskLevel || 'low',
+        confidenceLevel: item.confidenceLevel || 'medium',
+        evidenceType: item.evidenceType || 'common_usage',
         aiCard: {
+          cardStatus: item.aiCard?.cardStatus || 'ready',
+          cardSource: 'codex',
           summary: item.aiCard?.summary || '',
           explanation: item.aiCard?.explanation || '',
           usageScenes: Array.isArray(item.aiCard?.usageScenes) ? item.aiCard.usageScenes : [],
@@ -91,11 +99,29 @@ function buildPublicPreviewDraft(draft = {}, options = {}) {
             jp: example.jp || '',
             kana: example.kana || '',
             romaji: example.romaji || '',
-            cn: example.cn || ''
+            cn: example.cn || '',
+            note: example.note || '',
+            source: example.source || ''
           })),
           suggestedTitles: Array.isArray(item.aiCard?.suggestedTitles) ? item.aiCard.suggestedTitles : [],
+          coverSuggestion: {
+            coverText: item.aiCard?.coverSuggestion?.coverText || '',
+            mainVisual: item.aiCard?.coverSuggestion?.mainVisual || '',
+            style: item.aiCard?.coverSuggestion?.style || '',
+            avoid: item.aiCard?.coverSuggestion?.avoid || ''
+          },
           contentAngles: Array.isArray(item.aiCard?.contentAngles) ? item.aiCard.contentAngles : [],
+          targetAudience: item.aiCard?.targetAudience || '',
+          referenceDirection: item.aiCard?.referenceDirection || '',
+          riskWarning: item.aiCard?.riskWarning || '',
           wrongUsage: item.aiCard?.wrongUsage || '',
+          similarWords: (Array.isArray(item.aiCard?.similarWords) ? item.aiCard.similarWords : []).map(similar => ({
+            word: similar.word || similar.kanji || '',
+            romaji: similar.romaji || '',
+            meaning: similar.meaning || '',
+            difference: similar.difference || similar.note || ''
+          })),
+          interactionPrompts: Array.isArray(item.aiCard?.interactionPrompts) ? item.aiCard.interactionPrompts : [],
           referenceImage: {
             status: item.aiCard?.referenceImage?.status || 'missing',
             url: cleanPreviewImageUrl(item.aiCard?.referenceImage?.url)

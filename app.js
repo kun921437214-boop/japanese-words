@@ -7364,13 +7364,13 @@ function closeStatusMenu() {
 }
 
 function refreshStatusControls() {
-  document.querySelectorAll('.card-status-control').forEach(control => {
+  document.querySelectorAll('.card-status-control:not(.card-feedback-control)').forEach(control => {
     const kanji = control.dataset.kanji;
     if (kanji) control.outerHTML = renderStatusControl(kanji);
   });
   document.querySelectorAll('.card-feedback-control').forEach(control => {
     const kanji = control.dataset.kanji;
-    if (kanji) control.outerHTML = renderFeedbackControl(kanji);
+    if (kanji) control.outerHTML = renderFeedbackControl(kanji, { context: control.dataset.feedbackContext });
   });
 }
 
@@ -7389,20 +7389,22 @@ async function selectFavoriteStatus(kanji, status) {
   await runUiOperation(`status:${kanji}`, () => syncFavoriteStatus(kanji, nextStatus));
 }
 
-function renderFeedbackControl(kanji) {
+function renderFeedbackControl(kanji, options = {}) {
   const feedback = getFeedbackRecord(kanji);
   const totalCount = Object.values(feedback.reasons || {}).reduce((sum, count) => sum + toInt(count, 0), 0);
   const safeKanjiAction = escapeJSString(kanji);
   const isOpen = activeFeedbackMenuKanji === kanji;
-  const options = Object.entries(NEGATIVE_FEEDBACK_TYPES).map(([key, label]) => `
-    <button class="card-status-option ${feedback.lastReason === key ? 'selected' : ''}" onclick="event.stopPropagation();applyNegativeFeedback('${safeKanjiAction}','${key}')">
+  const isCodexPreview = options.context === 'codex-preview';
+  const actionName = isCodexPreview ? 'applyCodexDraftFeedback' : 'applyNegativeFeedback';
+  const feedbackOptions = Object.entries(NEGATIVE_FEEDBACK_TYPES).map(([key, label]) => `
+    <button class="card-status-option ${feedback.lastReason === key ? 'selected' : ''}" onclick="event.stopPropagation();${actionName}('${safeKanjiAction}','${key}')">
       <span>${escapeHTML(label)}</span>
       <span class="status-check">${feedback.reasons[key] ? `×${feedback.reasons[key]}` : ''}</span>
     </button>`).join('');
   return `
-    <div class="card-feedback-control card-status-control" data-kanji="${escapeHTML(kanji)}">
+    <div class="card-feedback-control card-status-control" data-kanji="${escapeHTML(kanji)}" data-feedback-context="${isCodexPreview ? 'codex-preview' : 'default'}">
       <button class="card-action-btn ghost" aria-expanded="${isOpen ? 'true' : 'false'}" onclick="event.stopPropagation();toggleFeedbackMenu('${safeKanjiAction}')">负反馈${totalCount ? ` (${totalCount})` : ''}</button>
-      <div class="card-status-menu feedback-menu ${isOpen ? 'open' : ''}" onclick="event.stopPropagation()">${options}</div>
+      <div class="card-status-menu feedback-menu ${isOpen ? 'open' : ''}" onclick="event.stopPropagation()">${feedbackOptions}</div>
     </div>`;
 }
 
@@ -7618,6 +7620,61 @@ function getCodexDraftAuditItem(item = {}) {
     .find(auditItem => auditItem?.kanji === item.kanji) || {};
 }
 
+function getCodexDraftPreviewItem(kanji) {
+  const cleanKanji = normalizeKanjiSpelling(cleanShortText(kanji, 80));
+  return safeArray(codexTomorrowDraft?.items).find(item => item?.kanji === cleanKanji) || null;
+}
+
+function ensureCodexDraftPreviewCandidate(kanji) {
+  const item = getCodexDraftPreviewItem(kanji);
+  if (!item) return null;
+  const existing = candidatePool[item.kanji]
+    ? (cleanCandidatePoolEntry(item.kanji, candidatePool[item.kanji]) || {})
+    : {};
+  const existingCard = cleanAiCard(existing.aiCard || {});
+  const previewCard = cleanAiCard(item.aiCard || {});
+  const audit = getCodexDraftAuditItem(item);
+  const gradeScore = { S: 92, A: 84, B: 74, C: 64 }[audit.recommendationLevel] || 80;
+  candidatePool[item.kanji] = cleanCandidatePoolEntry(item.kanji, {
+    ...item,
+    ...existing,
+    kanji: item.kanji,
+    kana: existing.kana || item.kana || item.reading || '',
+    romaji: existing.romaji || item.romaji || '',
+    meaning: existing.meaning || item.meaning || '',
+    category: existing.category || item.category || '日语表达',
+    candidateType: existing.candidateType || item.candidateType || '生活方式词',
+    xhsFitScore: existing.xhsFitScore || gradeScore,
+    riskLevel: existing.riskLevel || item.riskLevel || 'low',
+    confidenceLevel: existing.confidenceLevel || item.confidenceLevel || 'high',
+    evidenceType: existing.evidenceType || item.evidenceType || 'common_usage',
+    displayBucket: existing.displayBucket || 'today',
+    reason: existing.reason || item.reason || previewCard.summary,
+    sourceType: existing.sourceType || 'codex_generated',
+    sourceTags: getUniqueWords([...(existing.sourceTags || []), 'Codex生成']),
+    aiCard: existingCard?.cardStatus === 'ready' ? existingCard : previewCard,
+    recommendationAudit: { ...(existing.recommendationAudit || {}), ...audit, fromCodex: true },
+    importedAt: existing.importedAt || nowIso(),
+    updatedAt: nowIso()
+  });
+  return item;
+}
+
+async function toggleCodexDraftFavorite(kanji) {
+  const item = ensureCodexDraftPreviewCandidate(kanji);
+  if (!item) return false;
+  return toggleFavorite(item.kanji);
+}
+
+function applyCodexDraftFeedback(kanji, reason = 'uninterested') {
+  const item = ensureCodexDraftPreviewCandidate(kanji);
+  if (!item) return;
+  closeModal();
+  applyNegativeFeedback(item.kanji, reason, {
+    toastMessage: '已记录负反馈；明日草稿内容保持不变'
+  });
+}
+
 function getDailyQualityCategoryLabel(category = '') {
   return {
     strong_expression: '强表达',
@@ -7637,12 +7694,23 @@ function renderCodexDraftPreviewCard(item, index) {
   const audit = getCodexDraftAuditItem(item);
   const recommendationGrade = audit.recommendationLevel || 'A';
   const categoryLabel = getDailyQualityCategoryLabel(audit.qualityCategory);
+  const teamState = getDailyHotTeamState({ kanji: item.kanji, candidateMeta: item });
+  const isFav = ['favorite', 'pending', 'published'].includes(teamState.key);
+  const riskStateLabel = getRiskStateLabel({ ...item, candidateMeta: item });
+  const riskStateKey = getRiskStateKey(riskStateLabel);
+  const safeKanjiAction = escapeJSString(item.kanji);
   const fallbackSvg = `data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 900 1200%22><rect fill=%22%23fffdf9%22 width=%22900%22 height=%221200%22/><text x=%22450%22 y=%22220%22 text-anchor=%22middle%22 font-size=%22110%22 font-weight=%22700%22 fill=%22%23222222%22>${encodeURIComponent(item.kanji)}</text></svg>`;
   return `
     <article class="word-card codex-preview-card" role="button" tabindex="0" aria-label="预览 ${escapeHTML(item.kanji)} 词卡" onclick="openCodexDraftPreview(${index})" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();openCodexDraftPreview(${index})}">
       <div class="codex-preview-image-wrapper">
         <img class="codex-preview-image" src="${escapeHTML(imageUrl || fallbackSvg)}" alt="${escapeHTML(item.kanji)} 参考插画" loading="lazy" onerror="this.src='${fallbackSvg}'">
-        <span class="codex-preview-readonly-badge">只读预览</span>
+        <span class="codex-preview-readonly-badge">草稿内容只读</span>
+        <div class="card-top-actions" onclick="event.stopPropagation()">
+          <button class="card-fav-btn ${isFav ? 'favorited' : ''}" title="${isFav ? '取消收藏' : '收藏'}" aria-label="${isFav ? '取消收藏' : '收藏'}" onclick="toggleCodexDraftFavorite('${safeKanjiAction}')">
+            <img class="fav-icon" src="assets/illustrations/dorayaki.png" alt="收藏">
+          </button>
+          <button class="card-dismiss-btn" title="不感兴趣（记录负反馈）" aria-label="不感兴趣" onclick="applyCodexDraftFeedback('${safeKanjiAction}','uninterested')">×</button>
+        </div>
       </div>
       <div class="card-body codex-preview-card-body">
         <div class="codex-preview-word-row">
@@ -7656,6 +7724,8 @@ function renderCodexDraftPreviewCard(item, index) {
         <div class="daily-hot-reason line-2">${escapeHTML(aiCard.summary || aiCard.explanation || '点击查看完整词卡')}</div>
         <div class="daily-hot-tags">
           <span class="daily-hot-tag">${escapeHTML(categoryLabel)}</span>
+          <span class="daily-hot-tag state-tag-${escapeHTML(teamState.key)}">${escapeHTML(teamState.note)}</span>
+          <span class="daily-hot-tag risk-state-chip risk-${escapeHTML(riskStateKey)}">${escapeHTML(riskStateLabel)}</span>
           <span class="daily-hot-tag codex-source-chip">Codex 草稿</span>
         </div>
       </div>
@@ -7676,6 +7746,15 @@ function openCodexDraftPreview(index) {
   const suggestedTitles = safeArray(aiCard.suggestedTitles);
   const contentAngles = safeArray(aiCard.contentAngles);
   const usageScenes = safeArray(aiCard.usageScenes);
+  const similarWords = safeArray(aiCard.similarWords);
+  const interactionPrompts = safeArray(aiCard.interactionPrompts);
+  const coverSuggestion = aiCard.coverSuggestion || {};
+  const hasCoverSuggestion = Boolean(coverSuggestion.coverText || coverSuggestion.mainVisual || coverSuggestion.style || coverSuggestion.avoid);
+  const teamState = getDailyHotTeamState({ kanji: item.kanji, candidateMeta: item });
+  const isFav = ['favorite', 'pending', 'published'].includes(teamState.key);
+  const riskStateLabel = getRiskStateLabel({ ...item, candidateMeta: item });
+  const riskStateKey = getRiskStateKey(riskStateLabel);
+  const safeKanjiAction = escapeJSString(item.kanji);
   document.getElementById('modalContainer').innerHTML = `
     <div class="modal-shell record-shell codex-preview-modal-shell">
       <div class="codex-preview-modal-layout">
@@ -7685,7 +7764,7 @@ function openCodexDraftPreview(index) {
         <div class="codex-preview-modal-content">
           <div class="codex-preview-modal-header">
             <div>
-              <div class="codex-preview-modal-kicker">${escapeHTML(codexTomorrowDraft.targetDateKey || '')} · 明日只读草稿</div>
+              <div class="codex-preview-modal-kicker">${escapeHTML(codexTomorrowDraft.targetDateKey || '')} · 明日草稿内容只读</div>
               <h2 class="codex-preview-modal-word">${escapeHTML(item.kanji)}</h2>
               <div class="codex-preview-modal-reading">${escapeHTML(item.kana || item.reading || '')}${item.romaji ? ` · ${escapeHTML(item.romaji)}` : ''}</div>
             </div>
@@ -7694,6 +7773,8 @@ function openCodexDraftPreview(index) {
           <div class="daily-hot-tags codex-preview-modal-tags">
             <span class="daily-hot-tag recommendation-grade-chip grade-${escapeHTML(recommendationGrade.toLowerCase())}">推荐等级 ${escapeHTML(recommendationGrade)}</span>
             <span class="daily-hot-tag">${escapeHTML(categoryLabel)}</span>
+            <span class="daily-hot-tag state-tag-${escapeHTML(teamState.key)}">${escapeHTML(teamState.note)}</span>
+            <span class="daily-hot-tag risk-state-chip risk-${escapeHTML(riskStateKey)}">${escapeHTML(riskStateLabel)}</span>
             ${Number.isFinite(Number(qualitySummary.estimatedHumanQualityScore)) ? `<span class="daily-hot-tag">整组人工估分 ${escapeHTML(qualitySummary.estimatedHumanQualityScore)}</span>` : ''}
           </div>
           <div class="codex-preview-modal-scroll">
@@ -7703,11 +7784,35 @@ function openCodexDraftPreview(index) {
               ${aiCard.summary ? `<p>${escapeHTML(aiCard.summary)}</p>` : ''}
               ${aiCard.explanation ? `<p>${renderMultiline(aiCard.explanation)}</p>` : ''}
             </section>
+            <section class="codex-preview-section">
+              <h3>小红书内容建议</h3>
+              <div class="usage-list">
+                ${suggestedTitles.length ? suggestedTitles.map(title => `<div class="usage-item"><div class="usage-head"><span class="usage-word">推荐标题</span></div><div class="usage-meaning">${escapeHTML(title)}</div></div>`).join('') : ''}
+                ${contentAngles.length ? renderLabeledDetailItem('内容角度', contentAngles.join(' / ')) : ''}
+                ${aiCard.targetAudience ? renderLabeledDetailItem('目标受众', aiCard.targetAudience) : ''}
+                ${aiCard.referenceDirection ? renderLabeledDetailItem('适合方向', aiCard.referenceDirection) : ''}
+                ${hasCoverSuggestion ? `<div class="usage-item">
+                  <div class="usage-head"><span class="usage-word">封面建议</span></div>
+                  ${coverSuggestion.coverText ? `<div class="usage-meaning">封面字：${escapeHTML(coverSuggestion.coverText)}</div>` : ''}
+                  ${coverSuggestion.mainVisual ? `<div class="usage-note">主视觉：${escapeHTML(coverSuggestion.mainVisual)}</div>` : ''}
+                  ${coverSuggestion.style ? `<div class="usage-note">风格：${escapeHTML(coverSuggestion.style)}</div>` : ''}
+                  ${coverSuggestion.avoid ? `<div class="usage-note">避免：${escapeHTML(coverSuggestion.avoid)}</div>` : ''}
+                </div>` : ''}
+              </div>
+              ${interactionPrompts.length ? `<div class="interaction-list detail-subblock">${interactionPrompts.map(prompt => `<div class="interaction-box"><div class="interaction-question">${renderMultiline(prompt)}</div></div>`).join('')}</div>` : ''}
+            </section>
             ${usageScenes.length ? `<section class="codex-preview-section"><h3>使用场景</h3><div class="daily-hot-tags">${usageScenes.map(scene => `<span class="daily-hot-tag">${escapeHTML(scene)}</span>`).join('')}</div></section>` : ''}
-            ${examples.length ? `<section class="codex-preview-section"><h3>例句</h3>${examples.map(example => `<div class="example-item"><div class="example-jp">${escapeHTML(example.jp)}</div>${example.kana ? `<div class="example-romaji">${escapeHTML(example.kana)}</div>` : ''}${example.romaji ? `<div class="example-romaji">${escapeHTML(example.romaji)}</div>` : ''}<div class="example-cn">${escapeHTML(example.cn)}</div></div>`).join('')}</section>` : ''}
-            ${suggestedTitles.length ? `<section class="codex-preview-section"><h3>小红书标题方向</h3><div class="usage-list">${suggestedTitles.map(title => `<div class="usage-item"><div class="usage-meaning">${escapeHTML(title)}</div></div>`).join('')}</div></section>` : ''}
-            ${contentAngles.length ? `<section class="codex-preview-section"><h3>内容角度</h3><p>${escapeHTML(contentAngles.join(' / '))}</p></section>` : ''}
-            ${aiCard.wrongUsage ? `<section class="codex-preview-section"><h3>使用提醒</h3><div class="wrong-usage-box">${escapeHTML(aiCard.wrongUsage)}</div></section>` : ''}
+            ${examples.length ? `<section class="codex-preview-section"><h3>例句</h3>${examples.map(example => `<div class="example-item"><div class="example-jp">${escapeHTML(example.jp)}</div>${example.kana ? `<div class="example-romaji">${escapeHTML(example.kana)}</div>` : ''}${example.romaji ? `<div class="example-romaji">${escapeHTML(example.romaji)}</div>` : ''}<div class="example-cn">${escapeHTML(example.cn)}</div>${example.note || example.source ? `<div class="example-source">${escapeHTML(example.note || example.source)}</div>` : ''}</div>`).join('')}</section>` : ''}
+            ${similarWords.length ? `<section class="codex-preview-section"><h3>相近词</h3><div class="usage-list">${similarWords.map(similar => `<div class="usage-item"><div class="usage-head"><span class="usage-word">${escapeHTML(similar.word || similar.kanji || '')}</span><span class="usage-reading">${escapeHTML(similar.romaji || '')}</span></div><div class="usage-meaning">${escapeHTML(similar.meaning || '')}</div>${similar.difference ? `<div class="usage-note">${escapeHTML(similar.difference)}</div>` : ''}</div>`).join('')}</div></section>` : ''}
+            ${aiCard.wrongUsage || aiCard.riskWarning ? `<section class="codex-preview-section"><h3>风险与使用提醒</h3>${aiCard.riskWarning ? `<div class="wrong-usage-box">${escapeHTML(aiCard.riskWarning)}</div>` : ''}${aiCard.wrongUsage ? `<div class="wrong-usage-box codex-preview-warning-gap">${escapeHTML(aiCard.wrongUsage)}</div>` : ''}</section>` : ''}
+            <section class="codex-preview-section">
+              <h3>团队操作</h3>
+              <div class="modal-footer-actions codex-preview-modal-actions">
+                <button class="btn ${isFav ? 'btn-ghost' : 'btn-primary'}" onclick="closeModal();toggleCodexDraftFavorite('${safeKanjiAction}')">${isFav ? '取消收藏' : '加入收藏 / 选题池'}</button>
+                ${renderFeedbackControl(item.kanji, { context: 'codex-preview' })}
+              </div>
+              <p class="modal-section-subtle">收藏和负反馈会进入现有团队工作流；明日草稿内容本身保持只读。</p>
+            </section>
           </div>
         </div>
       </div>

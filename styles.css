@@ -2455,7 +2455,7 @@ body::before {
 .codex-preview-readonly-badge {
   position:absolute;
   top:8px;
-  right:8px;
+  left:8px;
   display:inline-flex;
   align-items:center;
   min-height:24px;
@@ -2467,6 +2467,14 @@ body::before {
   font-size:0.68rem;
   font-weight:850;
   box-shadow:0 5px 12px rgba(35, 31, 32, 0.08);
+}
+
+.codex-preview-warning-gap {
+  margin-top:8px;
+}
+
+.codex-preview-modal-actions {
+  align-items:flex-start;
 }
 
 .codex-preview-card-body {
