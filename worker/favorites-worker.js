@@ -33,6 +33,7 @@ const AI_CARD_BATCH_CRONS = new Set([
   '0 17 * * *'
 ]);
 const AI_CARD_BATCH_MAX_WORDS = 5;
+export const AI_CARD_BATCH_MAX_RUNS = 4;
 export const AI_CARD_FAILED_RETRY_TTL_MS = 30 * 60 * 1000;
 
 function toCount(value) {
@@ -89,6 +90,12 @@ export function getTodayAiCardBatchPlan(status = {}, options = {}) {
     targetWords,
     shouldRun: workCount > 0 && activePendingCount === 0
   };
+}
+
+export function shouldContinueTodayAiCardBatches(result = {}, completedRuns = 0) {
+  if (toCount(completedRuns) >= AI_CARD_BATCH_MAX_RUNS) return false;
+  if (toCount(result?.savedCount) <= 0) return false;
+  return getTodayAiCardBatchPlan(result).shouldRun;
 }
 
 async function readLimitedText(response, maxLength = 500) {
@@ -151,7 +158,7 @@ async function triggerTodayAiCardBatch(env) {
   const autoRefreshSecret = String(env.AUTO_REFRESH_SECRET || '').trim();
   if (!siteUrl || !autoRefreshSecret) {
     console.warn('ai card batch skipped because SITE_URL or AUTO_REFRESH_SECRET is missing');
-    return;
+    return { completed: false };
   }
 
   const cardsUrl = new URL(`${siteUrl}/ai-cards`);
@@ -161,7 +168,7 @@ async function triggerTodayAiCardBatch(env) {
   if (!statusResponse.ok) {
     const text = await readLimitedText(statusResponse);
     console.warn('ai card batch status returned non-OK', statusResponse.status, text);
-    return;
+    return { completed: false };
   }
 
   const status = await statusResponse.json().catch(() => null);
@@ -172,7 +179,7 @@ async function triggerTodayAiCardBatch(env) {
     if (plan.activePendingCount > 0) {
       console.warn('ai card batch skipped because cards are actively pending', plan);
     }
-    return;
+    return { completed: false };
   }
 
   const response = await fetch(cardsUrl.toString(), {
@@ -192,17 +199,43 @@ async function triggerTodayAiCardBatch(env) {
   if (!response.ok) {
     const text = await readLimitedText(response);
     console.warn('ai card batch returned non-OK', response.status, text);
-    return;
+    return { completed: false };
   }
 
   const result = await response.json().catch(() => ({}));
+  const savedCount = Number.parseInt(result?.savedCount, 10) || 0;
   console.log('ai card batch completed', {
     status: response.status,
-    savedCount: Number.parseInt(result?.savedCount, 10) || 0,
+    savedCount,
     missingCount: plan.missingCount,
     readyCount: plan.readyCount,
     stalePendingCount: plan.stalePendingCount,
     retryableFailedCount: plan.retryableFailedCount
+  });
+  return { completed: true, result };
+}
+
+async function triggerTodayAiCardBatches(env) {
+  let completedRuns = 0;
+  let totalSavedCount = 0;
+  let lastResult = null;
+
+  while (completedRuns < AI_CARD_BATCH_MAX_RUNS) {
+    const batch = await triggerTodayAiCardBatch(env);
+    if (!batch?.completed) break;
+    completedRuns += 1;
+    lastResult = batch.result;
+    totalSavedCount += Number.parseInt(lastResult?.savedCount, 10) || 0;
+    if (!shouldContinueTodayAiCardBatches(lastResult, completedRuns)) break;
+  }
+
+  console.log('ai card batch sequence completed', {
+    completedRuns,
+    savedCount: totalSavedCount,
+    readyCount: Number.parseInt(lastResult?.readyCount, 10) || 0,
+    missingCount: Number.parseInt(lastResult?.missingCount, 10) || 0,
+    pendingCount: Number.parseInt(lastResult?.pendingCount, 10) || 0,
+    failedCount: Number.parseInt(lastResult?.failedCount, 10) || 0
   });
 }
 
@@ -671,7 +704,7 @@ export default {
 
     if (AI_CARD_BATCH_CRONS.has(cron)) {
       ctx.waitUntil(
-        triggerTodayAiCardBatch(env).catch(error => console.warn('ai card batch failed', error?.message || error))
+        triggerTodayAiCardBatches(env).catch(error => console.warn('ai card batch failed', error?.message || error))
       );
     }
 

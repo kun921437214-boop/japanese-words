@@ -29,8 +29,10 @@ import {
   summarizeTodayAiCards
 } from '../functions/ai-cards.js';
 import {
+  AI_CARD_BATCH_MAX_RUNS,
   AI_CARD_FAILED_RETRY_TTL_MS,
-  getTodayAiCardBatchPlan
+  getTodayAiCardBatchPlan,
+  shouldContinueTodayAiCardBatches
 } from '../worker/favorites-worker.js';
 
 function test(name, fn) {
@@ -73,6 +75,7 @@ test('scheduled Worker 分离日更和 aiCard 批量 cron', () => {
   assert.ok(workerConfig.includes('"0 17 * * *"'));
   assert.ok(workerSource.includes("const DAILY_REFRESH_CRON = '0 16 * * *';"));
   assert.ok(workerSource.includes("const AI_CARD_BATCH_MAX_WORDS = 5;"));
+  assert.ok(workerSource.includes('triggerTodayAiCardBatches(env)'));
   assert.ok(workerSource.includes("new URL(`${siteUrl}/codex-daily`)"));
   assert.ok(workerSource.includes("action: 'promote'"));
   assert.ok(workerSource.includes("new URL(`${siteUrl}/daily-refresh`)"));
@@ -157,6 +160,35 @@ test('scheduled Worker waits before retrying a fresh failed card', () => {
   assert.equal(plan.retryFailed, false);
   assert.deepEqual(plan.targetWords, []);
   assert.equal(plan.shouldRun, false);
+});
+
+test('scheduled Worker continues card batches while successful work remains', () => {
+  const result = {
+    savedCount: 5,
+    readyCount: 5,
+    missingCount: 15,
+    failedCount: 0,
+    pendingCount: 0,
+    stalePendingCount: 0,
+    items: Array.from({ length: 15 }, (_, index) => ({
+      kanji: `待生成${index + 1}`,
+      cardStatus: 'none'
+    }))
+  };
+  assert.equal(shouldContinueTodayAiCardBatches(result, 1), true);
+});
+
+test('scheduled Worker stops card batches on no progress or after four runs', () => {
+  const remaining = {
+    savedCount: 0,
+    readyCount: 5,
+    missingCount: 15,
+    failedCount: 0,
+    pendingCount: 0,
+    stalePendingCount: 0
+  };
+  assert.equal(shouldContinueTodayAiCardBatches(remaining, 1), false);
+  assert.equal(shouldContinueTodayAiCardBatches({ ...remaining, savedCount: 5 }, AI_CARD_BATCH_MAX_RUNS), false);
 });
 
 function makeQualityCandidate(kanji, overrides = {}) {
