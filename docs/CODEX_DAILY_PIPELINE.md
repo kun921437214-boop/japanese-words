@@ -4,13 +4,13 @@
 
 每天北京时间 14:00 在固定的 Codex 对话中准备次日 20 个词、完整词卡和参考图片。午夜 Worker 只负责把已通过质量门的草稿晋升为正式 `todaySnapshot`；草稿缺失或不合格时，才调用现有 DeepSeek 日更作为保底。
 
-固定 Codex 任务：`019f5c0e-3d15-75b2-92b1-5f6cb05610aa`。14:00 主任务和 17:30 补漏任务都必须唤醒这一条任务，不能每天创建新任务。
+固定 Codex 任务：`019f5c0e-3d15-75b2-92b1-5f6cb05610aa`。14:00 主任务和 17:00 补漏任务都必须唤醒这一条任务，不能每天创建新任务。
 
 ## 数据流
 
 1. Codex 只读请求 `/codex-daily?date=明日&view=context`，取得账号定位、收藏/反馈、候选池和近 30 天快照。
 2. Codex 在本地生成 20 个词和完整词卡，并用 image generation 为每个词准备一张参考图。
-3. 图片通过 `PUT /codex-image` 写入可选 R2；返回的同源 URL 保存到 `aiCard.referenceImage`。
+3. 图片通过 `PUT /codex-image` 写入独立的 `REFERENCE_IMAGES_KV`；返回的同源 URL 保存到 `aiCard.referenceImage`。若未来开通 R2，接口仍可优先使用 `REFERENCE_IMAGES` R2 binding。
 4. `npm run codex:daily -- validate` 在本地执行同一套质量门。
 5. Codex 使用独立的 `CODEX_AUTOMATION_SECRET` 提交草稿。该凭证不能发布草稿，不能调用 `/favorites`、`/daily-refresh` 或 `/ai-cards`。
 6. 北京时间 00:00，Worker 使用现有 `AUTO_REFRESH_SECRET` 调用 `POST /codex-daily` 的 `promote` 动作。
@@ -44,18 +44,18 @@ npm run codex:daily -- submit --date 2026-07-14 --draft exports/codex-daily/2026
 npm run codex:daily -- status --date 2026-07-14
 ```
 
-`exports/` 已被 git 忽略。不要把上下文、生成图片、草稿或 secret 提交到仓库。
+KV 模式下单张图片不能超过 800 KiB。优先生成 WebP；若原图过大，可在本机缩放并压缩为 JPEG 后再上传。`exports/` 已被 git 忽略。不要把上下文、生成图片、草稿或 secret 提交到仓库。
 
 ## Cloudflare 激活前置项
 
 代码合并后仍不会自动启用。正式激活需要单独批准并完成：
 
 1. 为 Pages 配置独立 secret `CODEX_AUTOMATION_SECRET`，不要复用 `AUTO_REFRESH_SECRET`。
-2. 可选：创建私有 R2 bucket，并以 `REFERENCE_IMAGES` 绑定到 Pages Functions。未配置时，图片上传返回 503，文字草稿仍可工作。
+2. 创建独立 KV namespace，并以 `REFERENCE_IMAGES_KV` 绑定到 Production Pages Functions。KV 图片保存 60 天后自动过期，不与 workflow 主数据混用；Preview 未绑定时保持 503 安全降级。
 3. 部署 Pages 和 Worker 后，先用 Preview/只读 status 验证。
-4. 再启用固定 Codex 任务的 14:00 和 17:30 两个 heartbeat。
+4. 再启用固定 Codex 任务的 14:00 和 17:00 两个 heartbeat。
 
-本 PR 不创建 bucket、不修改 Cloudflare 变量/secret、不写 Production KV、不触发日更、不部署。
+本 PR 不迁移或清理现有 KV，不触发日更。图片只能通过带 Codex 专用凭证的 `/codex-image` 写入独立 namespace。
 
 ## 回滚
 
@@ -68,10 +68,10 @@ npm run codex:daily -- status --date 2026-07-14
 - commit：`1e7cf901c07c9e6dd9c4b1d00a75ceb1e2292de0`
 - 离线 bundle：`/Users/kun/Documents/Codex/japanese-words-backups/japanese-words-pre-codex-pipeline-2026-07-13.bundle`
 
-回滚时部署上述 tag 对应的 Pages 与 Worker 即可，不要清 KV 或 R2。暂停两个 Codex heartbeat 后，旧 Worker 会恢复为午夜直接调用 DeepSeek 的流程。
+回滚时部署上述 tag 对应的 Pages 与 Worker 即可，不要清 KV、图片 KV 或 R2。暂停 Codex heartbeat 后，旧 Worker 会恢复为午夜直接调用 DeepSeek 的流程。
 
 ## 固定任务行为
 
 14:00 主任务：读取明日上下文，生成并验证 20 个词/卡片/图片，只提交草稿，不发布、不调用 DeepSeek、不部署。
 
-17:30 补漏任务：读取同一日期的现有草稿，只补未完成词卡或图片；已有内容不重做。若草稿仍不合格，应在同一 Codex 任务中报告错误并保留 DeepSeek 午夜兜底。
+17:00 补漏任务：读取同一日期的现有草稿，只补未完成词卡或图片；已有内容不重做。若草稿仍不合格，应在同一 Codex 任务中报告错误并保留 DeepSeek 午夜兜底。

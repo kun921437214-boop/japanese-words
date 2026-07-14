@@ -303,10 +303,15 @@ test('AI endpoint authenticates before exposing provider configuration', async (
 });
 
 test('health check reports binding status without reading workflow data', async () => {
-  const okResponse = await handleHealth({ request: request('https://jiyimianbao.pages.dev/healthz'), env: { FAVORITES: {} } });
+  const okResponse = await handleHealth({
+    request: request('https://jiyimianbao.pages.dev/healthz'),
+    env: { FAVORITES: {}, REFERENCE_IMAGES_KV: {} }
+  });
   assert.equal(okResponse.status, 200);
+  assert.equal((await okResponse.json()).imageStorageConfigured, true);
   const failedResponse = await handleHealth({ request: request('https://jiyimianbao.pages.dev/healthz'), env: {} });
   assert.equal(failedResponse.status, 503);
+  assert.equal((await failedResponse.json()).imageStorageConfigured, false);
 });
 
 test('Pages middleware preserves the endpoint request id for response correlation', async () => {
