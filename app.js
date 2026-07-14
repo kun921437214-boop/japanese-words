@@ -48,6 +48,9 @@ let lastCloudSyncAt = '';
 let lastLocalCacheAt = '';
 let cloudWorkflowFailed = false;
 let codexTomorrowDraftStatus = null;
+let codexTomorrowDraft = null;
+let codexTomorrowDraftPromise = null;
+let codexDailyViewMode = 'today';
 
 const FAVORITES_STORAGE_KEY = 'kotoba_favorites';
 const FAVORITE_STATUSES_STORAGE_KEY = 'kotoba_favorite_statuses';
@@ -3357,25 +3360,59 @@ function getTodaySnapshotEndpoint() {
   return SYNC_API_URL ? `${SYNC_API_URL}/today-snapshot` : '/today-snapshot';
 }
 
-function getCodexDailyEndpoint(targetDateKey = addDaysToDateKey(todayKey(), 1)) {
+function getCodexDailyEndpoint(targetDateKey = addDaysToDateKey(todayKey(), 1), view = 'status') {
   const base = SYNC_API_URL ? `${SYNC_API_URL}/codex-daily` : '/codex-daily';
   const url = new URL(base, window.location.origin);
   url.searchParams.set('date', targetDateKey);
-  url.searchParams.set('view', 'status');
+  url.searchParams.set('view', view === 'draft' ? 'draft' : 'status');
   return url.toString();
 }
 
 async function loadCodexTomorrowDraftStatus() {
+  const targetDateKey = addDaysToDateKey(todayKey(), 1);
   try {
-    const response = await apiFetch(getCodexDailyEndpoint(), { headers: { Accept: 'application/json' } }, { cancelKey: 'codex-draft-status' });
+    const response = await apiFetch(getCodexDailyEndpoint(targetDateKey), { headers: { Accept: 'application/json' } }, { cancelKey: 'codex-draft-status' });
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     const data = await response.json();
     codexTomorrowDraftStatus = data.draft || null;
+    if (codexTomorrowDraft?.targetDateKey !== targetDateKey
+      || (codexTomorrowDraftStatus?.updatedAt && codexTomorrowDraft?.updatedAt !== codexTomorrowDraftStatus.updatedAt)) {
+      codexTomorrowDraft = null;
+    }
   } catch {
     codexTomorrowDraftStatus = null;
+    codexTomorrowDraft = null;
   }
+  if (codexDailyViewMode === 'tomorrow') return loadCodexTomorrowDraft({ force: true });
   if (document.body.dataset.activeTab === 'today') renderDailyHot();
   return codexTomorrowDraftStatus;
+}
+
+async function loadCodexTomorrowDraft(options = {}) {
+  const targetDateKey = addDaysToDateKey(todayKey(), 1);
+  if (!options.force && codexTomorrowDraft?.targetDateKey === targetDateKey) return codexTomorrowDraft;
+  if (codexTomorrowDraftPromise) return codexTomorrowDraftPromise;
+  codexTomorrowDraftPromise = (async () => {
+    try {
+      const response = await apiFetch(
+        getCodexDailyEndpoint(targetDateKey, 'draft'),
+        { headers: { Accept: 'application/json' } },
+        { cancelKey: 'codex-draft-preview' }
+      );
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      const data = await response.json();
+      codexTomorrowDraft = data.draft || null;
+      return codexTomorrowDraft;
+    } catch (error) {
+      codexTomorrowDraft = null;
+      if (options.notifyOnError) showToast(`明日草稿读取失败：${error.message || '请稍后重试'}`);
+      return null;
+    } finally {
+      codexTomorrowDraftPromise = null;
+      if (document.body.dataset.activeTab === 'today' && codexDailyViewMode === 'tomorrow') renderDailyHot();
+    }
+  })();
+  return codexTomorrowDraftPromise;
 }
 
 function getLegacySyncEndpoint() {
@@ -4254,6 +4291,7 @@ function populateDailyHotDateSelect() {
 }
 
 function setDailyHotDate(dateKeyValue) {
+  codexDailyViewMode = 'today';
   currentDailyHotDateKey = dateKeyValue === 'today' ? 'today' : cleanShortText(dateKeyValue, 20);
   if (currentDailyHotDateKey !== 'today') {
     currentHistoryDateKey = currentDailyHotDateKey;
@@ -4262,6 +4300,21 @@ function setDailyHotDate(dateKeyValue) {
   localStorage.setItem(DAILY_HOT_DATE_STORAGE_KEY, currentDailyHotDateKey);
   closeDailyManageMenu();
   renderDailyHot();
+}
+
+async function setDailyHotView(mode) {
+  const nextMode = mode === 'tomorrow' ? 'tomorrow' : 'today';
+  if (nextMode === 'tomorrow' && currentDailyHotDateKey !== 'today') {
+    currentDailyHotDateKey = 'today';
+    localStorage.setItem(DAILY_HOT_DATE_STORAGE_KEY, currentDailyHotDateKey);
+  }
+  codexDailyViewMode = nextMode;
+  closeDailyManageMenu();
+  const draftPromise = nextMode === 'tomorrow'
+    ? loadCodexTomorrowDraft({ notifyOnError: true })
+    : null;
+  renderDailyHot();
+  if (draftPromise) await draftPromise;
 }
 
 function getCurrentDailyHotWords() {
@@ -7562,6 +7615,109 @@ function renderTodayCard(word) {
     </div>`;
 }
 
+function getCodexDraftAuditItem(item = {}) {
+  return safeArray(codexTomorrowDraft?.validation?.recommendationAudit?.items)
+    .find(auditItem => auditItem?.kanji === item.kanji) || {};
+}
+
+function getDailyQualityCategoryLabel(category = '') {
+  return {
+    strong_expression: '强表达',
+    xhs_expression: '内容表达',
+    basic_greeting: '基础寒暄',
+    textbook_polite: '教材礼貌',
+    generic_basic: '泛基础词',
+    beauty_product: '品类词',
+    beauty_expression: '美妆表达',
+    general: '日常表达'
+  }[category] || '日常表达';
+}
+
+function renderCodexDraftPreviewCard(item, index) {
+  const aiCard = cleanAiCard(item.aiCard || {}) || {};
+  const imageUrl = aiCard.referenceImage?.url || '';
+  const audit = getCodexDraftAuditItem(item);
+  const recommendationGrade = audit.recommendationLevel || 'A';
+  const categoryLabel = getDailyQualityCategoryLabel(audit.qualityCategory);
+  const fallbackSvg = `data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 900 1200%22><rect fill=%22%23fffdf9%22 width=%22900%22 height=%221200%22/><text x=%22450%22 y=%22220%22 text-anchor=%22middle%22 font-size=%22110%22 font-weight=%22700%22 fill=%22%23222222%22>${encodeURIComponent(item.kanji)}</text></svg>`;
+  return `
+    <article class="word-card codex-preview-card" role="button" tabindex="0" aria-label="预览 ${escapeHTML(item.kanji)} 词卡" onclick="openCodexDraftPreview(${index})" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();openCodexDraftPreview(${index})}">
+      <div class="codex-preview-image-wrapper">
+        <img class="codex-preview-image" src="${escapeHTML(imageUrl || fallbackSvg)}" alt="${escapeHTML(item.kanji)} 参考插画" loading="lazy" onerror="this.src='${fallbackSvg}'">
+        <span class="codex-preview-readonly-badge">只读预览</span>
+      </div>
+      <div class="card-body codex-preview-card-body">
+        <div class="codex-preview-word-row">
+          <div>
+            <div class="codex-preview-word">${escapeHTML(item.kanji)}</div>
+            <div class="codex-preview-reading">${escapeHTML(item.kana || item.reading || '')}</div>
+          </div>
+          <span class="daily-hot-tag recommendation-grade-chip grade-${escapeHTML(recommendationGrade.toLowerCase())}">${escapeHTML(recommendationGrade)}</span>
+        </div>
+        <div class="card-meaning">${escapeHTML(item.meaning || '—')}</div>
+        <div class="daily-hot-reason line-2">${escapeHTML(aiCard.summary || aiCard.explanation || '点击查看完整词卡')}</div>
+        <div class="daily-hot-tags">
+          <span class="daily-hot-tag">${escapeHTML(categoryLabel)}</span>
+          <span class="daily-hot-tag codex-source-chip">Codex 草稿</span>
+        </div>
+      </div>
+    </article>`;
+}
+
+function openCodexDraftPreview(index) {
+  const item = safeArray(codexTomorrowDraft?.items)[index];
+  if (!item) return;
+  const aiCard = cleanAiCard(item.aiCard || {}) || {};
+  const audit = getCodexDraftAuditItem(item);
+  const recommendationGrade = audit.recommendationLevel || 'A';
+  const categoryLabel = getDailyQualityCategoryLabel(audit.qualityCategory);
+  const qualitySummary = codexTomorrowDraft?.validation?.qualitySummary || {};
+  const imageUrl = aiCard.referenceImage?.url || '';
+  const fallbackSvg = `data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 900 1200%22><rect fill=%22%23fffdf9%22 width=%22900%22 height=%221200%22/><text x=%22450%22 y=%22220%22 text-anchor=%22middle%22 font-size=%22110%22 font-weight=%22700%22 fill=%22%23222222%22>${encodeURIComponent(item.kanji)}</text></svg>`;
+  const examples = safeArray(aiCard.examples);
+  const suggestedTitles = safeArray(aiCard.suggestedTitles);
+  const contentAngles = safeArray(aiCard.contentAngles);
+  const usageScenes = safeArray(aiCard.usageScenes);
+  document.getElementById('modalContainer').innerHTML = `
+    <div class="modal-shell record-shell codex-preview-modal-shell">
+      <div class="codex-preview-modal-layout">
+        <div class="codex-preview-modal-art">
+          <img src="${escapeHTML(imageUrl || fallbackSvg)}" alt="${escapeHTML(item.kanji)} 参考插画" onerror="this.src='${fallbackSvg}'">
+        </div>
+        <div class="codex-preview-modal-content">
+          <div class="codex-preview-modal-header">
+            <div>
+              <div class="codex-preview-modal-kicker">${escapeHTML(codexTomorrowDraft.targetDateKey || '')} · 明日只读草稿</div>
+              <h2 class="codex-preview-modal-word">${escapeHTML(item.kanji)}</h2>
+              <div class="codex-preview-modal-reading">${escapeHTML(item.kana || item.reading || '')}${item.romaji ? ` · ${escapeHTML(item.romaji)}` : ''}</div>
+            </div>
+            <button type="button" class="codex-preview-modal-close" onclick="closeModal()" aria-label="关闭">×</button>
+          </div>
+          <div class="daily-hot-tags codex-preview-modal-tags">
+            <span class="daily-hot-tag recommendation-grade-chip grade-${escapeHTML(recommendationGrade.toLowerCase())}">推荐等级 ${escapeHTML(recommendationGrade)}</span>
+            <span class="daily-hot-tag">${escapeHTML(categoryLabel)}</span>
+            ${Number.isFinite(Number(qualitySummary.estimatedHumanQualityScore)) ? `<span class="daily-hot-tag">整组人工估分 ${escapeHTML(qualitySummary.estimatedHumanQualityScore)}</span>` : ''}
+          </div>
+          <div class="codex-preview-modal-scroll">
+            <section class="codex-preview-section">
+              <h3>中文意思</h3>
+              <div class="modal-meaning-main">${escapeHTML(item.meaning || '—')}</div>
+              ${aiCard.summary ? `<p>${escapeHTML(aiCard.summary)}</p>` : ''}
+              ${aiCard.explanation ? `<p>${renderMultiline(aiCard.explanation)}</p>` : ''}
+            </section>
+            ${usageScenes.length ? `<section class="codex-preview-section"><h3>使用场景</h3><div class="daily-hot-tags">${usageScenes.map(scene => `<span class="daily-hot-tag">${escapeHTML(scene)}</span>`).join('')}</div></section>` : ''}
+            ${examples.length ? `<section class="codex-preview-section"><h3>例句</h3>${examples.map(example => `<div class="example-item"><div class="example-jp">${escapeHTML(example.jp)}</div>${example.kana ? `<div class="example-romaji">${escapeHTML(example.kana)}</div>` : ''}${example.romaji ? `<div class="example-romaji">${escapeHTML(example.romaji)}</div>` : ''}<div class="example-cn">${escapeHTML(example.cn)}</div></div>`).join('')}</section>` : ''}
+            ${suggestedTitles.length ? `<section class="codex-preview-section"><h3>小红书标题方向</h3><div class="usage-list">${suggestedTitles.map(title => `<div class="usage-item"><div class="usage-meaning">${escapeHTML(title)}</div></div>`).join('')}</div></section>` : ''}
+            ${contentAngles.length ? `<section class="codex-preview-section"><h3>内容角度</h3><p>${escapeHTML(contentAngles.join(' / '))}</p></section>` : ''}
+            ${aiCard.wrongUsage ? `<section class="codex-preview-section"><h3>使用提醒</h3><div class="wrong-usage-box">${escapeHTML(aiCard.wrongUsage)}</div></section>` : ''}
+          </div>
+        </div>
+      </div>
+    </div>`;
+  document.getElementById('modalOverlay').classList.add('open');
+  document.body.style.overflow = 'hidden';
+}
+
 function renderFavoriteCard(word) {
   const fallbackSvg = `data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 520 390%22><rect fill=%22%23fdeef0%22 width=%22520%22 height=%22390%22/><text x=%22260%22 y=%22195%22 text-anchor=%22middle%22 font-size=%2272%22 fill=%22%23f47a9a%22>${encodeURIComponent(word.kanji)}</text></svg>`;
   const safeId = escapeJSString(word.id || word.kanji);
@@ -7604,6 +7760,19 @@ function renderFavoriteCard(word) {
 function renderTodayGrid(words, options = {}) {
   const grid = document.getElementById('todayGrid');
   const mode = options.mode || 'today';
+  if (mode === 'codex-preview') {
+    if (codexTomorrowDraftPromise && !codexTomorrowDraft) {
+      grid.innerHTML = '<div class="empty-state inline-empty"><div class="empty-title">正在读取明日草稿</div><div class="empty-desc">词卡和参考插画正在从只读接口加载。</div></div>';
+      return;
+    }
+    if (words.length) {
+      grid.innerHTML = words.map(renderCodexDraftPreviewCard).join('');
+      return;
+    }
+    const missing = codexTomorrowDraft?.status === 'missing' || codexTomorrowDraftStatus?.status === 'missing';
+    grid.innerHTML = `<div class="empty-state inline-empty"><div class="empty-title">${missing ? '明日草稿尚未提交' : '暂时无法读取明日草稿'}</div><div class="empty-desc">${missing ? 'Codex 定时任务提交后会自动出现在这里。' : '可以点击刷新重新读取，不会触发生成或写入。'}</div></div>`;
+    return;
+  }
   if (words.length) {
     grid.innerHTML = words.map(renderTodayCard).join('');
     return;
@@ -7955,19 +8124,52 @@ function handleDailyManageAction(action) {
   }
 }
 
+function updateDailyHotViewControls(isTomorrowPreview) {
+  const todayButton = document.getElementById('dailyTodayViewBtn');
+  const tomorrowButton = document.getElementById('dailyTomorrowViewBtn');
+  if (todayButton) {
+    todayButton.classList.toggle('active', !isTomorrowPreview);
+    todayButton.setAttribute('aria-pressed', String(!isTomorrowPreview));
+  }
+  if (tomorrowButton) {
+    tomorrowButton.classList.toggle('active', isTomorrowPreview);
+    tomorrowButton.setAttribute('aria-pressed', String(isTomorrowPreview));
+  }
+  const dateSelect = document.getElementById('dailyHotDateSelect');
+  const sourceFilter = document.getElementById('todaySourceFilter');
+  if (dateSelect) dateSelect.disabled = isTomorrowPreview;
+  if (sourceFilter) sourceFilter.disabled = isTomorrowPreview;
+  document.querySelectorAll('[data-daily-preview-disabled]').forEach(element => {
+    element.disabled = isTomorrowPreview;
+  });
+}
+
 function renderDailyHot() {
   populateDailyHotDateSelect();
   const isTodayView = isViewingTodayDailyHot();
-  const words = getCurrentDailyHotWords();
-  populateSourceFilter('today', words);
-  const visibleWords = applySourceFilter(words, 'today');
+  const isTomorrowPreview = isTodayView && codexDailyViewMode === 'tomorrow';
+  const words = isTomorrowPreview ? safeArray(codexTomorrowDraft?.items) : getCurrentDailyHotWords();
+  if (!isTomorrowPreview) populateSourceFilter('today', words);
+  const visibleWords = isTomorrowPreview ? words : applySourceFilter(words, 'today');
   renderTodayGrid(visibleWords, {
-    mode: isTodayView ? 'today' : 'history',
+    mode: isTomorrowPreview ? 'codex-preview' : (isTodayView ? 'today' : 'history'),
     dateKey: currentDailyHotDateKey
   });
+  updateDailyHotViewControls(isTomorrowPreview);
   const todayDate = document.getElementById('todayDate');
   if (todayDate) {
-    if (isTodayView) {
+    if (isTomorrowPreview) {
+      const targetDateKey = addDaysToDateKey(todayKey(), 1);
+      const draft = codexTomorrowDraft || codexTomorrowDraftStatus;
+      const qualitySummary = draft?.validation?.qualitySummary || {};
+      const scoreMeta = Number.isFinite(Number(qualitySummary.estimatedHumanQualityScore))
+        ? ` · 人工估分 ${qualitySummary.estimatedHumanQualityScore}`
+        : '';
+      const gradeMeta = Number.isFinite(Number(qualitySummary.sLevelCount))
+        ? ` · S ${qualitySummary.sLevelCount} / A ${qualitySummary.aLevelCount || 0}`
+        : '';
+      todayDate.textContent = `${formatDisplayDate(targetDateKey)} · 明日只读预览 · ${draft?.wordCount || 0} 词 / 卡片 ${draft?.cardReadyCount || 0} / 图片 ${draft?.imageReadyCount || 0}${scoreMeta}${gradeMeta}`;
+    } else if (isTodayView) {
       const snapshot = cleanTodaySnapshot(todaySnapshot);
       const snapshotMeta = hasTodaySnapshotForToday(snapshot)
         ? `今天的固定推荐 · 今日固定 ${snapshot.words.length} 个 · 第 ${snapshot.version || 1} 版`
@@ -7983,8 +8185,10 @@ function renderDailyHot() {
   }
   const manageBtn = document.getElementById('dailyManageBtn');
   if (manageBtn) {
-    manageBtn.disabled = !isTodayView;
-    manageBtn.title = isTodayView ? '管理今天的固定推荐' : '历史推荐不能重新生成，请切回今天。';
+    manageBtn.disabled = !isTodayView || isTomorrowPreview;
+    manageBtn.title = isTomorrowPreview
+      ? '明日预览为只读模式'
+      : (isTodayView ? '管理今天的固定推荐' : '历史推荐不能重新生成，请切回今天。');
   }
 }
 

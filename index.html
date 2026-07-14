@@ -66,6 +66,10 @@
           </div>
           <div class="page-actions">
             <div class="page-actions-deco" aria-hidden="true">✦ ✦</div>
+            <div class="daily-view-switch" role="group" aria-label="每日热门视图">
+              <button type="button" id="dailyTodayViewBtn" class="daily-view-option active" aria-pressed="true" onclick="setDailyHotView('today')">今天</button>
+              <button type="button" id="dailyTomorrowViewBtn" class="daily-view-option" aria-pressed="false" onclick="setDailyHotView('tomorrow')">明日预览</button>
+            </div>
             <label class="daily-date-field">
               <span>查看日期</span>
               <select class="filter-select" id="dailyHotDateSelect" onchange="setDailyHotDate(this.value)" aria-label="查看日期"></select>
@@ -73,15 +77,15 @@
             <select class="filter-select" id="todaySourceFilter" onchange="setSourceFilter('today', this.value)" aria-label="按来源筛选每日热门"></select>
             <button class="btn btn-ghost" onclick="refreshData()">🔄 刷新</button>
             <div class="action-menu">
-              <button class="btn btn-ghost" id="dailyManageBtn" data-today-action onclick="toggleDailyManageMenu(event)">管理今日推荐</button>
+              <button class="btn btn-ghost" id="dailyManageBtn" data-today-action data-daily-preview-disabled onclick="toggleDailyManageMenu(event)">管理今日推荐</button>
               <div class="action-menu-panel" id="dailyManageMenu">
                 <button onclick="handleDailyManageAction('generate')">从 AI 候选库生成今日 20 个</button>
                 <button onclick="handleDailyManageAction('fill')">补满今日推荐</button>
                 <button onclick="handleDailyManageAction('regenerate')">重新生成今日推荐</button>
               </div>
             </div>
-            <button class="btn btn-ghost" onclick="generateMissingTodayAiCards()">生成今日缺失卡片</button>
-            <button class="btn btn-primary" onclick="exportSelected()">📤 导出选词</button>
+            <button class="btn btn-ghost" data-daily-preview-disabled onclick="generateMissingTodayAiCards()">生成今日缺失卡片</button>
+            <button class="btn btn-primary" data-daily-preview-disabled onclick="exportSelected()">📤 导出选词</button>
           </div>
         </div>
       </div>
