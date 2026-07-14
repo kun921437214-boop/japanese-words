@@ -2,23 +2,20 @@ import {
   cleanStoredWorkflow as cleanWorkflowSchema,
   mergeWorkflowForFullSave
 } from '../shared/workflow-schema.mjs';
-
-const CORS_HEADERS = {
-  'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Methods': 'GET, POST, PUT, OPTIONS',
-  'Access-Control-Allow-Headers': 'Content-Type',
-  'Access-Control-Max-Age': '86400'
-};
-
-function jsonResponse(body, status = 200) {
-  return new Response(JSON.stringify(body), {
-    status,
-    headers: {
-      ...CORS_HEADERS,
-      'Content-Type': 'application/json; charset=utf-8'
-    }
-  });
-}
+import {
+  API_LIMITS,
+  authorizeRequest,
+  errorResponse,
+  getRequestId,
+  jsonResponse,
+  optionsResponse,
+  readJsonBody,
+  unauthorizedResponse
+} from '../shared/api-security.mjs';
+import {
+  getWorkflowMutationMetadata,
+  prepareWorkflowMutation
+} from '../shared/workflow-mutation.mjs';
 
 function cleanSyncCode(value) {
   return String(value || '').trim().replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 64);
@@ -439,14 +436,6 @@ function getStorageKey(url) {
   return code.length >= 8 ? `favorites:${code}` : 'favorites:global';
 }
 
-async function readJson(request) {
-  try {
-    return await request.json();
-  } catch (error) {
-    return null;
-  }
-}
-
 export function applyFavoriteAction(currentWorkflow = {}, body = {}) {
   const current = cleanStoredData(currentWorkflow);
   const word = cleanWords([body.word])[0];
@@ -477,50 +466,94 @@ export function applyFavoriteAction(currentWorkflow = {}, body = {}) {
 }
 
 export async function onRequest({ request, env }) {
+  const methods = ['GET', 'POST', 'PUT', 'OPTIONS'];
+  const requestId = getRequestId(request);
+  const respond = (body, status = 200) => jsonResponse(request, env, body, status, { methods, requestId });
+  const fail = (status, code, message, options = {}) => errorResponse(request, env, status, code, message, { methods, requestId, ...options });
+
   if (request.method === 'OPTIONS') {
-    return new Response(null, { headers: CORS_HEADERS });
+    return optionsResponse(request, env, methods);
   }
 
   if (!env.FAVORITES) {
-    return jsonResponse({ error: 'KV namespace FAVORITES is not configured' }, 500);
+    return fail(500, 'STORAGE_NOT_CONFIGURED', 'KV namespace FAVORITES is not configured');
   }
+
+  const authorization = await authorizeRequest(request, env);
+  if (!authorization.ok) return unauthorizedResponse(request, env, authorization, { methods, requestId });
 
   const url = new URL(request.url);
   const key = getStorageKey(url);
 
   if (request.method === 'GET') {
     const stored = await env.FAVORITES.get(key, 'json');
-    return jsonResponse(cleanStoredData(stored));
+    return respond(cleanStoredData(stored));
   }
 
   if (request.method === 'PUT') {
-    const body = await readJson(request);
-    if (!body) return jsonResponse({ error: 'Invalid JSON body' }, 400);
+    const parsed = await readJsonBody(request, { maxBytes: API_LIMITS.workflow });
+    if (!parsed.ok) return fail(parsed.status, parsed.code, parsed.message);
+    const body = parsed.value;
+    if (!body || typeof body !== 'object' || Array.isArray(body)) {
+      return fail(400, 'INVALID_BODY', 'workflow 必须是 JSON 对象');
+    }
 
     const stored = await env.FAVORITES.get(key, 'json');
     const current = cleanWorkflowSchema(stored);
-    const data = mergeWorkflowForFullSave(current, {
+    const merged = mergeWorkflowForFullSave(current, {
       ...body,
       updated: new Date().toISOString()
     });
+    const mutation = prepareWorkflowMutation(current, merged, getWorkflowMutationMetadata(request, body, {
+      action: 'workflow.replace',
+      actor: authorization.actor,
+      summary: '保存完整团队工作流'
+    }));
+    if (mutation.conflict) {
+      return respond({
+        ok: false,
+        error: { code: 'REVISION_CONFLICT', message: '团队数据已被其他人更新，请刷新后重试', retryable: true },
+        currentRevision: mutation.currentRevision
+      }, 409);
+    }
+    const data = mutation.workflow;
 
-    await env.FAVORITES.put(key, JSON.stringify(data));
-    return jsonResponse(data);
+    if (!mutation.duplicate) await env.FAVORITES.put(key, JSON.stringify(data));
+    return respond({ ...data, mutation: { duplicate: mutation.duplicate, operationId: mutation.event?.id || '' } });
   }
 
   if (request.method === 'POST') {
-    const body = await readJson(request);
-    if (!body) return jsonResponse({ error: 'Invalid JSON body' }, 400);
+    const parsed = await readJsonBody(request, { maxBytes: API_LIMITS.command });
+    if (!parsed.ok) return fail(parsed.status, parsed.code, parsed.message);
+    const body = parsed.value;
 
     const word = cleanWords([body.word])[0];
-    if (!word) return jsonResponse({ error: 'Invalid word' }, 400);
+    if (!word) return fail(400, 'INVALID_WORD', 'word 不能为空或格式无效');
+    if (!['add', 'remove', 'status'].includes(body.action)) {
+      return fail(400, 'INVALID_ACTION', 'action 必须是 add、remove 或 status');
+    }
 
     const stored = await env.FAVORITES.get(key, 'json');
-    const data = applyFavoriteAction(stored, body);
+    const current = cleanWorkflowSchema(stored);
+    const next = applyFavoriteAction(current, body);
+    const mutation = prepareWorkflowMutation(current, next, getWorkflowMutationMetadata(request, body, {
+      action: `favorite.${body.action}`,
+      actor: authorization.actor,
+      target: word,
+      summary: body.action === 'status' ? `状态更新为 ${cleanStatus(body.status)}` : ''
+    }));
+    if (mutation.conflict) {
+      return respond({
+        ok: false,
+        error: { code: 'REVISION_CONFLICT', message: '团队数据已被其他人更新，请刷新后重试', retryable: true },
+        currentRevision: mutation.currentRevision
+      }, 409);
+    }
+    const data = mutation.workflow;
 
-    await env.FAVORITES.put(key, JSON.stringify(data));
-    return jsonResponse(data);
+    if (!mutation.duplicate) await env.FAVORITES.put(key, JSON.stringify(data));
+    return respond({ ...data, mutation: { duplicate: mutation.duplicate, operationId: mutation.event?.id || '' } });
   }
 
-  return jsonResponse({ error: 'Method not allowed' }, 405);
+  return fail(405, 'METHOD_NOT_ALLOWED', 'Method not allowed');
 }

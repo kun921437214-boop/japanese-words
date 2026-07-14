@@ -329,6 +329,8 @@
       <div id="tokenStatus" class="settings-status"></div>
       <div class="settings-actions">
         <button class="btn btn-ghost" onclick="exportWorkflowBackup()">导出全部选题数据</button>
+        <button class="btn btn-ghost" onclick="selectWorkflowBackupForRestore()">校验并恢复备份</button>
+        <input id="workflowRestoreInput" type="file" accept="application/json,.json" hidden onchange="restoreWorkflowBackup(event)">
         <button class="btn btn-primary" onclick="closeSettingsModal()">知道了 ✓</button>
       </div>
     </div>

@@ -17,6 +17,8 @@ let aiBatches = [];
 let todaySnapshot = {};
 let historySnapshots = {};
 let todaySnapshotHistory = [];
+let workflowRevision = 0;
+let workflowAuditLog = [];
 let libraryReviewRecords = {};
 let libraryAuditCoverage = {
   total: 0,
@@ -45,6 +47,7 @@ let activeFeedbackMenuKanji = null;
 let lastCloudSyncAt = '';
 let lastLocalCacheAt = '';
 let cloudWorkflowFailed = false;
+let codexTomorrowDraftStatus = null;
 
 const FAVORITES_STORAGE_KEY = 'kotoba_favorites';
 const FAVORITE_STATUSES_STORAGE_KEY = 'kotoba_favorite_statuses';
@@ -113,6 +116,7 @@ const AI_ACTION_LABELS = {
   audit_missing_library_words: '历史种子复核'
 };
 const RECOMMENDATION_ORIGIN_LABELS = {
+  codex_generated: 'Codex 次日草稿',
   deepseek_new: 'DeepSeek 新生成',
   candidate_pool: 'AI 候选池旧词',
   history_fallback: '历史热门回流',
@@ -436,6 +440,7 @@ const CANDIDATE_SECTION_LABELS = {
 };
 const CANDIDATE_SOURCE_FILTER_LABELS = {
   all: '全部来源',
+  codex_generated: 'Codex 生成词',
   deepseek_generated: 'DeepSeek 生成词',
   deepseek_reviewed: 'DeepSeek 审核词',
   manual_keep: '手动保留词'
@@ -809,7 +814,7 @@ function cleanLibraryReviewRecords(records = {}) {
 
 async function loadLibraryReviewRecords() {
   try {
-    const response = await fetch('data/library-review.json', { cache: 'no-store' });
+    const response = await apiFetch('data/library-review.json', { cache: 'no-store' }, { cancelKey: 'library-review' });
     if (!response.ok) {
       libraryReviewRecords = {};
       return false;
@@ -832,7 +837,7 @@ function isLegacyLibraryWord(kanji, entry = null) {
 function getLibraryAuditRecord(kanji, entry = candidatePool[kanji] || {}) {
   const cleanKanji = cleanShortText(kanji, 80);
   if (!cleanKanji) return null;
-  if (entry?.sourceType === 'deepseek_generated' || entry?.sourceType === 'deepseek_api') return { kanji: cleanKanji, source: 'candidatePool.generated' };
+  if (['codex_generated', 'deepseek_generated', 'deepseek_api'].includes(entry?.sourceType)) return { kanji: cleanKanji, source: 'candidatePool.generated' };
   if (entry?.sourceType === 'manual_keep' || entry?.protected) return { kanji: cleanKanji, source: 'candidatePool.protected', libraryReviewStatus: 'protected', action: 'protect' };
   if (entry?.sourceType === 'deepseek_reviewed') return { kanji: cleanKanji, source: 'candidatePool.sourceType' };
   if (entry?.reviewSource === 'deepseek_library_audit') return { kanji: cleanKanji, source: 'candidatePool.reviewSource' };
@@ -1084,7 +1089,7 @@ async function rerunDeepSeekLibraryAudit() {
     for (let index = 0; index < missingWords.length; index += 50) {
       const batchWords = missingWords.slice(index, index + 50);
       const words = buildLibraryAuditPayloadItems(batchWords);
-      const response = await fetch(getAiCandidatesEndpoint(), {
+      const response = await apiFetch(getAiCandidatesEndpoint(), {
         method: 'POST',
         headers: {
           Accept: 'application/json',
@@ -1111,7 +1116,7 @@ async function rerunDeepSeekLibraryAudit() {
             existingCandidates: words
           }
         })
-      });
+      }, { timeoutMs: 100000, cancelKey: 'library-audit' });
       const data = await response.json().catch(() => ({}));
       if (!response.ok || data.error) throw new Error(data.error?.message || data.error || `HTTP ${response.status}`);
       const applied = applyLibraryAuditResults(data.items || []);
@@ -1189,10 +1194,19 @@ function cleanAiCard(card = {}) {
   if (!status && !card.summary && !card.explanation) return null;
   return {
     cardStatus: status || 'ready',
-    cardSource: card.cardSource === 'deepseek_api' ? 'deepseek_api' : '',
+    cardSource: ['codex', 'deepseek_api'].includes(card.cardSource) ? card.cardSource : '',
     cardModel: cleanShortText(card.cardModel, 120),
     cardVersion: clamp(toInt(card.cardVersion, 1), 1, 99),
     generatedAt: typeof card.generatedAt === 'string' ? card.generatedAt : '',
+    referenceImage: {
+      status: normalizeEnumValue(card.referenceImage?.status, ['missing', 'ready', 'failed'], 'missing'),
+      url: cleanShortText(card.referenceImage?.url, 1000),
+      key: cleanShortText(card.referenceImage?.key, 500),
+      visualBrief: cleanShortText(card.referenceImage?.visualBrief, 1000),
+      prompt: cleanShortText(card.referenceImage?.prompt, 4000),
+      provider: cleanShortText(card.referenceImage?.provider, 80),
+      generatedAt: typeof card.referenceImage?.generatedAt === 'string' ? card.referenceImage.generatedAt : ''
+    },
     summary: cleanShortText(card.summary, 500),
     explanation: cleanShortText(card.explanation, 1600),
     usageScenes: getUniqueWords(card.usageScenes || []).map(item => cleanShortText(item, 120)).slice(0, 8),
@@ -1356,17 +1370,19 @@ function getRecommendationAuditTrace(entry = {}, context = {}) {
   const existingWords = context.existingWords || new Set();
   const sourceType = cleanShortText(cleanEntry.sourceType, 80);
   const sourceBatchId = cleanEntry.aiBatchId || cleanEntry.sourceBatchId || '';
+  const fromCodex = sourceType === 'codex_generated';
   const fromDeepSeekNew = sourceType === 'deepseek_generated' && sourceBatchId && freshBatchIds.has(sourceBatchId);
   const fromManual = sourceType === 'manual_keep' || sourceType === 'manual';
   const fromHistoryFallback = Boolean(cleanEntry.historicalBackfill);
   const fromLocalFallback = Boolean(cleanEntry.fromLocalFallback || cleanEntry.lastOrigin === 'local' || sourceType === 'original' || sourceType === 'audit_missing');
-  const fromCandidatePool = !fromDeepSeekNew && !fromManual && !fromHistoryFallback && !fromLocalFallback;
+  const fromCandidatePool = !fromCodex && !fromDeepSeekNew && !fromManual && !fromHistoryFallback && !fromLocalFallback;
   const isBackfill = Boolean(cleanEntry.historicalBackfill)
     || (context.mode === 'fill' && cleanEntry.kanji && !existingWords.has(cleanEntry.kanji))
     || (cleanEntry.displayBucket && cleanEntry.displayBucket !== 'today');
   const isDedupRelaxed = Boolean(cleanEntry.historicalBackfill || context.relaxedDedup || (context.dedupDaysUsed && context.dedupDaysUsed < TODAY_HISTORY_DEDUP_DAYS));
   let originType = 'candidate_pool';
-  if (fromDeepSeekNew) originType = 'deepseek_new';
+  if (fromCodex) originType = 'codex_generated';
+  else if (fromDeepSeekNew) originType = 'deepseek_new';
   else if (fromHistoryFallback) originType = 'history_fallback';
   else if (fromLocalFallback) originType = 'local_word_bank';
   else if (fromManual) originType = 'manual_added';
@@ -1384,6 +1400,7 @@ function getRecommendationAuditTrace(entry = {}, context = {}) {
     fromHistoryFallback,
     fromLocalFallback,
     fromManual,
+    fromCodex,
     isBackfill,
     isDedupRelaxed,
     dedupDaysUsed: context.dedupDaysUsed || cleanEntry.dedupDaysUsed || TODAY_HISTORY_DEDUP_DAYS,
@@ -1738,7 +1755,7 @@ function normalizeCandidateSourceType(entry = {}, knownWord = null, kanji = '') 
   const raw = String(entry.sourceType || '').trim();
   if (raw === 'deepseek_api') return 'deepseek_generated';
   if (raw === 'manual') return 'manual_keep';
-  if (['deepseek_generated', 'deepseek_reviewed', 'manual_keep'].includes(raw)) return raw;
+  if (['codex_generated', 'deepseek_generated', 'deepseek_reviewed', 'manual_keep'].includes(raw)) return raw;
   if (raw === 'original' || raw === 'audit_missing') {
     if (entry.reviewSource === 'deepseek_library_audit' || entry.libraryReviewStatus) return 'deepseek_reviewed';
     const record = libraryReviewRecords[kanji || entry.kanji || knownWord?.kanji];
@@ -2049,6 +2066,7 @@ function cleanRecommendationAuditTrace(trace = {}) {
     fromHistoryFallback: Boolean(trace.fromHistoryFallback),
     fromLocalFallback: Boolean(trace.fromLocalFallback),
     fromManual: Boolean(trace.fromManual),
+    fromCodex: Boolean(trace.fromCodex),
     isBackfill: Boolean(trace.isBackfill),
     isDedupRelaxed: Boolean(trace.isDedupRelaxed),
     dedupDaysUsed: clamp(toInt(trace.dedupDaysUsed, TODAY_HISTORY_DEDUP_DAYS), 0, 365),
@@ -2071,6 +2089,10 @@ function cleanRecommendationAuditItem(item = {}) {
     expressionValueScore: clamp(toInt(item.expressionValueScore, 0), 0, 100),
     chineseTransparencyScore: clamp(toInt(item.chineseTransparencyScore, 0), 0, 100),
     genericTopicPenalty: clamp(toInt(item.genericTopicPenalty, 0), 0, 100),
+    semanticClusterKey: cleanShortText(item.semanticClusterKey, 120),
+    qualityCategory: cleanShortText(item.qualityCategory, 80),
+    isDuplicateCluster: Boolean(item.isDuplicateCluster),
+    sLevelEligible: Boolean(item.sLevelEligible),
     selectedReason: cleanShortText(item.selectedReason || trace.selectedReason, 1000),
     diagnosis: safeArray(item.diagnosis).map(text => cleanShortText(text, 300)).filter(Boolean).slice(0, 8)
   };
@@ -2091,12 +2113,21 @@ function cleanRecommendationAuditSummary(audit = {}) {
     'sLevelCount',
     'aLevelCount',
     'bLevelCount',
-    'cLevelCount'
+    'cLevelCount',
+    'score',
+    'duplicateClusterCount',
+    'beautyCategoryCount',
+    'basicPoliteCount',
+    'genericBasicCount',
+    'estimatedHumanQualityScore'
   ];
   const qualitySummary = qualityKeys.reduce((result, key) => ({
     ...result,
     [key]: clamp(toInt(audit.qualitySummary?.[key], 0), 0, 1000)
   }), {});
+  qualitySummary.healthWarnings = safeArray(audit.qualitySummary?.healthWarnings).map(text => cleanShortText(text, 240)).filter(Boolean).slice(0, 12);
+  qualitySummary.categoryConcentrationWarnings = safeArray(audit.qualitySummary?.categoryConcentrationWarnings).map(text => cleanShortText(text, 240)).filter(Boolean).slice(0, 12);
+  qualitySummary.duplicateClusters = safeArray(audit.qualitySummary?.duplicateClusters).slice(0, 12);
   return {
     date: cleanShortText(audit.date, 20),
     total: clamp(toInt(audit.total, 0), 0, 1000),
@@ -2113,7 +2144,7 @@ function cleanCandidatePoolEntry(kanji, entry = {}) {
   const cleanKanji = normalizeKanjiSpelling(rawKanji);
   const knownWord = getWordByKanji(cleanKanji) || getWordByKanji(rawKanji);
   const sourceType = normalizeCandidateSourceType(entry, knownWord, cleanKanji);
-  const hasAiLexicalFields = Boolean(entry.kana || entry.romaji || entry.meaning || ['deepseek_generated', 'deepseek_api', 'deepseek_reviewed', 'manual_keep'].includes(sourceType || entry.sourceType));
+  const hasAiLexicalFields = Boolean(entry.kana || entry.romaji || entry.meaning || ['codex_generated', 'deepseek_generated', 'deepseek_api', 'deepseek_reviewed', 'manual_keep'].includes(sourceType || entry.sourceType));
   if (!cleanKanji || (knownWord && !isWordApproved(knownWord)) || (PURE_KANJI_RE.test(cleanKanji) && !knownWord && !hasAiLexicalFields)) return null;
   const riskLevel = normalizeEnumValue(entry.riskLevel, RISK_LEVEL_OPTIONS, 'low');
   const freshness = normalizeEnumValue(entry.freshness, FRESHNESS_OPTIONS, '');
@@ -2134,6 +2165,7 @@ function cleanCandidatePoolEntry(kanji, entry = {}) {
   const xhsFitScore = clamp(toInt(normalizedAi?.xhsFitScore ?? entry.xhsFitScore, entry.lastScore || knownWord?.popularity || 60), 0, 100);
   let sourceTags = getUniqueWords(entry.sourceTags || []).slice(0, 12);
   if (sourceType === 'deepseek_generated' && !sourceTags.includes('DeepSeek生成')) sourceTags.unshift('DeepSeek生成');
+  if (sourceType === 'codex_generated' && !sourceTags.includes('Codex生成')) sourceTags.unshift('Codex生成');
   if (sourceType === 'deepseek_reviewed' && !sourceTags.includes('DeepSeek审核')) sourceTags.unshift('DeepSeek审核');
   if (sourceType === 'deepseek_reviewed' && !sourceTags.includes('已审核词库')) sourceTags.unshift('已审核词库');
   if (sourceType === 'manual_keep' && !sourceTags.includes('受保护')) sourceTags.unshift('受保护');
@@ -2589,8 +2621,18 @@ function cleanStoredWorkflow(data = {}) {
     todayDismissed: cleanTeamDismissedState(data.todayDismissed || data.teamDismissed || {}),
     historySnapshots: cleanHistorySnapshots(data.historySnapshots),
     todaySnapshotHistory: cleanTodaySnapshotHistory(data.todaySnapshotHistory),
+    revision: clamp(toInt(data.revision, 0), 0, Number.MAX_SAFE_INTEGER),
+    auditLog: safeArray(data.auditLog).map((event, index) => ({
+      id: cleanShortText(event?.id || `legacy-event-${index}`, 120),
+      action: cleanShortText(event?.action || 'workflow.update', 120),
+      actor: cleanShortText(event?.actor || 'unknown', 320),
+      at: typeof event?.at === 'string' ? event.at : '',
+      target: cleanShortText(event?.target, 240),
+      summary: cleanShortText(event?.summary, 500),
+      revision: clamp(toInt(event?.revision, 0), 0, Number.MAX_SAFE_INTEGER)
+    })).filter(event => event.id).slice(0, 100),
     updated: typeof data.updated === 'string' ? data.updated : null,
-    schemaVersion: clamp(toInt(data.schemaVersion, 1), 1, 999)
+    schemaVersion: clamp(toInt(data.schemaVersion, 2), 1, 999)
   };
 }
 
@@ -3065,7 +3107,7 @@ function updateAiBatchImportStats(batchId, importedDelta = 0, skippedDelta = 0) 
 
 function loadLocalWorkflow(options = {}) {
   const includeLegacyLocal = Boolean(options.includeLegacyLocal);
-  let workflow = { words: [], statuses: {}, feedback: {}, publishedRecords: [], candidatePool: {}, aiBatches: [], aiPreview: {}, todaySnapshot: {}, todayDismissed: {}, historySnapshots: {}, todaySnapshotHistory: [], schemaVersion: 1 };
+  let workflow = { words: [], statuses: {}, feedback: {}, publishedRecords: [], candidatePool: {}, aiBatches: [], aiPreview: {}, todaySnapshot: {}, todayDismissed: {}, historySnapshots: {}, todaySnapshotHistory: [], revision: 0, auditLog: [], schemaVersion: 2 };
   try {
     const storedWorkflow = localStorage.getItem(WORKFLOW_STORAGE_KEY);
     if (storedWorkflow) {
@@ -3108,6 +3150,8 @@ function loadLocalWorkflow(options = {}) {
   todayDismissed = workflow.todayDismissed;
   historySnapshots = workflow.historySnapshots;
   todaySnapshotHistory = workflow.todaySnapshotHistory;
+  workflowRevision = workflow.revision;
+  workflowAuditLog = workflow.auditLog;
   migrateOriginalWordsAfterAudit();
   ensureReviewedSeedWordsInCandidatePool();
   archiveStaleTodaySnapshot();
@@ -3155,8 +3199,10 @@ function saveLocalWorkflow() {
     todayDismissed,
     historySnapshots,
     todaySnapshotHistory,
+    revision: workflowRevision,
+    auditLog: workflowAuditLog,
     updated: nowIso(),
-    schemaVersion: 1
+    schemaVersion: 2
   };
   localStorage.setItem(FAVORITES_STORAGE_KEY, JSON.stringify(favorites));
   localStorage.setItem(FAVORITE_STATUSES_STORAGE_KEY, JSON.stringify(favoriteStatuses));
@@ -3187,16 +3233,101 @@ function cacheCurrentWorkflow(updatedAt = nowIso()) {
     todayDismissed,
     historySnapshots,
     todaySnapshotHistory,
+    revision: workflowRevision,
+    auditLog: workflowAuditLog,
     updated: updatedAt,
-    schemaVersion: 1
+    schemaVersion: 2
   });
   localStorage.setItem(FAVORITES_STORAGE_KEY, JSON.stringify(payload.words));
   localStorage.setItem(FAVORITE_STATUSES_STORAGE_KEY, JSON.stringify(payload.statuses));
   localStorage.setItem(WORKFLOW_STORAGE_KEY, JSON.stringify(payload));
   localStorage.setItem(AI_PREVIEW_STORAGE_KEY, JSON.stringify(payload.aiPreview));
   localStorage.setItem(TODAY_DISMISSED_STORAGE_KEY, JSON.stringify(payload.todayDismissed));
+  workflowRevision = payload.revision;
+  workflowAuditLog = payload.auditLog;
   lastLocalCacheAt = payload.updated || updatedAt;
   return payload;
+}
+
+const activeApiControllers = new Map();
+const uiOperationsInFlight = new Set();
+let hasUnsavedFormChanges = false;
+let cloudSaveEpoch = 0;
+let cloudSaveQueue = Promise.resolve(false);
+let pendingCloudSaveCount = 0;
+
+function createOperationId(prefix = 'web') {
+  const randomId = globalThis.crypto?.randomUUID?.()
+    || `${Date.now()}-${Math.random().toString(36).slice(2, 12)}`;
+  return `${prefix}-${randomId}`.slice(0, 120);
+}
+
+function getApiErrorMessage(data, status = 0) {
+  if (typeof data?.error === 'string') return data.error;
+  if (typeof data?.error?.message === 'string') return data.error.message;
+  if (status === 401) return '团队身份验证失败，请重新登录';
+  if (status === 409) return '团队数据已更新，请刷新后重试';
+  if (status === 429) return '请求过于频繁，请稍后重试';
+  return status ? `HTTP ${status}` : '网络请求失败';
+}
+
+function createApiError(data, status = 0) {
+  const error = new Error(getApiErrorMessage(data, status));
+  error.status = status;
+  error.code = data?.error?.code || '';
+  error.retryable = Boolean(data?.error?.retryable);
+  return error;
+}
+
+async function apiFetch(endpoint, options = {}, config = {}) {
+  const timeoutMs = clamp(toInt(config.timeoutMs, 20000), 1000, 120000);
+  const cancelKey = cleanShortText(config.cancelKey, 120);
+  if (cancelKey) activeApiControllers.get(cancelKey)?.abort();
+  const controller = new AbortController();
+  if (cancelKey) activeApiControllers.set(cancelKey, controller);
+  const externalSignal = options.signal;
+  const abortFromExternal = () => controller.abort(externalSignal?.reason);
+  externalSignal?.addEventListener('abort', abortFromExternal, { once: true });
+  const timeout = setTimeout(() => controller.abort(new DOMException('Request timed out', 'TimeoutError')), timeoutMs);
+  const headers = new Headers(options.headers || {});
+  if (config.workflowMutation) {
+    headers.set('X-Operation-Id', config.operationId || createOperationId(config.operationPrefix || 'workflow'));
+    headers.set('X-Workflow-Revision', String(workflowRevision));
+  }
+
+  try {
+    return await fetch(endpoint, {
+      ...options,
+      credentials: options.credentials || 'same-origin',
+      headers,
+      signal: controller.signal
+    });
+  } catch (error) {
+    if (controller.signal.aborted) {
+      const timeoutError = new Error('请求超时或已取消');
+      timeoutError.code = 'REQUEST_ABORTED';
+      throw timeoutError;
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+    externalSignal?.removeEventListener('abort', abortFromExternal);
+    if (cancelKey && activeApiControllers.get(cancelKey) === controller) activeApiControllers.delete(cancelKey);
+  }
+}
+
+async function runUiOperation(key, operation) {
+  const cleanKey = cleanShortText(key, 160);
+  if (uiOperationsInFlight.has(cleanKey)) {
+    showToast('操作正在处理中，请稍候');
+    return false;
+  }
+  uiOperationsInFlight.add(cleanKey);
+  try {
+    return await operation();
+  } finally {
+    uiOperationsInFlight.delete(cleanKey);
+  }
 }
 
 function getSyncEndpoint() {
@@ -3226,6 +3357,27 @@ function getTodaySnapshotEndpoint() {
   return SYNC_API_URL ? `${SYNC_API_URL}/today-snapshot` : '/today-snapshot';
 }
 
+function getCodexDailyEndpoint(targetDateKey = addDaysToDateKey(todayKey(), 1)) {
+  const base = SYNC_API_URL ? `${SYNC_API_URL}/codex-daily` : '/codex-daily';
+  const url = new URL(base, window.location.origin);
+  url.searchParams.set('date', targetDateKey);
+  url.searchParams.set('view', 'status');
+  return url.toString();
+}
+
+async function loadCodexTomorrowDraftStatus() {
+  try {
+    const response = await apiFetch(getCodexDailyEndpoint(), { headers: { Accept: 'application/json' } }, { cancelKey: 'codex-draft-status' });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const data = await response.json();
+    codexTomorrowDraftStatus = data.draft || null;
+  } catch {
+    codexTomorrowDraftStatus = null;
+  }
+  if (document.body.dataset.activeTab === 'today') renderDailyHot();
+  return codexTomorrowDraftStatus;
+}
+
 function getLegacySyncEndpoint() {
   if (!SYNC_API_URL) return '';
   const legacySyncCode = cleanSyncCode(localStorage.getItem(LEGACY_SYNC_CODE_STORAGE_KEY));
@@ -3237,7 +3389,7 @@ async function loadLegacyCloudFavorites() {
   const endpoint = getLegacySyncEndpoint();
   if (!endpoint) return [];
   try {
-    const response = await fetch(endpoint, { headers: { Accept: 'application/json' } });
+    const response = await apiFetch(endpoint, { headers: { Accept: 'application/json' } }, { cancelKey: 'legacy-workflow' });
     if (!response.ok) return [];
     const data = await response.json();
     return filterKnownFavorites(data.words);
@@ -3265,7 +3417,7 @@ async function loadCloudWorkflow(options = false) {
 
   try {
     if (showMessages) updateSyncStatus('正在同步工作流数据...');
-    const response = await fetch(endpoint, { headers: { Accept: 'application/json' } });
+    const response = await apiFetch(endpoint, { headers: { Accept: 'application/json' } }, { cancelKey: 'workflow-load' });
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     const remoteData = cleanStoredWorkflow(await response.json());
 
@@ -3281,6 +3433,8 @@ async function loadCloudWorkflow(options = false) {
     todayDismissed = cleanTeamDismissedState(remoteData.todayDismissed || {});
     historySnapshots = remoteData.historySnapshots;
     todaySnapshotHistory = remoteData.todaySnapshotHistory;
+    workflowRevision = remoteData.revision;
+    workflowAuditLog = remoteData.auditLog;
     cloudWorkflowFailed = false;
     lastCloudSyncAt = nowIso();
     archiveStaleTodaySnapshot();
@@ -3306,7 +3460,36 @@ async function loadCloudWorkflow(options = false) {
   }
 }
 
-async function saveCloudWorkflow(showMessages = false) {
+function buildCloudWorkflowPayload() {
+  ensureReviewedSeedWordsInCandidatePool();
+  ensureFavoriteWordsHaveCandidateEntries();
+  if (cleanTodaySnapshot(todaySnapshot).words.length) archiveTodaySnapshot(todaySnapshot);
+  aiPreview = cleanAiPreviewState({
+    ...aiPreview,
+    items: aiPreviewItems,
+    selected: aiPreviewSelected
+  });
+  todayDismissed = cleanTeamDismissedState(todayDismissed);
+  return {
+    words: filterKnownFavorites(favorites, candidatePool),
+    statuses: favoriteStatuses,
+    feedback: cleanWordFeedback(wordFeedback),
+    publishedRecords: cleanPublishedRecords(publishedRecords),
+    candidatePool: cleanCandidatePool(candidatePool),
+    aiBatches: cleanAiBatches(aiBatches),
+    aiPreview,
+    todaySnapshot: cleanTodaySnapshot(todaySnapshot),
+    todayDismissed,
+    historySnapshots: cleanHistorySnapshots(historySnapshots),
+    todaySnapshotHistory: cleanTodaySnapshotHistory(todaySnapshotHistory),
+    revision: workflowRevision,
+    auditLog: workflowAuditLog,
+    updated: nowIso(),
+    schemaVersion: 2
+  };
+}
+
+async function performCloudWorkflowSave(showMessages, payload, queuedEpoch) {
   const endpoint = getSyncEndpoint();
   if (!endpoint) {
     cloudWorkflowFailed = true;
@@ -3314,40 +3497,17 @@ async function saveCloudWorkflow(showMessages = false) {
     return false;
   }
   try {
-    ensureReviewedSeedWordsInCandidatePool();
-    ensureFavoriteWordsHaveCandidateEntries();
-    if (cleanTodaySnapshot(todaySnapshot).words.length) archiveTodaySnapshot(todaySnapshot);
-    aiPreview = cleanAiPreviewState({
-      ...aiPreview,
-      items: aiPreviewItems,
-      selected: aiPreviewSelected
-    });
-    todayDismissed = cleanTeamDismissedState(todayDismissed);
-    const payload = {
-      words: filterKnownFavorites(favorites, candidatePool),
-      statuses: favoriteStatuses,
-      feedback: cleanWordFeedback(wordFeedback),
-      publishedRecords: cleanPublishedRecords(publishedRecords),
-      candidatePool: cleanCandidatePool(candidatePool),
-      aiBatches: cleanAiBatches(aiBatches),
-      aiPreview,
-      todaySnapshot: cleanTodaySnapshot(todaySnapshot),
-      todayDismissed,
-      historySnapshots: cleanHistorySnapshots(historySnapshots),
-      todaySnapshotHistory: cleanTodaySnapshotHistory(todaySnapshotHistory),
-      updated: nowIso(),
-      schemaVersion: 1
-      };
-    const response = await fetch(endpoint, {
+    const response = await apiFetch(endpoint, {
       method: 'PUT',
       headers: {
         Accept: 'application/json',
         'Content-Type': 'application/json'
       },
       body: JSON.stringify(payload)
-    });
-    if (!response.ok) throw new Error(`HTTP ${response.status}`);
-    const savedData = cleanStoredWorkflow(await response.json().catch(() => payload));
+    }, { workflowMutation: true, operationPrefix: 'workflow-save', timeoutMs: 30000 });
+    const responseData = await response.json().catch(() => payload);
+    if (!response.ok) throw createApiError(responseData, response.status);
+    const savedData = cleanStoredWorkflow(responseData);
     favorites = filterKnownFavorites(savedData.words, savedData.candidatePool);
     favoriteStatuses = savedData.statuses;
     wordFeedback = savedData.feedback;
@@ -3360,6 +3520,8 @@ async function saveCloudWorkflow(showMessages = false) {
     todayDismissed = cleanTeamDismissedState(savedData.todayDismissed || todayDismissed);
     historySnapshots = savedData.historySnapshots;
     todaySnapshotHistory = savedData.todaySnapshotHistory;
+    workflowRevision = savedData.revision;
+    workflowAuditLog = savedData.auditLog;
     hydrateTodayWordsFromSnapshot();
     cloudWorkflowFailed = false;
     lastCloudSyncAt = nowIso();
@@ -3371,11 +3533,35 @@ async function saveCloudWorkflow(showMessages = false) {
     return true;
   } catch (error) {
     console.warn('保存工作流失败', error);
+    if (error.status === 409) {
+      cloudSaveEpoch = Math.max(cloudSaveEpoch, queuedEpoch + 1);
+      await loadCloudWorkflow({ mode: 'remote-first', showMessages: false });
+    }
     cloudWorkflowFailed = true;
     updateSyncStatus('团队同步失败，本次修改未保存到团队后台', '#c0392b');
     showToast('团队同步失败，本次修改未保存到团队后台');
     return false;
   }
+}
+
+function saveCloudWorkflow(showMessages = false) {
+  if (!getSyncEndpoint()) {
+    cloudWorkflowFailed = true;
+    if (showMessages) showToast('云端后端还没有配置，团队同步失败');
+    return Promise.resolve(false);
+  }
+  const payload = buildCloudWorkflowPayload();
+  const queuedEpoch = cloudSaveEpoch;
+  const queuedSave = cloudSaveQueue.then(() => {
+    if (queuedEpoch !== cloudSaveEpoch) return false;
+    return performCloudWorkflowSave(showMessages, payload, queuedEpoch);
+  });
+  pendingCloudSaveCount += 1;
+  const trackedSave = queuedSave.finally(() => {
+    pendingCloudSaveCount = Math.max(0, pendingCloudSaveCount - 1);
+  });
+  cloudSaveQueue = trackedSave.catch(() => false);
+  return trackedSave;
 }
 
 async function refreshPublishedMetrics(recordId = '') {
@@ -3387,7 +3573,7 @@ async function refreshPublishedMetrics(recordId = '') {
 
   try {
     updateSyncStatus(recordId ? '正在尝试更新这条已发布记录...' : '正在尝试更新已发布数据...');
-    const response = await fetch(endpoint, {
+    const response = await apiFetch(endpoint, {
       method: 'POST',
       headers: {
         Accept: 'application/json',
@@ -3397,10 +3583,11 @@ async function refreshPublishedMetrics(recordId = '') {
         recordId,
         publishedRecords: cleanPublishedRecords(publishedRecords)
       })
-    });
-    if (!response.ok) throw new Error(`HTTP ${response.status}`);
-    const data = await response.json();
+    }, { workflowMutation: true, operationPrefix: 'published-refresh', timeoutMs: 30000 });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) throw createApiError(data, response.status);
     publishedRecords = mergePublishedRecords(publishedRecords, data.publishedRecords);
+    workflowRevision = clamp(toInt(data.revision, workflowRevision), 0, Number.MAX_SAFE_INTEGER);
     saveLocalWorkflow();
     updateAllBadges();
     renderPublished();
@@ -3423,7 +3610,7 @@ async function syncFavoriteChange(kanji, action) {
   if (!endpoint) return false;
   try {
     ensureFavoriteWordsHaveCandidateEntries();
-    const response = await fetch(endpoint, {
+    const response = await apiFetch(endpoint, {
       method: 'POST',
       headers: {
         Accept: 'application/json',
@@ -3438,9 +3625,10 @@ async function syncFavoriteChange(kanji, action) {
         aiBatches: cleanAiBatches(aiBatches),
         aiPreview
       })
-    });
-    if (!response.ok) throw new Error(`HTTP ${response.status}`);
-    const data = cleanStoredWorkflow(await response.json());
+    }, { workflowMutation: true, operationPrefix: `favorite-${action}` });
+    const responseData = await response.json().catch(() => ({}));
+    if (!response.ok) throw createApiError(responseData, response.status);
+    const data = cleanStoredWorkflow(responseData);
     favorites = data.words;
     favoriteStatuses = data.statuses;
     wordFeedback = data.feedback;
@@ -3453,6 +3641,8 @@ async function syncFavoriteChange(kanji, action) {
     todayDismissed = cleanTeamDismissedState(data.todayDismissed || todayDismissed);
     historySnapshots = data.historySnapshots;
     todaySnapshotHistory = data.todaySnapshotHistory;
+    workflowRevision = data.revision;
+    workflowAuditLog = data.auditLog;
     cloudWorkflowFailed = false;
     lastCloudSyncAt = nowIso();
     hydrateTodayWordsFromSnapshot();
@@ -3462,6 +3652,7 @@ async function syncFavoriteChange(kanji, action) {
     return true;
   } catch (error) {
     console.warn('收藏同步失败', error);
+    if (error.status === 409) await loadCloudWorkflow({ mode: 'remote-first', showMessages: false });
     cloudWorkflowFailed = true;
     showToast('团队同步失败，本次修改未保存到团队后台');
     return false;
@@ -3473,7 +3664,7 @@ async function syncFavoriteStatus(kanji, status) {
   if (!endpoint) return false;
   try {
     ensureFavoriteWordsHaveCandidateEntries();
-    const response = await fetch(endpoint, {
+    const response = await apiFetch(endpoint, {
       method: 'POST',
       headers: {
         Accept: 'application/json',
@@ -3489,9 +3680,10 @@ async function syncFavoriteStatus(kanji, status) {
         aiBatches: cleanAiBatches(aiBatches),
         aiPreview
       })
-    });
-    if (!response.ok) throw new Error(`HTTP ${response.status}`);
-    const data = cleanStoredWorkflow(await response.json());
+    }, { workflowMutation: true, operationPrefix: 'favorite-status' });
+    const responseData = await response.json().catch(() => ({}));
+    if (!response.ok) throw createApiError(responseData, response.status);
+    const data = cleanStoredWorkflow(responseData);
     favorites = data.words;
     favoriteStatuses = data.statuses;
     wordFeedback = data.feedback;
@@ -3504,6 +3696,8 @@ async function syncFavoriteStatus(kanji, status) {
     todayDismissed = cleanTeamDismissedState(data.todayDismissed || todayDismissed);
     historySnapshots = data.historySnapshots;
     todaySnapshotHistory = data.todaySnapshotHistory;
+    workflowRevision = data.revision;
+    workflowAuditLog = data.auditLog;
     cloudWorkflowFailed = false;
     lastCloudSyncAt = nowIso();
     hydrateTodayWordsFromSnapshot();
@@ -3513,6 +3707,7 @@ async function syncFavoriteStatus(kanji, status) {
     return true;
   } catch (error) {
     console.warn('状态同步失败', error);
+    if (error.status === 409) await loadCloudWorkflow({ mode: 'remote-first', showMessages: false });
     cloudWorkflowFailed = true;
     showToast('团队同步失败，本次修改未保存到团队后台');
     return false;
@@ -4125,7 +4320,7 @@ async function loadCloudRankings(showMessages = false) {
   const endpoint = getRankingsEndpoint();
   if (!endpoint) return false;
   try {
-    const response = await fetch(endpoint, { headers: { Accept: 'application/json' } });
+    const response = await apiFetch(endpoint, { headers: { Accept: 'application/json' } }, { cancelKey: 'rankings-load' });
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     const data = await response.json();
     const applied = applyCloudRankings(data.days);
@@ -4302,7 +4497,7 @@ function getBlockedTodayWords() {
   return blocked;
 }
 
-function getRecentHistoryBlockedWords(days = TODAY_REPEAT_BLOCK_DAYS) {
+function getRecentHistoryBlockedWords(days = TODAY_HISTORY_DEDUP_DAYS) {
   const blocked = new Set();
   safeArray(rankingHistoryDates).slice(0, Math.max(0, days)).forEach(dateKeyValue => {
     safeArray(rankingHistoryWords[dateKeyValue]).forEach(word => {
@@ -5056,7 +5251,7 @@ function buildRecommendedWord(word, origin = 'global', candidateMeta = null) {
   const freshnessBonus = getFreshnessBonus(candidateMeta);
   const candidateTypeBonus = getCandidateTypeBonus(candidateMeta);
   const riskPenalty = getRiskPenalty(candidateMeta);
-  const aiBaseScore = candidateMeta?.sourceType === 'deepseek_generated'
+  const aiBaseScore = ['codex_generated', 'deepseek_generated'].includes(candidateMeta?.sourceType)
     ? clamp(toInt(candidateMeta.xhsFitScore, platformHeatScore), 0, 100)
     : null;
   const finalScore = clamp(Math.round(
@@ -5129,6 +5324,9 @@ function buildRecommendedWord(word, origin = 'global', candidateMeta = null) {
   };
   return {
     ...word,
+    imageUrl: aiCard?.referenceImage?.status === 'ready' && aiCard.referenceImage.url
+      ? aiCard.referenceImage.url
+      : word.imageUrl,
     origin,
     dataScore,
     platformHeatScore,
@@ -5224,7 +5422,7 @@ function isTodayCandidateEligible(entry = {}, options = {}) {
   if (blocked.has(cleanEntry.kanji) || dismissed.has(cleanEntry.kanji)) return false;
   if (recentBlocked.has(cleanEntry.kanji)) return false;
   if (isLibraryAuditRemoved(cleanEntry)) return false;
-  if (!['deepseek_generated', 'deepseek_reviewed', 'manual_keep'].includes(cleanEntry.sourceType)) return false;
+  if (!['codex_generated', 'deepseek_generated', 'deepseek_reviewed', 'manual_keep'].includes(cleanEntry.sourceType)) return false;
   if (cleanEntry.sourceType === 'deepseek_reviewed' && ['delete', 'deleted', 'archived'].includes(cleanEntry.libraryReviewStatus)) return false;
   if (['review', 'blocked'].includes(cleanEntry.displayBucket)) return false;
   if (cleanEntry.riskLevel === 'high') return false;
@@ -5423,10 +5621,10 @@ function hydrateTodayWordsFromSnapshot() {
       const sourceEntry = candidatePool[kanji] || { kanji };
       const word = buildTodayWordFromCandidateEntry({
         ...sourceEntry,
-        recommendationAudit: sourceEntry.recommendationAudit || auditItem || {}
+        recommendationAudit: { ...(sourceEntry.recommendationAudit || {}), ...(auditItem || {}) }
       }, { snapshotDisplay: true });
       if (!word) return null;
-      const audit = word.candidateMeta?.recommendationAudit || auditItem || {};
+      const audit = auditItem || word.candidateMeta?.recommendationAudit || {};
       return {
         ...word,
         recommendationAudit: audit,
@@ -5785,7 +5983,6 @@ function normalizeAiPreviewItem(item = {}, batchId = '', sourceText = '', action
     sourceText,
     sourceTags,
     aiBatchId: batchId,
-    importedAt: null,
     updatedAt: nowIso(),
     importState: ['new', 'imported', 'skipped'].includes(item.importState) ? item.importState : 'new',
     importedAt: typeof item.importedAt === 'string' ? item.importedAt : '',
@@ -5908,14 +6105,14 @@ async function generateAiCandidates(forceRegenerate = false) {
   if (button) button.disabled = true;
   setAiStatus(forceRegenerate ? '重试中…' : '生成中…', 'loading');
   try {
-    const response = await fetch(getAiCandidatesEndpoint(), {
+    const response = await apiFetch(getAiCandidatesEndpoint(), {
       method: 'POST',
       headers: {
         Accept: 'application/json',
         'Content-Type': 'application/json'
       },
       body: JSON.stringify(payload)
-    });
+    }, { timeoutMs: 100000, cancelKey: 'ai-candidates' });
     const data = await response.json().catch(() => ({}));
     if (!response.ok || data.error) throw new Error(data.error?.message || data.error || `HTTP ${response.status}`);
     const batchId = `ai_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
@@ -6068,14 +6265,14 @@ function buildAutoAiCandidatePayload() {
 
 async function autoGenerateAiCandidates() {
   const payload = buildAutoAiCandidatePayload();
-  const response = await fetch(getAiCandidatesEndpoint(), {
+  const response = await apiFetch(getAiCandidatesEndpoint(), {
     method: 'POST',
     headers: {
       Accept: 'application/json',
       'Content-Type': 'application/json'
     },
     body: JSON.stringify(payload)
-  });
+  }, { timeoutMs: 100000 });
   const data = await response.json().catch(() => ({}));
   if (!response.ok || data.error) throw new Error(data.error?.message || data.error || `HTTP ${response.status}`);
   const batchId = `auto_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
@@ -6312,7 +6509,7 @@ async function generateTodayAiCardsOnServer(kanjis = [], options = {}) {
   targets.forEach(kanji => aiCardAutoInFlight.add(kanji));
   renderToday();
   try {
-    const response = await fetch(endpoint, {
+    const response = await apiFetch(endpoint, {
       method: 'POST',
       headers: {
         Accept: 'application/json',
@@ -6326,13 +6523,13 @@ async function generateTodayAiCardsOnServer(kanjis = [], options = {}) {
         retryStalePending: Boolean(options.retryStalePending),
         maxWords: clamp(toInt(options.maxWords, 5), 1, 5)
       })
-    });
+    }, { workflowMutation: true, operationPrefix: 'today-ai-cards', timeoutMs: 110000 });
     const data = await response.json().catch(() => ({}));
     await loadCloudWorkflow(false);
     updateAllBadges();
     renderToday();
     if (currentWordForModal && targets.includes(currentWordForModal.kanji)) openDetail(currentWordForModal.kanji);
-    if (!response.ok || data.error) throw new Error(data.error || `HTTP ${response.status}`);
+    if (!response.ok || data.error) throw new Error(getApiErrorMessage(data, response.status));
     const savedCount = toInt(data.savedCount, 0);
     showToast(savedCount ? `已生成 ${savedCount} 个今日词卡` : '没有需要生成的今日词卡');
     return savedCount;
@@ -6611,14 +6808,14 @@ async function generateDeepSeekWordCards(kanjis, options = {}) {
   if (!silent) refreshCurrentGrid();
   if (!silent) showToast(`正在生成 ${payload.context.words.length} 个 DeepSeek 词卡…`);
   try {
-    const response = await fetch(getAiCandidatesEndpoint(), {
+    const response = await apiFetch(getAiCandidatesEndpoint(), {
       method: 'POST',
       headers: {
         Accept: 'application/json',
         'Content-Type': 'application/json'
       },
       body: JSON.stringify(payload)
-    });
+    }, { timeoutMs: 100000 });
     const data = await response.json().catch(() => ({}));
     if (!response.ok || data.error) throw new Error(data.error?.message || data.error || `HTTP ${response.status}`);
     let savedCount = 0;
@@ -6863,6 +7060,7 @@ function getManualWordExistingState(kanji) {
 }
 
 function openManualWordModal() {
+  hasUnsavedFormChanges = false;
   document.getElementById('modalContainer').innerHTML = `
     <div class="modal-shell record-shell">
       <div class="modal-header settings-header">
@@ -7013,21 +7211,32 @@ async function submitManualWord() {
   await addManualWordToFavorites(kanji, options);
 }
 
-function toggleFavorite(kanji, forceState = null) {
-  const exists = favorites.includes(kanji);
-  const shouldFavorite = forceState === null ? !exists : Boolean(forceState);
-  if (!shouldFavorite && exists) {
-    favorites = favorites.filter(item => item !== kanji);
-    delete favoriteStatuses[kanji];
-    showToast('已从选题池移除');
-    syncFavoriteChange(kanji, 'remove');
-  } else if (shouldFavorite && !exists) {
-    favorites.unshift(kanji);
-    const entry = ensureManualKeepEntry(kanji);
-    removeWordFromTodaySnapshot(kanji);
-    showToast('已加入选题池');
-    syncFavoriteChange(kanji, 'add');
-    if (cleanAiCard(entry?.aiCard || {})?.cardStatus !== 'ready') {
+async function toggleFavorite(kanji, forceState = null) {
+  return runUiOperation(`favorite:${kanji}`, async () => {
+    const exists = favorites.includes(kanji);
+    const shouldFavorite = forceState === null ? !exists : Boolean(forceState);
+    let action = '';
+    let entry = null;
+    if (!shouldFavorite && exists) {
+      favorites = favorites.filter(item => item !== kanji);
+      delete favoriteStatuses[kanji];
+      action = 'remove';
+      showToast('正在从选题池移除');
+    } else if (shouldFavorite && !exists) {
+      favorites.unshift(kanji);
+      entry = ensureManualKeepEntry(kanji);
+      removeWordFromTodaySnapshot(kanji);
+      action = 'add';
+      showToast('正在加入选题池');
+    }
+    if (!action) return true;
+    saveLocalWorkflow();
+    updateAllBadges();
+    refreshCurrentGrid();
+    const synced = await syncFavoriteChange(kanji, action);
+    if (!synced) return false;
+    showToast(action === 'add' ? '已加入选题池' : '已从选题池移除');
+    if (action === 'add' && cleanAiCard(entry?.aiCard || {})?.cardStatus !== 'ready') {
       void generateDeepSeekWordCards([kanji], { force: false, silent: true }).then(savedCount => {
         if (savedCount > 0) showToast(`已为「${kanji}」生成 DeepSeek 词卡`);
         saveLocalWorkflow();
@@ -7035,13 +7244,12 @@ function toggleFavorite(kanji, forceState = null) {
         refreshCurrentGrid();
       });
     }
-  }
-  saveLocalWorkflow();
-  updateAllBadges();
-  refreshCurrentGrid();
+    return true;
+  });
 }
 
-function markPending(kanji) {
+async function markPending(kanji) {
+  if (uiOperationsInFlight.has(`status:${kanji}`)) return;
   ensureFavoriteWord(kanji);
   ensureManualKeepEntry(kanji);
   favoriteStatuses[kanji] = 'pending';
@@ -7051,10 +7259,11 @@ function markPending(kanji) {
   updateAllBadges();
   refreshCurrentGrid();
   showToast('已标记为待发布');
-  syncFavoriteStatus(kanji, 'pending');
+  await runUiOperation(`status:${kanji}`, () => syncFavoriteStatus(kanji, 'pending'));
 }
 
-function markPublishedStatusOnly(kanji) {
+async function markPublishedStatusOnly(kanji) {
+  if (uiOperationsInFlight.has(`status:${kanji}`)) return;
   ensureFavoriteWord(kanji);
   ensureManualKeepEntry(kanji);
   favoriteStatuses[kanji] = 'published';
@@ -7062,7 +7271,7 @@ function markPublishedStatusOnly(kanji) {
   saveLocalWorkflow();
   updateAllBadges();
   refreshCurrentGrid();
-  syncFavoriteStatus(kanji, 'published');
+  await runUiOperation(`status:${kanji}`, () => syncFavoriteStatus(kanji, 'published'));
 }
 
 function renderStatusControl(kanji) {
@@ -7114,7 +7323,8 @@ function refreshStatusControls() {
   });
 }
 
-function selectFavoriteStatus(kanji, status) {
+async function selectFavoriteStatus(kanji, status) {
+  if (uiOperationsInFlight.has(`status:${kanji}`)) return;
   ensureFavoriteWord(kanji);
   const nextStatus = cleanFavoriteStatus(status);
   activeStatusMenuKanji = null;
@@ -7125,7 +7335,7 @@ function selectFavoriteStatus(kanji, status) {
   updateAllBadges();
   refreshCurrentGrid();
   showToast(nextStatus === 'published' ? '已移到已发布页面' : `状态已更新为：${FAVORITE_STATUS_LABELS[nextStatus]}`);
-  syncFavoriteStatus(kanji, nextStatus);
+  await runUiOperation(`status:${kanji}`, () => syncFavoriteStatus(kanji, nextStatus));
 }
 
 function renderFeedbackControl(kanji) {
@@ -7253,6 +7463,8 @@ function getDailyHotTeamState(word = {}) {
 
 function getRecommendationGrade(word = {}) {
   const entry = word.candidateMeta || {};
+  const auditedGrade = word.recommendationAudit?.recommendationLevel || entry.recommendationAudit?.recommendationLevel;
+  if (['S', 'A', 'B', 'C'].includes(auditedGrade)) return auditedGrade;
   const score = Number(word.finalScore || entry.lastScore || entry.xhsFitScore || word.dataScore || word.heat || 0);
   const riskLevel = word.riskLevel || entry.riskLevel || '';
   const reviewState = word.reviewState || entry.lastReviewState || '';
@@ -7522,9 +7734,9 @@ function buildHistoryArchivedWord(kanji, dateKeyValue, index) {
   }], `history_snapshot_${dateKeyValue}`)[0];
   const recommended = buildRecommendedWord(enriched, 'history', {
     ...(candidateMeta || {}),
-    recommendationAudit: candidateMeta?.recommendationAudit || auditItem || {}
+    recommendationAudit: { ...(candidateMeta?.recommendationAudit || {}), ...(auditItem || {}) }
   });
-  const audit = recommended.candidateMeta?.recommendationAudit || auditItem || {};
+  const audit = auditItem || recommended.candidateMeta?.recommendationAudit || {};
   return {
     ...recommended,
     recommendationAudit: audit,
@@ -7573,6 +7785,7 @@ function getCurrentDailyHotAudit() {
     ? cleanTodaySnapshot(todaySnapshot)
     : cleanHistorySnapshot(historySnapshots[dateKeyValue] || {}, dateKeyValue);
   const words = getCurrentDailyHotWords();
+  if (snapshot.recommendationAudit?.total === words.length) return snapshot.recommendationAudit;
   const batchIds = getUniqueWords(snapshot.batchIds || []);
   const freshBatchIds = new Set(batchIds.length ? batchIds : [...getFreshAiBatchIdsForDate(dateKeyValue)]);
   const context = {
@@ -7759,7 +7972,11 @@ function renderDailyHot() {
       const snapshotMeta = hasTodaySnapshotForToday(snapshot)
         ? `今天的固定推荐 · 今日固定 ${snapshot.words.length} 个 · 第 ${snapshot.version || 1} 版`
         : '今天还没有固定推荐，可以从 AI 候选库生成今日推荐。';
-      todayDate.textContent = `${formatDisplayDate(todayKey())} · ${snapshotMeta}`;
+      const draft = codexTomorrowDraftStatus;
+      const draftMeta = draft
+        ? ` · 明日草稿 ${draft.status === 'missing' ? '未提交' : `${draft.wordCount || 0} 词 / 卡片 ${draft.cardReadyCount || 0} / 图片 ${draft.imageReadyCount || 0}`}`
+        : '';
+      todayDate.textContent = `${formatDisplayDate(todayKey())} · ${snapshotMeta}${draftMeta}`;
     } else {
       todayDate.textContent = `正在查看 ${currentDailyHotDateKey} 的历史推荐 · ${getHistorySourceLabel(currentDailyHotDateKey)}`;
     }
@@ -7794,16 +8011,16 @@ async function finishTodaySnapshotGeneration(result, actionLabel, options = {}) 
 }
 
 async function generateTodaySnapshotOnServer(mode) {
-  const response = await fetch(getTodaySnapshotEndpoint(), {
+  const response = await apiFetch(getTodaySnapshotEndpoint(), {
     method: 'POST',
     headers: {
       Accept: 'application/json',
       'Content-Type': 'application/json'
     },
     body: JSON.stringify({ mode })
-  });
+  }, { workflowMutation: true, operationPrefix: `today-${mode}`, timeoutMs: 30000 });
   const data = await response.json().catch(() => ({}));
-  if (!response.ok || data.error) throw new Error(data.error || `HTTP ${response.status}`);
+  if (!response.ok || data.error) throw new Error(getApiErrorMessage(data, response.status));
   await loadCloudWorkflow(false);
   return data;
 }
@@ -8300,7 +8517,7 @@ function openDetail(idOrKanji) {
     const basicKana = entry.kana || word.kana || word.reading || '';
     document.getElementById('modalContainer').innerHTML = `
       <div class="modal-hero modal-hero-recommendation">
-        <img class="modal-hero-img" src="${escapeHTML(getHeroImageUrl(word.kanji))}" alt="${escapeHTML(word.kanji)}" onerror="this.src='${fallbackHero}'">
+        <img class="modal-hero-img" src="${escapeHTML(word.imageUrl || getHeroImageUrl(word.kanji))}" alt="${escapeHTML(word.kanji)}" onerror="this.src='${fallbackHero}'">
         <div class="modal-hero-overlay"></div>
         <div class="modal-hero-content">
           <div class="modal-kanji">${escapeHTML(word.kanji)}</div>
@@ -8356,7 +8573,7 @@ function openDetail(idOrKanji) {
   const avoidScenarioText = displayCover.avoid || entry.riskWarning || '';
   document.getElementById('modalContainer').innerHTML = `
     <div class="modal-hero modal-hero-recommendation">
-      <img class="modal-hero-img" src="${escapeHTML(getHeroImageUrl(word.kanji))}" alt="${escapeHTML(word.kanji)}" onerror="this.src='${fallbackHero}'">
+      <img class="modal-hero-img" src="${escapeHTML(word.imageUrl || getHeroImageUrl(word.kanji))}" alt="${escapeHTML(word.kanji)}" onerror="this.src='${fallbackHero}'">
       <div class="modal-hero-overlay"></div>
       <div class="modal-hero-content">
         <div class="modal-kanji">${escapeHTML(word.kanji)}</div>
@@ -8425,7 +8642,7 @@ function openDetail(idOrKanji) {
       <div class="modal-meta-bar">
         <div class="modal-meta-item">📍 来源：${escapeHTML(word.source || '未知')}</div>
         <div class="modal-meta-item">📚 分类：${escapeHTML(word.category || '未分类')}</div>
-        <div class="modal-meta-item">🤖 词卡：DeepSeek 生成</div>
+        <div class="modal-meta-item">🤖 词卡：${escapeHTML(aiCard.cardSource === 'codex' ? 'Codex 生成' : 'DeepSeek 生成')}</div>
       </div>
       <div class="modal-footer-actions">
         <button class="btn btn-primary" onclick="markPending('${safeKanjiAction}')">标记待发布</button>
@@ -8516,6 +8733,7 @@ function openLibraryCleanupModal() {
 }
 
 function openPublishedRecordModal(recordId = '', presetKanji = '') {
+  hasUnsavedFormChanges = false;
   const record = recordId ? cleanPublishedRecords(publishedRecords).find(item => item.id === recordId) : null;
   currentPublishedRecordId = record?.id || null;
   const initialWord = record?.word || presetKanji || '';
@@ -8726,6 +8944,7 @@ function savePublishedRecord() {
     showToast('请先填写关联词');
     return;
   }
+  hasUnsavedFormChanges = false;
   ensureFavoriteWord(word);
   const existingRecord = currentPublishedRecordId
     ? cleanPublishedRecords(publishedRecords).find(item => item.id === currentPublishedRecordId)
@@ -8855,6 +9074,7 @@ function closeModal() {
   document.body.style.overflow = '';
   currentWordForModal = null;
   currentPublishedRecordId = null;
+  hasUnsavedFormChanges = false;
 }
 
 function closeModalOutside(event) {
@@ -8943,6 +9163,60 @@ function exportSelected() {
   });
 }
 
+function selectWorkflowBackupForRestore() {
+  const input = document.getElementById('workflowRestoreInput');
+  if (!input) return;
+  input.value = '';
+  input.click();
+}
+
+async function restoreWorkflowBackup(event) {
+  const file = event?.target?.files?.[0];
+  if (!file) return;
+  if (file.size > 10 * 1024 * 1024) {
+    showToast('备份文件不能超过 10 MB');
+    return;
+  }
+  try {
+    const raw = JSON.parse(await file.text());
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new Error('备份根节点必须是 JSON 对象');
+    const restored = cleanStoredWorkflow(raw);
+    const summary = `选题 ${restored.words.length} 个、候选 ${Object.keys(restored.candidatePool).length} 个、发布记录 ${restored.publishedRecords.length} 条、今日推荐 ${restored.todaySnapshot.words.length} 个`;
+    if (!window.confirm(`备份校验通过：${summary}。\n\n确认用这份备份覆盖当前团队工作流吗？`)) return;
+
+    const currentRevision = workflowRevision;
+    const currentAuditLog = workflowAuditLog;
+    favorites = restored.words;
+    favoriteStatuses = restored.statuses;
+    wordFeedback = restored.feedback;
+    publishedRecords = restored.publishedRecords;
+    candidatePool = restored.candidatePool;
+    aiBatches = restored.aiBatches;
+    aiPreview = restored.aiPreview;
+    syncAiPreviewGlobalsFromWorkflow();
+    todaySnapshot = restored.todaySnapshot;
+    todayDismissed = restored.todayDismissed;
+    historySnapshots = restored.historySnapshots;
+    todaySnapshotHistory = restored.todaySnapshotHistory;
+    workflowRevision = currentRevision;
+    workflowAuditLog = currentAuditLog;
+    saveLocalWorkflow();
+    const saved = await saveCloudWorkflow(false);
+    if (!saved) {
+      await loadCloudWorkflow({ mode: 'remote-first', showMessages: false });
+      throw new Error('团队后台拒绝了恢复操作，已重新载入云端数据');
+    }
+    updateAllBadges();
+    refreshCurrentGrid();
+    showToast(`备份恢复完成：${summary}`);
+  } catch (error) {
+    console.warn('恢复 workflow 备份失败', error);
+    showToast(`备份恢复失败：${error.message || '文件格式无效'}`);
+  } finally {
+    if (event?.target) event.target.value = '';
+  }
+}
+
 function exportWorkflowBackup() {
   const backup = cleanStoredWorkflow({
     words: filterKnownFavorites(favorites),
@@ -8956,8 +9230,10 @@ function exportWorkflowBackup() {
     todayDismissed,
     historySnapshots,
     todaySnapshotHistory,
+    revision: workflowRevision,
+    auditLog: workflowAuditLog,
     updated: nowIso(),
-    schemaVersion: 1
+    schemaVersion: 2
   });
   const blob = new Blob([JSON.stringify(backup, null, 2)], { type: 'application/json;charset=utf-8' });
   const url = URL.createObjectURL(blob);
@@ -8977,6 +9253,7 @@ async function refreshData() {
   if (!synced) generateFallbackRankings();
   const workflowSynced = await loadCloudWorkflow({ mode: 'remote-first', showMessages: false });
   if (!workflowSynced) loadLocalWorkflow();
+  await loadCodexTomorrowDraftStatus();
   hydrateTodayWordsFromSnapshot();
   updateAllBadges();
   refreshCurrentGrid();
@@ -9076,6 +9353,31 @@ document.addEventListener('click', event => {
   }
 });
 
+document.addEventListener('input', event => {
+  if (event.target instanceof Element && event.target.matches('.modal-container input, .modal-container textarea, .modal-container select')) {
+    hasUnsavedFormChanges = true;
+  }
+});
+
+window.addEventListener('beforeunload', event => {
+  if (!hasUnsavedFormChanges && pendingCloudSaveCount === 0) return;
+  event.preventDefault();
+  event.returnValue = '';
+});
+
+window.addEventListener('error', event => {
+  console.error('页面运行异常', event.error || event.message);
+  updateSyncStatus('页面发生异常，请刷新后重试。', '#c0392b');
+  showToast('页面发生异常，请刷新后重试');
+});
+
+window.addEventListener('unhandledrejection', event => {
+  if (event.reason?.code === 'REQUEST_ABORTED') return;
+  console.error('未处理的异步异常', event.reason);
+  updateSyncStatus('后台操作发生异常，请刷新数据后重试。', '#c0392b');
+  showToast('后台操作失败，请刷新后重试');
+});
+
 async function init() {
   if (!getAllWords().length) {
     console.error('ALL_WORDS not loaded! Check words-data.js');
@@ -9094,6 +9396,7 @@ async function init() {
     updateSyncStatus('云端同步失败，正在使用本地缓存，可能与队友不一致。', '#c0392b');
     showToast('云端同步失败，正在使用本地缓存');
   }
+  void loadCodexTomorrowDraftStatus();
   verifyDeepSeekLibraryAuditCoverage();
   hydrateTodayWordsFromSnapshot();
   updateAllBadges();
@@ -9114,6 +9417,8 @@ async function init() {
 }
 
 window.addEventListener('pageshow', () => {
+  activeApiControllers.forEach(controller => controller.abort());
+  activeApiControllers.clear();
   resetTransientUiState();
   ensureTodayGridVisible();
 });

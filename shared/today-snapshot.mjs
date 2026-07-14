@@ -13,7 +13,8 @@ import {
   getDailyClusterLimit,
   getDailyQualityCategory,
   getDailyQualityScoreDelta,
-  getDailySemanticCluster
+  getDailySemanticCluster,
+  hasStrongXhsExpressionValue
 } from './today-quality.mjs';
 
 export { TODAY_SNAPSHOT_GENERATOR_VERSION };
@@ -102,6 +103,7 @@ const NEGATIVE_WORD_RE = /イライラ|うざい|キレる|グチる|めんど�
 const EMOTION_SOCIAL_RE = /大正解|小確幸|自己肯定感|気まずい|モヤる|距離感|気を遣う|空気読む|しんどい|刺さる|だるい|わかりみ|塩対応|すれ違い|共感|情绪|情緒|人际|人際|社交|语感|語感|関係|关系|關係|気持ち|心情/;
 const SEASONAL_PATTERN = /バレンタイン|ホワイトデー|お盆|クリスマス|正月|花見|桜|ハロウィン|七夕|節分|祭り|紅葉|季節|节日|節日|季节|文化/;
 const RECOMMENDATION_ORIGIN_LABELS = {
+  codex_generated: 'Codex 次日草稿',
   deepseek_new: 'DeepSeek 新生成',
   candidate_pool: 'AI 候选池旧词',
   history_fallback: '历史热门回流',
@@ -247,17 +249,19 @@ function getRecommendationAuditTrace(entry = {}, context = {}) {
   const freshBatchIds = context.freshBatchIds || new Set();
   const existingWords = context.existingWords || new Set();
   const sourceType = cleanText(entry.sourceType, 80);
+  const fromCodex = sourceType === 'codex_generated';
   const fromDeepSeekNew = sourceType === 'deepseek_generated' && entry.aiBatchId && freshBatchIds.has(entry.aiBatchId);
   const fromManual = sourceType === 'manual_keep';
   const fromLocalFallback = Boolean(entry.fromLocalFallback || entry.lastOrigin === 'local' || sourceType === 'original' || sourceType === 'audit_missing');
   const fromHistoryFallback = Boolean(entry.historicalBackfill);
-  const fromCandidatePool = !fromDeepSeekNew && !fromManual && !fromLocalFallback && !fromHistoryFallback;
+  const fromCandidatePool = !fromCodex && !fromDeepSeekNew && !fromManual && !fromLocalFallback && !fromHistoryFallback;
   const isBackfill = Boolean(entry.historicalBackfill)
     || (context.mode === 'fill' && !existingWords.has(entry.kanji))
     || (entry.displayBucket && entry.displayBucket !== 'today');
   const isDedupRelaxed = Boolean(entry.historicalBackfill || context.relaxedDedup || context.dedupDaysUsed < TODAY_HISTORY_DEDUP_DAYS);
   let originType = 'candidate_pool';
-  if (fromDeepSeekNew) originType = 'deepseek_new';
+  if (fromCodex) originType = 'codex_generated';
+  else if (fromDeepSeekNew) originType = 'deepseek_new';
   else if (fromHistoryFallback) originType = 'history_fallback';
   else if (fromLocalFallback) originType = 'local_word_bank';
   else if (fromManual) originType = 'manual_added';
@@ -274,6 +278,7 @@ function getRecommendationAuditTrace(entry = {}, context = {}) {
     fromHistoryFallback,
     fromLocalFallback,
     fromManual,
+    fromCodex,
     isBackfill,
     isDedupRelaxed,
     dedupDaysUsed: context.dedupDaysUsed,
@@ -338,11 +343,41 @@ function cleanNoveltySummary(summary = {}) {
 }
 
 export function buildTodayRecommendationAudit(todayEntries = [], context = {}) {
-  const items = safeArray(todayEntries).map(entry => buildAuditItem(entry.candidateMeta || entry, context));
+  const clusterOccurrences = new Map();
+  const items = safeArray(todayEntries).map(entry => {
+    const candidate = entry.candidateMeta || entry;
+    const item = buildAuditItem(candidate, context);
+    const qualityCategory = getDailyQualityCategory(candidate);
+    const semanticClusterKey = getDailySemanticCluster(candidate);
+    const occurrence = (clusterOccurrences.get(semanticClusterKey) || 0) + 1;
+    clusterOccurrences.set(semanticClusterKey, occurrence);
+    const isDuplicateCluster = !semanticClusterKey.startsWith('word:') && occurrence > getDailyClusterLimit(semanticClusterKey);
+    const pureCategoryWord = qualityCategory === 'beauty_product';
+    const basicOrGeneric = ['basic_greeting', 'textbook_polite', 'generic_basic'].includes(qualityCategory);
+    const sLevelEligible = !basicOrGeneric
+      && !pureCategoryWord
+      && !isDuplicateCluster
+      && hasStrongXhsExpressionValue(candidate);
+    return {
+      ...item,
+      recommendationLevel: item.recommendationLevel === 'S' && !sLevelEligible ? 'A' : item.recommendationLevel,
+      semanticClusterKey,
+      qualityCategory,
+      isDuplicateCluster,
+      sLevelEligible,
+      diagnosis: [
+        ...item.diagnosis,
+        basicOrGeneric ? '基础或教材属性较强，默认不进入 S 级' : '',
+        pureCategoryWord ? '单纯品类词默认不进入 S 级' : '',
+        isDuplicateCluster ? '同日语义簇重复，作为次要词最多 A 级' : ''
+      ].filter(Boolean)
+    };
+  });
   const sourceSummary = Object.keys(RECOMMENDATION_ORIGIN_LABELS).reduce((result, key) => ({ ...result, [key]: 0 }), {});
   items.forEach(item => {
     sourceSummary[item.originType] = (sourceSummary[item.originType] || 0) + 1;
     if (item.fromDeepSeekNew) sourceSummary.deepseek_new += item.originType === 'deepseek_new' ? 0 : 1;
+    if (item.fromCodex) sourceSummary.codex_generated += item.originType === 'codex_generated' ? 0 : 1;
     if (item.fromCandidatePool) sourceSummary.candidate_pool += item.originType === 'candidate_pool' ? 0 : 1;
     if (item.fromLocalFallback) sourceSummary.local_word_bank += item.originType === 'local_word_bank' ? 0 : 1;
     if (item.isBackfill) sourceSummary.today_backfill += item.originType === 'today_backfill' ? 0 : 1;
@@ -363,6 +398,14 @@ export function buildTodayRecommendationAudit(todayEntries = [], context = {}) {
       relaxedReasons: context.relaxedDedup ? ['dedup_relaxed'] : []
     })
   };
+  qualitySummary.sLevelCount = items.filter(item => item.recommendationLevel === 'S').length;
+  qualitySummary.aLevelCount = items.filter(item => item.recommendationLevel === 'A').length;
+  qualitySummary.bLevelCount = items.filter(item => item.recommendationLevel === 'B').length;
+  qualitySummary.cLevelCount = items.filter(item => item.recommendationLevel === 'C').length;
+  if (qualitySummary.sLevelCount > 10) {
+    qualitySummary.estimatedHumanQualityScore = Math.min(qualitySummary.estimatedHumanQualityScore, 88);
+    qualitySummary.healthWarnings = [...safeArray(qualitySummary.healthWarnings), '推荐等级过松，需要收紧 S/A 评分标准。'];
+  }
   const total = items.length || 1;
   const diagnosis = [];
   const rawLatestBatchItems = safeArray(context.latestBatchItems);
@@ -515,8 +558,8 @@ function cleanCandidateEntry(kanji, entry = {}) {
   if (sourceType === 'deepseek_api') sourceType = 'deepseek_generated';
   else if (sourceType === 'manual') sourceType = 'manual_keep';
   else if (sourceType === 'original' || sourceType === 'audit_missing') sourceType = 'deepseek_reviewed';
-  else if (!['deepseek_generated', 'deepseek_reviewed', 'manual_keep'].includes(sourceType)) sourceType = knownWord ? 'deepseek_reviewed' : '';
-  const hasAiLexicalFields = Boolean(entry.kana || entry.romaji || entry.meaning || ['deepseek_generated', 'deepseek_reviewed', 'manual_keep'].includes(sourceType));
+  else if (!['codex_generated', 'deepseek_generated', 'deepseek_reviewed', 'manual_keep'].includes(sourceType)) sourceType = knownWord ? 'deepseek_reviewed' : '';
+  const hasAiLexicalFields = Boolean(entry.kana || entry.romaji || entry.meaning || ['codex_generated', 'deepseek_generated', 'deepseek_reviewed', 'manual_keep'].includes(sourceType));
   if (!cleanKanji || (PURE_KANJI_RE.test(cleanKanji) && !knownWord && !hasAiLexicalFields)) return null;
   const riskLevel = cleanEnum(entry.riskLevel, RISK_LEVEL_OPTIONS, 'low');
   let displayBucket = cleanEnum(entry.displayBucket, DISPLAY_BUCKET_OPTIONS, sourceType === 'deepseek_generated' ? 'long_term' : 'today');
@@ -786,7 +829,7 @@ function isLaughWord(entry = {}) {
 function scoreCandidate(entry, workflow, qualityContext = {}) {
   const feedbackPenalty = Math.min(getFeedbackPenalty(entry.kanji, workflow.feedback), 28);
   const baseScore = toInt(entry.xhsFitScore || entry.lastScore, 60);
-  const isAiCandidate = entry.sourceType === 'deepseek_generated';
+  const isAiCandidate = ['codex_generated', 'deepseek_generated'].includes(entry.sourceType);
   const sourceBonus = isAiCandidate ? 14 : -18;
   const lowValuePenalty = LOW_VALUE_HOME_WORDS.has(entry.kanji) ? 42 : 0;
   const genericTopicPenalty = isGenericTopicWord(entry) ? 18 : 0;

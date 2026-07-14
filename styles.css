@@ -1492,6 +1492,8 @@ body::before {
 .settings-actions {
   display:flex;
   justify-content:center;
+  flex-wrap:wrap;
+  gap:10px;
   margin-top:24px;
 }
 

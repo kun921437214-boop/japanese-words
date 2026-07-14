@@ -11,13 +11,21 @@ import {
   mergeWorkflow,
   mergeWorkflowForFullSave
 } from '../shared/workflow-schema.mjs';
-
-const CORS_HEADERS = {
-  'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Methods': 'GET, POST, PUT, OPTIONS',
-  'Access-Control-Allow-Headers': 'Content-Type',
-  'Access-Control-Max-Age': '86400'
-};
+import {
+  API_LIMITS,
+  authorizeRequest,
+  errorResponse,
+  getRequestId,
+  jsonResponse,
+  optionsResponse,
+  readJsonBody,
+  unauthorizedResponse
+} from '../shared/api-security.mjs';
+import {
+  getWorkflowMutationMetadata,
+  inspectWorkflowMutation,
+  prepareWorkflowMutation
+} from '../shared/workflow-mutation.mjs';
 
 const DAILY_REFRESH_CRON = '0 16 * * *';
 const AI_CARD_BATCH_CRONS = new Set([
@@ -83,55 +91,73 @@ export function getTodayAiCardBatchPlan(status = {}, options = {}) {
   };
 }
 
-function jsonResponse(body, status = 200) {
-  return new Response(JSON.stringify(body), {
-    status,
-    headers: {
-      ...CORS_HEADERS,
-      'Content-Type': 'application/json; charset=utf-8'
-    }
-  });
-}
-
 async function readLimitedText(response, maxLength = 500) {
   const text = await response.text().catch(() => '');
   return text.slice(0, maxLength);
 }
 
-async function triggerDailyRefresh(env) {
+export async function triggerDailyPublishOrFallback(env, fetchImpl = fetch) {
   const siteUrl = String(env.SITE_URL || '').trim().replace(/\/+$/, '');
   const autoRefreshSecret = String(env.AUTO_REFRESH_SECRET || '').trim();
   if (!siteUrl || !autoRefreshSecret) {
-    console.warn('daily refresh trigger skipped because SITE_URL or AUTO_REFRESH_SECRET is missing');
-    return;
+    console.warn('daily publish skipped because SITE_URL or AUTO_REFRESH_SECRET is missing');
+    return { ok: false, source: 'skipped' };
+  }
+
+  const targetDateKey = dateKey(new Date());
+  const codexUrl = new URL(`${siteUrl}/codex-daily`);
+  codexUrl.searchParams.set('date', targetDateKey);
+  try {
+    const codexResponse = await fetchImpl(codexUrl.toString(), {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${autoRefreshSecret}`
+      },
+      body: JSON.stringify({ action: 'promote', targetDateKey })
+    });
+    const result = await codexResponse.json().catch(() => null);
+    if (codexResponse.ok && result?.published) {
+      console.log('Codex daily draft promoted', targetDateKey, result.source || 'codex_draft');
+      return { ok: true, source: 'codex', status: codexResponse.status };
+    }
+    console.warn('Codex daily draft unavailable; using DeepSeek fallback', codexResponse.status, result?.error?.code || 'UNKNOWN');
+  } catch (error) {
+    console.warn('Codex daily draft promotion failed; using DeepSeek fallback', error?.message || error);
   }
 
   const refreshUrl = new URL(`${siteUrl}/daily-refresh`);
   refreshUrl.searchParams.set('mode', 'manual');
   refreshUrl.searchParams.set('skipCards', 'true');
-  const response = await fetch(refreshUrl.toString(), {
+  const response = await fetchImpl(refreshUrl.toString(), {
     method: 'POST',
     headers: {
+      'Content-Type': 'application/json',
       Authorization: `Bearer ${autoRefreshSecret}`
-    }
+    },
+    body: JSON.stringify({ action: 'scheduled_fallback', targetDateKey })
   });
   if (!response.ok) {
     const text = await readLimitedText(response);
     console.warn('daily refresh trigger returned non-OK', response.status, text);
-    return;
+    return { ok: false, source: 'deepseek', status: response.status };
   }
   console.log('daily refresh trigger completed', response.status);
+  return { ok: true, source: 'deepseek', status: response.status };
 }
 
 async function triggerTodayAiCardBatch(env) {
   const siteUrl = String(env.SITE_URL || '').trim().replace(/\/+$/, '');
-  if (!siteUrl) {
-    console.warn('ai card batch skipped because SITE_URL is missing');
+  const autoRefreshSecret = String(env.AUTO_REFRESH_SECRET || '').trim();
+  if (!siteUrl || !autoRefreshSecret) {
+    console.warn('ai card batch skipped because SITE_URL or AUTO_REFRESH_SECRET is missing');
     return;
   }
 
   const cardsUrl = new URL(`${siteUrl}/ai-cards`);
-  const statusResponse = await fetch(cardsUrl.toString());
+  const statusResponse = await fetch(cardsUrl.toString(), {
+    headers: { Authorization: `Bearer ${autoRefreshSecret}` }
+  });
   if (!statusResponse.ok) {
     const text = await readLimitedText(statusResponse);
     console.warn('ai card batch status returned non-OK', statusResponse.status, text);
@@ -152,7 +178,8 @@ async function triggerTodayAiCardBatch(env) {
   const response = await fetch(cardsUrl.toString(), {
     method: 'POST',
     headers: {
-      'Content-Type': 'application/json'
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${autoRefreshSecret}`
     },
     body: JSON.stringify({
       mode: 'today',
@@ -368,10 +395,21 @@ async function refreshWorkflowPublishedData(env, key, data, options = {}) {
     publishedRecords: cleanPublishedRecords(result.records),
     updated: new Date().toISOString()
   });
-  await env.FAVORITES.put(key, JSON.stringify(nextData));
+  const mutation = prepareWorkflowMutation(data, nextData, options.mutationMetadata || {
+    operationId: crypto.randomUUID(),
+    expectedRevision: null,
+    action: 'scheduled.published-refresh',
+    actor: 'scheduled-worker',
+    target: options.recordId || '',
+    summary: `更新 ${result.summary?.updated || 0} 条发布数据`
+  });
+  if (!mutation.duplicate && !mutation.conflict) {
+    await env.FAVORITES.put(key, JSON.stringify(mutation.workflow));
+  }
   return {
-    data: nextData,
-    summary: result.summary
+    data: mutation.workflow,
+    summary: result.summary,
+    mutation
   };
 }
 
@@ -426,42 +464,73 @@ async function ensureRankings(env, requestedDays) {
   };
 }
 
-async function readJson(request) {
-  try {
-    return await request.json();
-  } catch (error) {
-    return null;
-  }
-}
-
 export default {
   async fetch(request, env) {
+    const methods = ['GET', 'POST', 'PUT', 'OPTIONS'];
+    const requestId = getRequestId(request);
+    const respond = (body, status = 200) => jsonResponse(request, env, body, status, { methods, requestId });
+    const fail = (status, code, message) => errorResponse(request, env, status, code, message, { methods, requestId });
+
+    try {
     if (request.method === 'OPTIONS') {
-      return new Response(null, { headers: CORS_HEADERS });
+      return optionsResponse(request, env, methods);
     }
 
     if (!env.FAVORITES) {
-      return jsonResponse({ error: 'KV namespace FAVORITES is not configured' }, 500);
+      return fail(500, 'STORAGE_NOT_CONFIGURED', 'KV namespace FAVORITES is not configured');
     }
 
     const url = new URL(request.url);
+    if (url.pathname === '/healthz' && request.method === 'GET') {
+      return respond({ ok: true, service: 'japanese-words-sync', scheduledOnly: true });
+    }
+    if (String(env.ENABLE_LEGACY_WORKER_API || '').toLowerCase() !== 'true') {
+      return fail(410, 'LEGACY_API_DISABLED', 'Worker 直连接口已停用，请使用 Cloudflare Pages Functions');
+    }
+
+    const authorization = await authorizeRequest(request, env, { allowAutomation: true });
+    if (!authorization.ok) return unauthorizedResponse(request, env, authorization, { methods, requestId });
     if (url.pathname === '/rankings') {
       if (request.method !== 'GET') {
-        return jsonResponse({ error: 'Method not allowed' }, 405);
+        return fail(405, 'METHOD_NOT_ALLOWED', 'Method not allowed');
       }
       const requestedDays = cleanRankingsDays(url.searchParams.get('days'), 8);
       const data = await ensureRankings(env, requestedDays);
-      return jsonResponse(data);
+      return respond(data);
     }
 
     if (url.pathname === '/published-refresh') {
       if (request.method !== 'POST') {
-        return jsonResponse({ error: 'Method not allowed' }, 405);
+        return fail(405, 'METHOD_NOT_ALLOWED', 'Method not allowed');
       }
-      const body = await readJson(request);
+      const parsed = await readJsonBody(request, { maxBytes: API_LIMITS.published });
+      if (!parsed.ok) return fail(parsed.status, parsed.code, parsed.message);
+      const body = parsed.value;
       const key = getStorageKey(url);
       const stored = await env.FAVORITES.get(key, 'json');
       const current = cleanStoredData(stored);
+      const mutationMetadata = getWorkflowMutationMetadata(request, body, {
+        action: 'published.refresh',
+        actor: authorization.actor,
+        target: String(body?.recordId || '').trim(),
+        summary: '刷新发布数据'
+      });
+      const inspection = inspectWorkflowMutation(current, mutationMetadata);
+      if (inspection.conflict) {
+        return respond({
+          ok: false,
+          error: { code: 'REVISION_CONFLICT', message: '团队数据已被其他人更新，请刷新后重试', retryable: true },
+          currentRevision: inspection.currentRevision
+        }, 409);
+      }
+      if (inspection.duplicate) {
+        return respond({
+          publishedRecords: current.publishedRecords,
+          summary: { updated: 0, failed: 0, skipped: current.publishedRecords.length },
+          revision: current.revision,
+          mutation: { duplicate: true, operationId: inspection.event?.id || '' }
+        });
+      }
       const workingRecords = Array.isArray(body?.publishedRecords) && body.publishedRecords.length
         ? cleanPublishedRecords(body.publishedRecords)
         : current.publishedRecords;
@@ -469,29 +538,33 @@ export default {
         ...current,
         publishedRecords: workingRecords
       }, {
-        recordId: String(body?.recordId || '').trim()
+        recordId: String(body?.recordId || '').trim(),
+        mutationMetadata
       });
-      return jsonResponse({
+      return respond({
         publishedRecords: refreshed.data.publishedRecords,
         summary: refreshed.summary,
-        updated: refreshed.data.updated
+        updated: refreshed.data.updated,
+        revision: refreshed.data.revision,
+        mutation: { duplicate: refreshed.mutation.duplicate, operationId: refreshed.mutation.event?.id || '' }
       });
     }
 
     if (url.pathname !== '/favorites') {
-      return jsonResponse({ error: 'Not found' }, 404);
+      return fail(404, 'NOT_FOUND', 'Not found');
     }
 
     const key = getStorageKey(url);
 
     if (request.method === 'GET') {
       const stored = await env.FAVORITES.get(key, 'json');
-      return jsonResponse(cleanStoredData(stored));
+      return respond(cleanStoredData(stored));
     }
 
     if (request.method === 'PUT') {
-      const body = await readJson(request);
-      if (!body) return jsonResponse({ error: 'Invalid JSON body' }, 400);
+      const parsed = await readJsonBody(request, { maxBytes: API_LIMITS.workflow });
+      if (!parsed.ok) return fail(parsed.status, parsed.code, parsed.message);
+      const body = parsed.value;
 
       const stored = await env.FAVORITES.get(key, 'json');
       const current = cleanStoredWorkflow(stored);
@@ -499,17 +572,33 @@ export default {
         ...body,
         updated: new Date().toISOString()
       });
-
-      await env.FAVORITES.put(key, JSON.stringify(data));
-      return jsonResponse(data);
+      const mutation = prepareWorkflowMutation(current, data, getWorkflowMutationMetadata(request, body, {
+        action: 'workflow.replace',
+        actor: authorization.actor,
+        summary: '保存完整团队工作流'
+      }));
+      if (mutation.conflict) {
+        return respond({
+          ok: false,
+          error: { code: 'REVISION_CONFLICT', message: '团队数据已被其他人更新，请刷新后重试', retryable: true },
+          currentRevision: mutation.currentRevision
+        }, 409);
+      }
+      if (!mutation.duplicate) await env.FAVORITES.put(key, JSON.stringify(mutation.workflow));
+      return respond({
+        ...mutation.workflow,
+        mutation: { duplicate: mutation.duplicate, operationId: mutation.event?.id || '' }
+      });
     }
 
     if (request.method === 'POST') {
-      const body = await readJson(request);
-      if (!body) return jsonResponse({ error: 'Invalid JSON body' }, 400);
+      const parsed = await readJsonBody(request, { maxBytes: API_LIMITS.command });
+      if (!parsed.ok) return fail(parsed.status, parsed.code, parsed.message);
+      const body = parsed.value;
 
       const word = cleanWords([body.word])[0];
-      if (!word) return jsonResponse({ error: 'Invalid word' }, 400);
+      if (!word) return fail(400, 'INVALID_WORD', 'Invalid word');
+      if (!['add', 'remove', 'status'].includes(body.action)) return fail(400, 'INVALID_ACTION', 'Invalid action');
 
       const stored = await env.FAVORITES.get(key, 'json');
       const current = cleanStoredData(stored);
@@ -539,19 +628,44 @@ export default {
         todaySnapshotHistory: body.todaySnapshotHistory || current.todaySnapshotHistory,
         updated: new Date().toISOString()
       });
-
-      await env.FAVORITES.put(key, JSON.stringify(data));
-      return jsonResponse(data);
+      const mutation = prepareWorkflowMutation(current, data, getWorkflowMutationMetadata(request, body, {
+        action: `favorite.${body.action}`,
+        actor: authorization.actor,
+        target: word,
+        summary: body.action === 'status' ? `状态更新为 ${cleanStatus(body.status)}` : ''
+      }));
+      if (mutation.conflict) {
+        return respond({
+          ok: false,
+          error: { code: 'REVISION_CONFLICT', message: '团队数据已被其他人更新，请刷新后重试', retryable: true },
+          currentRevision: mutation.currentRevision
+        }, 409);
+      }
+      if (!mutation.duplicate) await env.FAVORITES.put(key, JSON.stringify(mutation.workflow));
+      return respond({
+        ...mutation.workflow,
+        mutation: { duplicate: mutation.duplicate, operationId: mutation.event?.id || '' }
+      });
     }
 
-    return jsonResponse({ error: 'Method not allowed' }, 405);
+    return fail(405, 'METHOD_NOT_ALLOWED', 'Method not allowed');
+    } catch (error) {
+      console.error(JSON.stringify({
+        event: 'worker_http_error',
+        requestId,
+        method: request.method,
+        path: new URL(request.url).pathname,
+        errorName: String(error?.name || 'Error').slice(0, 120)
+      }));
+      return fail(500, 'INTERNAL_ERROR', '服务暂时不可用，请稍后重试');
+    }
   },
 
   async scheduled(controller, env, ctx) {
     const cron = String(controller?.cron || '').trim();
     if (cron === DAILY_REFRESH_CRON) {
       ctx.waitUntil(
-        triggerDailyRefresh(env).catch(error => console.warn('daily refresh trigger failed', error?.message || error))
+        triggerDailyPublishOrFallback(env).catch(error => console.warn('daily publish trigger failed', error?.message || error))
       );
     }
 

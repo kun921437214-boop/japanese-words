@@ -21,13 +21,15 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
       - name: Save favorites data
+        env:
+          FAVORITES_DATA: ${{ github.event.inputs.favorites_data || github.event.payload.favorites_data }}
         run: |
-          DATA='${{ github.event.inputs.favorites_data || github.event.payload.favorites_data }}'
-          echo "$DATA" > favorites.json
-          echo "Saved favorites:" && cat favorites.json
+          printf '%s' "$FAVORITES_DATA" > favorites.json
+          jq -e . favorites.json > /dev/null
+          echo "Validated favorites JSON without printing its contents."
 
       - name: Sync to Gist
-        run: |
-          cat favorites.json | gh gist edit ${{ vars.GIST_ID }} favorites.json
+        run: gh gist edit "$GIST_ID" --filename favorites.json favorites.json
         env:
           GH_TOKEN: ${{ secrets.GIST_TOKEN }}
+          GIST_ID: ${{ vars.GIST_ID }}

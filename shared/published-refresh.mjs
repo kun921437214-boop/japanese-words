@@ -9,6 +9,10 @@ const SNAPSHOT_NODE_HOURS = {
 };
 
 const REFRESH_STATUS_VALUES = ['idle', 'success', 'failed', 'partial'];
+const PUBLISHED_FETCH_TIMEOUT_MS = 12 * 1000;
+const PUBLISHED_FETCH_MAX_BYTES = 2 * 1024 * 1024;
+const PUBLISHED_FETCH_MAX_REDIRECTS = 4;
+const XHS_HOSTS = ['xhslink.com', 'xiaohongshu.com'];
 
 export function cleanAutoRefreshState(state = {}) {
   return {
@@ -175,16 +179,72 @@ export function extractStatsFromText(text = '') {
   });
 }
 
-function normalizeXiaohongshuUrl(url) {
+function isAllowedXiaohongshuHostname(hostname) {
+  const cleanHostname = String(hostname || '').trim().toLowerCase().replace(/\.$/, '');
+  return XHS_HOSTS.some(host => cleanHostname === host || cleanHostname.endsWith(`.${host}`));
+}
+
+export function normalizeXiaohongshuUrl(url) {
   const raw = String(url || '').trim();
   if (!raw) return '';
   try {
     const parsed = new URL(raw);
-    if (parsed.hostname.includes('xhslink.com') || parsed.hostname.includes('xiaohongshu.com')) return parsed.toString();
+    if (parsed.protocol !== 'https:' || parsed.username || parsed.password) return '';
+    if (parsed.port && parsed.port !== '443') return '';
+    if (isAllowedXiaohongshuHostname(parsed.hostname)) return parsed.toString();
   } catch (error) {
     return '';
   }
   return '';
+}
+
+async function readResponseTextWithLimit(response, maxBytes = PUBLISHED_FETCH_MAX_BYTES) {
+  const declaredLength = Number.parseInt(response.headers?.get('Content-Length') || '0', 10);
+  if (Number.isFinite(declaredLength) && declaredLength > maxBytes) {
+    throw new Error('页面内容超过安全读取上限');
+  }
+  if (!response.body?.getReader) {
+    const text = await response.text();
+    if (new TextEncoder().encode(text).byteLength > maxBytes) throw new Error('页面内容超过安全读取上限');
+    return text;
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let size = 0;
+  let text = '';
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    size += value.byteLength;
+    if (size > maxBytes) {
+      await reader.cancel('response too large').catch(() => {});
+      throw new Error('页面内容超过安全读取上限');
+    }
+    text += decoder.decode(value, { stream: true });
+  }
+  return text + decoder.decode();
+}
+
+async function fetchAllowedXiaohongshuPage(link, fetchImpl, signal) {
+  let currentUrl = link;
+  for (let redirectCount = 0; redirectCount <= PUBLISHED_FETCH_MAX_REDIRECTS; redirectCount += 1) {
+    const response = await fetchImpl(currentUrl, {
+      headers: {
+        Accept: 'text/html,application/xhtml+xml',
+        'User-Agent': 'Mozilla/5.0 (compatible; KotobaBreadBot/1.0; +https://jiyimianbao.pages.dev)'
+      },
+      redirect: 'manual',
+      signal
+    });
+    if (![301, 302, 303, 307, 308].includes(response.status)) return { response, finalUrl: currentUrl };
+    const location = response.headers?.get('Location');
+    if (!location) throw new Error('页面重定向缺少目标地址');
+    const nextUrl = normalizeXiaohongshuUrl(new URL(location, currentUrl).toString());
+    if (!nextUrl) throw new Error('页面重定向到了非小红书域名');
+    currentUrl = nextUrl;
+  }
+  throw new Error('页面重定向次数过多');
 }
 
 function extractRecordMetadataFromHtml(html = '', finalUrl = '') {
@@ -217,27 +277,33 @@ export async function fetchPublishedRecordRemote(link, fetchImpl = fetch) {
     return { ok: false, message: '链接不是可识别的小红书地址' };
   }
 
-  const response = await fetchImpl(normalizedLink, {
-    headers: {
-      Accept: 'text/html,application/xhtml+xml',
-      'User-Agent': 'Mozilla/5.0 (compatible; KotobaBreadBot/1.0; +https://jiyimianbao.pages.dev)'
-    },
-    redirect: 'follow'
-  });
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), PUBLISHED_FETCH_TIMEOUT_MS);
+  try {
+    const { response, finalUrl } = await fetchAllowedXiaohongshuPage(normalizedLink, fetchImpl, controller.signal);
+    if (!response.ok) {
+      return { ok: false, message: `页面读取失败（HTTP ${response.status}）` };
+    }
+    const contentType = String(response.headers?.get('Content-Type') || '').toLowerCase();
+    if (contentType && !contentType.includes('text/html') && !contentType.includes('application/xhtml+xml')) {
+      return { ok: false, message: '链接返回的不是可识别网页' };
+    }
 
-  if (!response.ok) {
-    return { ok: false, message: `页面读取失败（HTTP ${response.status}）` };
+    const html = await readResponseTextWithLimit(response);
+    const extracted = extractRecordMetadataFromHtml(html, finalUrl);
+    const hasUsefulData = hasAnyStats(extracted.latestStats) || Boolean(extracted.title || extracted.description || extracted.authorName);
+    return {
+      ok: hasUsefulData,
+      message: hasUsefulData ? '已从页面识别到可用数据' : '页面可打开，但暂时没识别到结构化数据',
+      finalUrl,
+      ...extracted
+    };
+  } catch (error) {
+    if (error?.name === 'AbortError') return { ok: false, message: '页面读取超时，已保留上一次数据' };
+    return { ok: false, message: String(error?.message || '页面读取失败').slice(0, 300) };
+  } finally {
+    clearTimeout(timeout);
   }
-
-  const html = await response.text();
-  const extracted = extractRecordMetadataFromHtml(html, response.url || normalizedLink);
-  const hasUsefulData = hasAnyStats(extracted.latestStats) || Boolean(extracted.title || extracted.description || extracted.authorName);
-  return {
-    ok: hasUsefulData,
-    message: hasUsefulData ? '已从页面识别到可用数据' : '页面可打开，但暂时没识别到结构化数据',
-    finalUrl: response.url || normalizedLink,
-    ...extracted
-  };
 }
 
 function pickSnapshotNodeForRefresh(record, ageHours, nowIsoValue) {

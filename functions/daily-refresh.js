@@ -13,13 +13,17 @@ import {
   flattenWords,
   normalizeKanjiSpelling
 } from '../shared/deepseek-exclusion.mjs';
-
-const CORS_HEADERS = {
-  'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-  'Access-Control-Allow-Headers': 'Content-Type, Authorization',
-  'Access-Control-Max-Age': '86400'
-};
+import {
+  API_LIMITS,
+  authorizeRequest,
+  errorResponse,
+  getRequestId,
+  jsonResponse,
+  optionsResponse,
+  readJsonBody as readLimitedJsonBody,
+  unauthorizedResponse
+} from '../shared/api-security.mjs';
+import { mergeAutomatedWorkflowUpdate, prepareWorkflowMutation } from '../shared/workflow-mutation.mjs';
 const PROMPT_VERSION_BY_ACTION = {
   stable_today: 'candidate-v3',
   wild_ideas: 'candidate-v3',
@@ -65,16 +69,6 @@ const REFRESH_STEPS = [
   'failed'
 ];
 
-function jsonResponse(body, status = 200) {
-  return new Response(JSON.stringify(body), {
-    status,
-    headers: {
-      ...CORS_HEADERS,
-      'Content-Type': 'application/json; charset=utf-8'
-    }
-  });
-}
-
 function nowIso() {
   return new Date().toISOString();
 }
@@ -98,7 +92,9 @@ function cleanBoolean(value, fallback = false) {
 }
 
 function sleep(ms) {
-  return new Promise(resolve => setTimeout(resolve, ms));
+  return new Promise(resolve => {
+    setTimeout(resolve, ms);
+  });
 }
 
 function getRetryDelayMs() {
@@ -125,16 +121,6 @@ function isTemporaryNetworkError(error) {
     || message.includes('connection')
     || message.includes('econnreset')
     || message.includes('etimedout');
-}
-
-async function readJsonBody(request) {
-  const contentType = request.headers.get('Content-Type') || '';
-  if (!contentType.includes('application/json')) return {};
-  try {
-    return await request.json();
-  } catch (error) {
-    return {};
-  }
 }
 
 function getRequestOption(url, body, name) {
@@ -642,7 +628,8 @@ async function callJsonEndpoint(origin, path, payload, options = {}) {
         method: 'POST',
         headers: {
           Accept: 'application/json',
-          'Content-Type': 'application/json'
+          'Content-Type': 'application/json',
+          ...(options.authorization ? { Authorization: options.authorization } : {})
         },
         body: JSON.stringify(payload),
         signal: controller.signal
@@ -721,6 +708,7 @@ async function generateCandidates(origin, workflow, options = {}) {
   const payload = buildCandidatePayload(workflow, options);
   const data = await callJsonEndpoint(origin, '/ai-candidates', payload, {
     callLabel: options.callLabel,
+    authorization: options.authorization,
     onAttempt: options.onAttempt,
     onRetry: options.onRetry,
     onFailure: options.onFailure
@@ -779,7 +767,7 @@ async function generateCandidates(origin, workflow, options = {}) {
   return { items, batch };
 }
 
-async function generateCards(origin, workflow) {
+async function generateCards(origin, workflow, authorization = '') {
   const snapshotWords = safeArray(workflow.todaySnapshot?.words);
   const targets = snapshotWords.filter(kanji => cleanAiCard(workflow.candidatePool?.[kanji]?.aiCard || {}).cardStatus !== 'ready');
   let generatedCards = 0;
@@ -804,7 +792,7 @@ async function generateCards(origin, workflow) {
           accountLearningSummary: getAccountLearningSummary()
         }
       };
-      const data = await callJsonEndpoint(origin, '/ai-candidates', payload);
+      const data = await callJsonEndpoint(origin, '/ai-candidates', payload, { authorization });
       let savedInBatch = 0;
       safeArray(data.items).forEach((item, itemIndex) => {
         const kanji = cleanText(item.kanji || words[itemIndex]?.kanji, 80);
@@ -862,12 +850,6 @@ async function generateCards(origin, workflow) {
     }),
     generatedCards
   };
-}
-
-function isAuthorized(request, env) {
-  const secret = cleanText(env.AUTO_REFRESH_SECRET, 500);
-  if (!secret) return false;
-  return (request.headers.get('Authorization') || '') === `Bearer ${secret}`;
 }
 
 function getRefreshStateKey(today) {
@@ -963,31 +945,27 @@ function isFreshRunningState(state) {
   return staleInfo.isRunning && !staleInfo.isStale;
 }
 
-async function generateCardsAndSave(origin, workflow, env, key) {
-  const cardResult = await generateCards(origin, workflow);
+async function generateCardsAndSave(origin, workflow, env, key, requestId = '') {
+  const authorization = env.AUTO_REFRESH_SECRET ? `Bearer ${String(env.AUTO_REFRESH_SECRET).trim()}` : '';
+  const cardResult = await generateCards(origin, workflow, authorization);
   const storedAfterCards = cleanStoredWorkflow(await env.FAVORITES.get(key, 'json'));
-  const mergedPool = {
-    ...(storedAfterCards.candidatePool || {}),
-    ...(cardResult.workflow.candidatePool || {})
-  };
-  const mergedBatches = [];
-  const seenBatchIds = new Set();
-  [...safeArray(cardResult.workflow.aiBatches), ...safeArray(storedAfterCards.aiBatches)].forEach(batch => {
-    if (!batch?.id || seenBatchIds.has(batch.id)) return;
-    seenBatchIds.add(batch.id);
-    mergedBatches.push(batch);
+  const mergedWorkflow = mergeAutomatedWorkflowUpdate(storedAfterCards, cardResult.workflow);
+  const mutation = prepareWorkflowMutation(storedAfterCards, mergedWorkflow, {
+    operationId: `${requestId || crypto.randomUUID()}:cards`,
+    expectedRevision: null,
+    action: 'daily-refresh.cards',
+    actor: 'scheduled-worker',
+    target: storedAfterCards.todaySnapshot?.dateKey || '',
+    summary: `生成 ${cardResult.generatedCards} 张词卡`
   });
-  await env.FAVORITES.put(key, JSON.stringify(cleanStoredWorkflow({
-    ...storedAfterCards,
-    candidatePool: mergedPool,
-    todaySnapshot: storedAfterCards.todaySnapshot?.words?.length ? storedAfterCards.todaySnapshot : cardResult.workflow.todaySnapshot,
-    aiBatches: mergedBatches.slice(0, 100),
-    updated: nowIso()
-  })));
+  if (!mutation.duplicate) await env.FAVORITES.put(key, JSON.stringify(mutation.workflow));
   return cardResult.generatedCards;
 }
 
 async function runDailyRefreshJob({ origin, env, key, today, options = {}, requestId = '', startedAt = '', previousRun = {} }) {
+  const internalAuthorization = env.AUTO_REFRESH_SECRET
+    ? `Bearer ${String(env.AUTO_REFRESH_SECRET).trim()}`
+    : '';
   const runState = {
     status: 'running',
     dateKey: today,
@@ -1110,6 +1088,7 @@ async function runDailyRefreshJob({ origin, env, key, today, options = {}, reque
     await writeStep('generate_candidates_start');
     const initialExclusionContext = getExclusionContext(stored);
     const generated = await generateCandidates(origin, stored, {
+      authorization: internalAuthorization,
       callLabel: 'initial_candidates',
       onAttempt: writeAiAttempt,
       onRetry: writeAiRetry,
@@ -1163,6 +1142,7 @@ async function runDailyRefreshJob({ origin, env, key, today, options = {}, reque
       });
       const topUpExclusionContext = getExclusionContext(snapshot.workflow);
       const extraGenerated = await generateCandidates(origin, snapshot.workflow, {
+        authorization: internalAuthorization,
         callLabel: `top_up_candidates_round_${round + 1}`,
         onAttempt: writeAiAttempt,
         onRetry: writeAiRetry,
@@ -1221,7 +1201,20 @@ async function runDailyRefreshJob({ origin, env, key, today, options = {}, reque
       if (!imported.stats.imported) break;
     }
 
-    const finalWorkflow = cleanStoredWorkflow({ ...snapshot.workflow, updated: nowIso() });
+    const storedBeforeSave = cleanStoredWorkflow(await env.FAVORITES.get(key, 'json'));
+    const finalCandidateWorkflow = mergeAutomatedWorkflowUpdate(storedBeforeSave, {
+      ...snapshot.workflow,
+      updated: nowIso()
+    });
+    const mutation = prepareWorkflowMutation(storedBeforeSave, finalCandidateWorkflow, {
+      operationId: requestId || crypto.randomUUID(),
+      expectedRevision: null,
+      action: 'daily-refresh.generate',
+      actor: 'scheduled-worker',
+      target: today,
+      summary: `生成 ${safeArray(finalCandidateWorkflow.todaySnapshot?.words).length} 个今日推荐`
+    });
+    const finalWorkflow = mutation.workflow;
 
     await writeStep('save_workflow_start', {
       generatedCandidates: totalGenerated,
@@ -1229,7 +1222,7 @@ async function runDailyRefreshJob({ origin, env, key, today, options = {}, reque
       todayCount: safeArray(finalWorkflow.todaySnapshot?.words).length,
       ...getNoveltyPatch()
     });
-    await env.FAVORITES.put(key, JSON.stringify(finalWorkflow));
+    if (!mutation.duplicate) await env.FAVORITES.put(key, JSON.stringify(finalWorkflow));
     const todayWords = safeArray(finalWorkflow.todaySnapshot?.words);
     const cardTargets = todayWords.filter(kanji => cleanAiCard(finalWorkflow.candidatePool?.[kanji]?.aiCard || {}).cardStatus !== 'ready');
     const workflowSavedPatch = {
@@ -1271,7 +1264,7 @@ async function runDailyRefreshJob({ origin, env, key, today, options = {}, reque
           finishedAt: runState.finishedAt || nowIso(),
           queuedCards: cardTargets.length
         });
-        generatedCards = await generateCardsAndSave(origin, finalWorkflow, env, key);
+        generatedCards = await generateCardsAndSave(origin, finalWorkflow, env, key, requestId);
         return writeStep('generate_cards_done', {
           status: 'completed',
           finishedAt: runState.finishedAt || nowIso(),
@@ -1308,17 +1301,21 @@ async function runDailyRefreshJob({ origin, env, key, today, options = {}, reque
 
 export async function onRequest(context) {
   const { request, env } = context;
+  const methods = ['GET', 'POST', 'OPTIONS'];
+  const responseRequestId = getRequestId(request);
+  const respond = (body, status = 200) => jsonResponse(request, env, body, status, { methods, requestId: responseRequestId });
+  const fail = (status, code, message, options = {}) => errorResponse(request, env, status, code, message, { methods, requestId: responseRequestId, ...options });
+
   if (request.method === 'OPTIONS') {
-    return new Response(null, { headers: CORS_HEADERS });
+    return optionsResponse(request, env, methods);
   }
   if (!['GET', 'POST'].includes(request.method)) {
-    return jsonResponse({ ok: false, status: 'failed', error: 'Method not allowed' }, 405);
+    return fail(405, 'METHOD_NOT_ALLOWED', 'Method not allowed');
   }
-  if (!isAuthorized(request, env)) {
-    return jsonResponse({ ok: false, status: 'failed', error: 'Unauthorized' }, 401);
-  }
+  const authorization = await authorizeRequest(request, env, { allowAutomation: true });
+  if (!authorization.ok) return unauthorizedResponse(request, env, authorization, { methods, requestId: responseRequestId });
   if (!env.FAVORITES) {
-    return jsonResponse({ ok: false, status: 'failed', error: 'KV namespace FAVORITES is not configured' }, 500);
+    return fail(500, 'STORAGE_NOT_CONFIGURED', 'KV namespace FAVORITES is not configured');
   }
 
   const url = new URL(request.url);
@@ -1331,7 +1328,7 @@ export async function onRequest(context) {
       const stateDate = cleanDateKey(url.searchParams.get('date')) || today;
       const runState = await readRefreshRunState(env, stateDate);
       const staleInfo = getRunningStaleInfo(runState);
-      return jsonResponse({
+      return respond({
         ok: true,
         ...runState,
         dateKey: stateDate,
@@ -1341,7 +1338,12 @@ export async function onRequest(context) {
       });
     }
 
-    const body = await readJsonBody(request);
+    const hasJsonBody = (request.headers.get('Content-Type') || '').includes('application/json');
+    const parsed = hasJsonBody
+      ? await readLimitedJsonBody(request, { maxBytes: API_LIMITS.command })
+      : { ok: true, value: {} };
+    if (!parsed.ok) return fail(parsed.status, parsed.code, parsed.message);
+    const body = parsed.value;
     const options = getRefreshOptions(url, body);
     const stored = cleanStoredWorkflow(await env.FAVORITES.get(key, 'json'));
     if (isCurrentGeneratorSnapshot(stored.todaySnapshot, new Date())) {
@@ -1380,7 +1382,7 @@ export async function onRequest(context) {
         runInline: options.runInline,
         executionMode: options.runInline ? 'inline' : ''
       });
-      return jsonResponse({
+      return respond({
         ok: true,
         skipped: true,
         ...completedState
@@ -1390,7 +1392,7 @@ export async function onRequest(context) {
     const runState = await readRefreshRunState(env, today);
     const staleInfo = getRunningStaleInfo(runState);
     if (isFreshRunningState(runState)) {
-      return jsonResponse({
+      return respond({
         ok: true,
         ...runState,
         isStale: false,
@@ -1466,7 +1468,7 @@ export async function onRequest(context) {
     });
     if (executionMode === 'inline') {
       const finalState = await job;
-      return jsonResponse({
+      return respond({
         ok: finalState.status !== 'failed',
         ...finalState,
         queued: false,
@@ -1475,7 +1477,7 @@ export async function onRequest(context) {
       }, finalState.status === 'failed' ? 500 : 200);
     }
     context.waitUntil(job);
-    return jsonResponse({
+    return respond({
       ok: true,
       ...initialState,
       queued: true,
@@ -1484,7 +1486,7 @@ export async function onRequest(context) {
     });
   } catch (error) {
     console.warn('daily-refresh failed', error?.message || error);
-    return jsonResponse({
+    return respond({
       ok: false,
       status: 'failed',
       generatedCandidates: 0,

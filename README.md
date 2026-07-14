@@ -39,7 +39,7 @@
 npm install
 ```
 
-当前项目没有复杂依赖，但建议保留 `npm install` 作为标准准备步骤。
+CI 和发布环境使用锁文件安装：`npm ci`。
 
 ## 本地运行
 
@@ -56,6 +56,11 @@ npm run build:words
 ```bash
 npm run build:words
 npm run build
+npm run lint
+npm run typecheck
+npm test
+npm run backup:workflow
+npm run restore:workflow -- <backup-file>
 npm run test:workflow
 npm run deploy
 npm run deploy:worker
@@ -68,6 +73,11 @@ npm run deploy:worker
 - `DEEPSEEK_API_KEY`
 - `DEEPSEEK_MODEL`
 - `AUTO_REFRESH_SECRET`
+- `ADMIN_API_TOKEN`
+- `TEAM_ACCESS_EMAILS`
+- `CF_ACCESS_TEAM_DOMAIN`
+- `CF_ACCESS_AUD`
+- `ALLOWED_ORIGINS`
 - `SITE_URL`
 
 本地参考 `.env.example`。

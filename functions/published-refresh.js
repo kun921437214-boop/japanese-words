@@ -1,22 +1,20 @@
 import { refreshPublishedRecords } from '../shared/published-refresh.mjs';
 import { cleanStoredWorkflow, mergeWorkflow } from '../shared/workflow-schema.mjs';
-
-const CORS_HEADERS = {
-  'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Methods': 'POST, OPTIONS',
-  'Access-Control-Allow-Headers': 'Content-Type',
-  'Access-Control-Max-Age': '86400'
-};
-
-function jsonResponse(body, status = 200) {
-  return new Response(JSON.stringify(body), {
-    status,
-    headers: {
-      ...CORS_HEADERS,
-      'Content-Type': 'application/json; charset=utf-8'
-    }
-  });
-}
+import {
+  API_LIMITS,
+  authorizeRequest,
+  errorResponse,
+  getRequestId,
+  jsonResponse,
+  optionsResponse,
+  readJsonBody,
+  unauthorizedResponse
+} from '../shared/api-security.mjs';
+import {
+  getWorkflowMutationMetadata,
+  inspectWorkflowMutation,
+  prepareWorkflowMutation
+} from '../shared/workflow-mutation.mjs';
 
 function cleanSyncCode(value) {
   return String(value || '').trim().replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 64);
@@ -187,32 +185,57 @@ function getStorageKey(url) {
   return code.length >= 8 ? `favorites:${code}` : 'favorites:global';
 }
 
-async function readJson(request) {
-  try {
-    return await request.json();
-  } catch (error) {
-    return null;
-  }
-}
-
 export async function onRequest({ request, env }) {
+  const methods = ['POST', 'OPTIONS'];
+  const requestId = getRequestId(request);
+  const respond = (body, status = 200) => jsonResponse(request, env, body, status, { methods, requestId });
+  const fail = (status, code, message) => errorResponse(request, env, status, code, message, { methods, requestId });
+
   if (request.method === 'OPTIONS') {
-    return new Response(null, { headers: CORS_HEADERS });
+    return optionsResponse(request, env, methods);
   }
 
   if (request.method !== 'POST') {
-    return jsonResponse({ error: 'Method not allowed' }, 405);
+    return fail(405, 'METHOD_NOT_ALLOWED', 'Method not allowed');
   }
 
   if (!env.FAVORITES) {
-    return jsonResponse({ error: 'KV namespace FAVORITES is not configured' }, 500);
+    return fail(500, 'STORAGE_NOT_CONFIGURED', 'KV namespace FAVORITES is not configured');
   }
+
+  const authorization = await authorizeRequest(request, env, { allowAutomation: true });
+  if (!authorization.ok) return unauthorizedResponse(request, env, authorization, { methods, requestId });
 
   const url = new URL(request.url);
   const key = getStorageKey(url);
-  const body = await readJson(request);
+  const parsed = await readJsonBody(request, { maxBytes: API_LIMITS.published });
+  if (!parsed.ok) return fail(parsed.status, parsed.code, parsed.message);
+  const body = parsed.value;
   const stored = await env.FAVORITES.get(key, 'json');
   const current = cleanStoredData(stored);
+  const mutationMetadata = getWorkflowMutationMetadata(request, body, {
+    action: 'published.refresh',
+    actor: authorization.actor,
+    target: String(body?.recordId || '').trim()
+  });
+  const inspection = inspectWorkflowMutation(current, mutationMetadata);
+  if (inspection.conflict) {
+    return respond({
+      ok: false,
+      error: { code: 'REVISION_CONFLICT', message: '发布记录已被其他人更新，请刷新后重试', retryable: true },
+      currentRevision: inspection.currentRevision
+    }, 409);
+  }
+  if (inspection.duplicate) {
+    return respond({
+      ok: true,
+      publishedRecords: current.publishedRecords,
+      summary: { total: 0, successCount: 0, failureCount: 0, message: '重复请求已忽略' },
+      updated: current.updated,
+      revision: current.revision,
+      mutation: { duplicate: true, operationId: inspection.event?.id || '' }
+    });
+  }
   const workingRecords = Array.isArray(body?.publishedRecords) && body.publishedRecords.length
     ? cleanPublishedRecords(body.publishedRecords)
     : current.publishedRecords;
@@ -223,15 +246,30 @@ export async function onRequest({ request, env }) {
     now: new Date()
   });
 
-  const nextData = mergeWorkflow(current, {
+  const merged = mergeWorkflow(current, {
     publishedRecords: cleanPublishedRecords(result.records),
     updated: new Date().toISOString()
   });
+  const mutation = prepareWorkflowMutation(current, merged, {
+    ...mutationMetadata,
+    summary: `成功 ${result.summary.successCount}，失败 ${result.summary.failureCount}`
+  });
+  if (mutation.conflict) {
+    return respond({
+      ok: false,
+      error: { code: 'REVISION_CONFLICT', message: '发布记录已被其他人更新，请刷新后重试', retryable: true },
+      currentRevision: mutation.currentRevision
+    }, 409);
+  }
+  const nextData = mutation.workflow;
 
-  await env.FAVORITES.put(key, JSON.stringify(nextData));
-  return jsonResponse({
+  if (!mutation.duplicate) await env.FAVORITES.put(key, JSON.stringify(nextData));
+  return respond({
+    ok: true,
     publishedRecords: nextData.publishedRecords,
     summary: result.summary,
-    updated: nextData.updated
+    updated: nextData.updated,
+    revision: nextData.revision,
+    mutation: { duplicate: mutation.duplicate, operationId: mutation.event?.id || '' }
   });
 }
