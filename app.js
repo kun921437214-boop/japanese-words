@@ -50,6 +50,7 @@ let cloudWorkflowFailed = false;
 let codexTomorrowDraftStatus = null;
 let codexTomorrowDraft = null;
 let codexTomorrowDraftPromise = null;
+let codexTomorrowDraftError = '';
 
 const FAVORITES_STORAGE_KEY = 'kotoba_favorites';
 const FAVORITE_STATUSES_STORAGE_KEY = 'kotoba_favorite_statuses';
@@ -3374,15 +3375,16 @@ async function loadCodexTomorrowDraftStatus() {
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     const data = await response.json();
     codexTomorrowDraftStatus = data.draft || null;
+    codexTomorrowDraftError = '';
     if (codexTomorrowDraft?.targetDateKey !== targetDateKey
       || (codexTomorrowDraftStatus?.updatedAt && codexTomorrowDraft?.updatedAt !== codexTomorrowDraftStatus.updatedAt)) {
       codexTomorrowDraft = null;
     }
-  } catch {
+  } catch (error) {
     codexTomorrowDraftStatus = null;
-    codexTomorrowDraft = null;
+    if (!codexTomorrowDraft) codexTomorrowDraftError = error.message || '明日草稿状态读取失败';
   }
-  if (isViewingTomorrowDailyHot()) return loadCodexTomorrowDraft({ force: true });
+  if (isViewingTomorrowDailyHot()) return loadCodexTomorrowDraft();
   if (document.body.dataset.activeTab === 'today') renderDailyHot();
   return codexTomorrowDraftStatus;
 }
@@ -3391,6 +3393,7 @@ async function loadCodexTomorrowDraft(options = {}) {
   const targetDateKey = addDaysToDateKey(todayKey(), 1);
   if (!options.force && codexTomorrowDraft?.targetDateKey === targetDateKey) return codexTomorrowDraft;
   if (codexTomorrowDraftPromise) return codexTomorrowDraftPromise;
+  codexTomorrowDraftError = '';
   codexTomorrowDraftPromise = (async () => {
     try {
       const response = await apiFetch(
@@ -3400,10 +3403,12 @@ async function loadCodexTomorrowDraft(options = {}) {
       );
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
       const data = await response.json();
-      codexTomorrowDraft = data.draft || null;
+      if (!data.draft) throw new Error('接口未返回明日草稿');
+      codexTomorrowDraft = data.draft;
       return codexTomorrowDraft;
     } catch (error) {
       codexTomorrowDraft = null;
+      codexTomorrowDraftError = error.message || '明日草稿读取失败';
       if (options.notifyOnError) showToast(`明日草稿读取失败：${error.message || '请稍后重试'}`);
       return null;
     } finally {
@@ -7762,7 +7767,8 @@ function renderTodayGrid(words, options = {}) {
       return;
     }
     const missing = codexTomorrowDraft?.status === 'missing' || codexTomorrowDraftStatus?.status === 'missing';
-    grid.innerHTML = `<div class="empty-state inline-empty"><div class="empty-title">${missing ? '明日草稿尚未提交' : '暂时无法读取明日草稿'}</div><div class="empty-desc">${missing ? 'Codex 定时任务提交后会自动出现在这里。' : '可以点击刷新重新读取，不会触发生成或写入。'}</div></div>`;
+    const errorMessage = codexTomorrowDraftError;
+    grid.innerHTML = `<div class="empty-state inline-empty"><div class="empty-title">${missing ? '明日草稿尚未提交' : '暂时无法读取明日草稿'}</div><div class="empty-desc">${missing ? 'Codex 定时任务提交后会自动出现在这里。' : escapeHTML(errorMessage || '可以点击刷新重新读取，不会触发生成或写入。')}</div></div>`;
     return;
   }
   if (words.length) {
@@ -8128,6 +8134,9 @@ function renderDailyHot() {
   populateDailyHotDateSelect();
   const isTodayView = isViewingTodayDailyHot();
   const isTomorrowPreview = isViewingTomorrowDailyHot();
+  if (isTomorrowPreview && !codexTomorrowDraft && !codexTomorrowDraftPromise && !codexTomorrowDraftError) {
+    void loadCodexTomorrowDraft({ notifyOnError: true });
+  }
   const words = isTomorrowPreview ? safeArray(codexTomorrowDraft?.items) : getCurrentDailyHotWords();
   if (!isTomorrowPreview) populateSourceFilter('today', words);
   const visibleWords = isTomorrowPreview ? words : applySourceFilter(words, 'today');
@@ -8141,14 +8150,18 @@ function renderDailyHot() {
     if (isTomorrowPreview) {
       const targetDateKey = addDaysToDateKey(todayKey(), 1);
       const draft = codexTomorrowDraft || codexTomorrowDraftStatus;
-      const qualitySummary = draft?.validation?.qualitySummary || {};
-      const scoreMeta = Number.isFinite(Number(qualitySummary.estimatedHumanQualityScore))
-        ? ` · 人工估分 ${qualitySummary.estimatedHumanQualityScore}`
-        : '';
-      const gradeMeta = Number.isFinite(Number(qualitySummary.sLevelCount))
-        ? ` · S ${qualitySummary.sLevelCount} / A ${qualitySummary.aLevelCount || 0}`
-        : '';
-      todayDate.textContent = `${formatDisplayDate(targetDateKey)} · 明日只读预览 · ${draft?.wordCount || 0} 词 / 卡片 ${draft?.cardReadyCount || 0} / 图片 ${draft?.imageReadyCount || 0}${scoreMeta}${gradeMeta}`;
+      if (codexTomorrowDraftPromise && !codexTomorrowDraft) {
+        todayDate.textContent = `${formatDisplayDate(targetDateKey)} · 正在读取明日草稿…`;
+      } else {
+        const qualitySummary = draft?.validation?.qualitySummary || {};
+        const scoreMeta = Number.isFinite(Number(qualitySummary.estimatedHumanQualityScore))
+          ? ` · 人工估分 ${qualitySummary.estimatedHumanQualityScore}`
+          : '';
+        const gradeMeta = Number.isFinite(Number(qualitySummary.sLevelCount))
+          ? ` · S ${qualitySummary.sLevelCount} / A ${qualitySummary.aLevelCount || 0}`
+          : '';
+        todayDate.textContent = `${formatDisplayDate(targetDateKey)} · 明日只读预览 · ${draft?.wordCount || 0} 词 / 卡片 ${draft?.cardReadyCount || 0} / 图片 ${draft?.imageReadyCount || 0}${scoreMeta}${gradeMeta}`;
+      }
     } else if (isTodayView) {
       const snapshot = cleanTodaySnapshot(todaySnapshot);
       const snapshotMeta = hasTodaySnapshotForToday(snapshot)
