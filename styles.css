@@ -508,35 +508,6 @@ body::before {
   min-width:190px;
 }
 
-.daily-view-switch {
-  display:inline-flex;
-  align-items:center;
-  min-height:40px;
-  padding:3px;
-  border:1px solid rgba(229, 215, 205, 0.92);
-  border-radius:8px;
-  background:#fff;
-}
-
-.daily-view-option {
-  min-width:72px;
-  height:32px;
-  padding:0 10px;
-  border:0;
-  border-radius:6px;
-  background:transparent;
-  color:var(--ink-400);
-  font-size:0.78rem;
-  font-weight:850;
-  box-shadow:none;
-}
-
-.daily-view-option.active {
-  background:#fff1f4;
-  color:#b74665;
-}
-
-.daily-view-option:focus-visible,
 .codex-preview-card:focus-visible {
   outline:3px solid rgba(138, 129, 210, 0.34);
   outline-offset:2px;
@@ -1769,7 +1740,6 @@ body::before {
   .filter-select,
   .history-date-label,
   .daily-date-field,
-  .daily-view-switch,
   .action-menu {
     width:100%;
     min-width:0;
@@ -1779,18 +1749,6 @@ body::before {
 
   .daily-date-field {
     gap:6px;
-  }
-
-  .daily-view-switch {
-    grid-column:1 / -1;
-    display:grid;
-    grid-template-columns:repeat(2, minmax(0, 1fr));
-    padding:3px;
-  }
-
-  .daily-view-option {
-    width:100%;
-    min-width:0;
   }
 
   .daily-date-field .filter-select,

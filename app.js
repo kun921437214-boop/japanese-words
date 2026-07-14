@@ -50,7 +50,6 @@ let cloudWorkflowFailed = false;
 let codexTomorrowDraftStatus = null;
 let codexTomorrowDraft = null;
 let codexTomorrowDraftPromise = null;
-let codexDailyViewMode = 'today';
 
 const FAVORITES_STORAGE_KEY = 'kotoba_favorites';
 const FAVORITE_STATUSES_STORAGE_KEY = 'kotoba_favorite_statuses';
@@ -3383,7 +3382,7 @@ async function loadCodexTomorrowDraftStatus() {
     codexTomorrowDraftStatus = null;
     codexTomorrowDraft = null;
   }
-  if (codexDailyViewMode === 'tomorrow') return loadCodexTomorrowDraft({ force: true });
+  if (isViewingTomorrowDailyHot()) return loadCodexTomorrowDraft({ force: true });
   if (document.body.dataset.activeTab === 'today') renderDailyHot();
   return codexTomorrowDraftStatus;
 }
@@ -3409,7 +3408,7 @@ async function loadCodexTomorrowDraft(options = {}) {
       return null;
     } finally {
       codexTomorrowDraftPromise = null;
-      if (document.body.dataset.activeTab === 'today' && codexDailyViewMode === 'tomorrow') renderDailyHot();
+      if (document.body.dataset.activeTab === 'today' && isViewingTomorrowDailyHot()) renderDailyHot();
     }
   })();
   return codexTomorrowDraftPromise;
@@ -4261,17 +4260,21 @@ function refreshHistoryDates() {
     ...rankingHistoryDates
   ]).sort((left, right) => String(right).localeCompare(String(left)));
   if (!rankingHistoryDates.includes(currentHistoryDateKey)) currentHistoryDateKey = rankingHistoryDates[0] || '';
-  if (currentDailyHotDateKey !== 'today' && !rankingHistoryDates.includes(currentDailyHotDateKey)) currentDailyHotDateKey = 'today';
+  if (currentDailyHotDateKey !== 'today'
+    && currentDailyHotDateKey !== addDaysToDateKey(todayKey(), 1)
+    && !rankingHistoryDates.includes(currentDailyHotDateKey)) currentDailyHotDateKey = 'today';
 }
 
 function getDailyHotDateOptions() {
   refreshHistoryDates();
   const today = todayKey();
+  const tomorrow = addDaysToDateKey(today, 1);
   const historyDates = getUniqueWords(rankingHistoryDates)
-    .filter(dateKeyValue => dateKeyValue && dateKeyValue !== today)
+    .filter(dateKeyValue => dateKeyValue && dateKeyValue !== today && dateKeyValue !== tomorrow)
     .sort((left, right) => String(right).localeCompare(String(left)));
   return [
     { value: 'today', label: `今天 · ${today}` },
+    { value: tomorrow, label: `明天 · ${tomorrow} · ${formatWeekdayShort(tomorrow)}` },
     ...historyDates.map(dateKeyValue => ({
       value: dateKeyValue,
       label: `${dateKeyValue} · ${formatWeekdayShort(dateKeyValue)}`
@@ -4291,30 +4294,15 @@ function populateDailyHotDateSelect() {
 }
 
 function setDailyHotDate(dateKeyValue) {
-  codexDailyViewMode = 'today';
   currentDailyHotDateKey = dateKeyValue === 'today' ? 'today' : cleanShortText(dateKeyValue, 20);
-  if (currentDailyHotDateKey !== 'today') {
+  if (currentDailyHotDateKey !== 'today' && !isViewingTomorrowDailyHot()) {
     currentHistoryDateKey = currentDailyHotDateKey;
     localStorage.setItem(HISTORY_DATE_STORAGE_KEY, currentHistoryDateKey);
   }
   localStorage.setItem(DAILY_HOT_DATE_STORAGE_KEY, currentDailyHotDateKey);
   closeDailyManageMenu();
+  if (isViewingTomorrowDailyHot()) void loadCodexTomorrowDraft({ notifyOnError: true });
   renderDailyHot();
-}
-
-async function setDailyHotView(mode) {
-  const nextMode = mode === 'tomorrow' ? 'tomorrow' : 'today';
-  if (nextMode === 'tomorrow' && currentDailyHotDateKey !== 'today') {
-    currentDailyHotDateKey = 'today';
-    localStorage.setItem(DAILY_HOT_DATE_STORAGE_KEY, currentDailyHotDateKey);
-  }
-  codexDailyViewMode = nextMode;
-  closeDailyManageMenu();
-  const draftPromise = nextMode === 'tomorrow'
-    ? loadCodexTomorrowDraft({ notifyOnError: true })
-    : null;
-  renderDailyHot();
-  if (draftPromise) await draftPromise;
 }
 
 function getCurrentDailyHotWords() {
@@ -4328,6 +4316,10 @@ function getCurrentDailyHotWords() {
 
 function isViewingTodayDailyHot() {
   return currentDailyHotDateKey === 'today';
+}
+
+function isViewingTomorrowDailyHot() {
+  return currentDailyHotDateKey === addDaysToDateKey(todayKey(), 1);
 }
 
 function applyCloudRankings(days) {
@@ -8125,19 +8117,7 @@ function handleDailyManageAction(action) {
 }
 
 function updateDailyHotViewControls(isTomorrowPreview) {
-  const todayButton = document.getElementById('dailyTodayViewBtn');
-  const tomorrowButton = document.getElementById('dailyTomorrowViewBtn');
-  if (todayButton) {
-    todayButton.classList.toggle('active', !isTomorrowPreview);
-    todayButton.setAttribute('aria-pressed', String(!isTomorrowPreview));
-  }
-  if (tomorrowButton) {
-    tomorrowButton.classList.toggle('active', isTomorrowPreview);
-    tomorrowButton.setAttribute('aria-pressed', String(isTomorrowPreview));
-  }
-  const dateSelect = document.getElementById('dailyHotDateSelect');
   const sourceFilter = document.getElementById('todaySourceFilter');
-  if (dateSelect) dateSelect.disabled = isTomorrowPreview;
   if (sourceFilter) sourceFilter.disabled = isTomorrowPreview;
   document.querySelectorAll('[data-daily-preview-disabled]').forEach(element => {
     element.disabled = isTomorrowPreview;
@@ -8147,7 +8127,7 @@ function updateDailyHotViewControls(isTomorrowPreview) {
 function renderDailyHot() {
   populateDailyHotDateSelect();
   const isTodayView = isViewingTodayDailyHot();
-  const isTomorrowPreview = isTodayView && codexDailyViewMode === 'tomorrow';
+  const isTomorrowPreview = isViewingTomorrowDailyHot();
   const words = isTomorrowPreview ? safeArray(codexTomorrowDraft?.items) : getCurrentDailyHotWords();
   if (!isTomorrowPreview) populateSourceFilter('today', words);
   const visibleWords = isTomorrowPreview ? words : applySourceFilter(words, 'today');
