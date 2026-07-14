@@ -51,7 +51,7 @@ KV 模式下单张图片不能超过 800 KiB。优先生成 WebP；若原图过�
 代码合并后仍不会自动启用。正式激活需要单独批准并完成：
 
 1. 为 Pages 配置独立 secret `CODEX_AUTOMATION_SECRET`，不要复用 `AUTO_REFRESH_SECRET`。
-2. 创建独立的 Production/Preview KV namespace，并以 `REFERENCE_IMAGES_KV` 绑定到 Pages Functions。KV 图片保存 60 天后自动过期，不与 workflow 主数据混用。
+2. 创建独立 KV namespace，并以 `REFERENCE_IMAGES_KV` 绑定到 Production Pages Functions。KV 图片保存 60 天后自动过期，不与 workflow 主数据混用；Preview 未绑定时保持 503 安全降级。
 3. 部署 Pages 和 Worker 后，先用 Preview/只读 status 验证。
 4. 再启用固定 Codex 任务的 14:00 和 17:00 两个 heartbeat。
 

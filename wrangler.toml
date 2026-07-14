@@ -6,6 +6,10 @@ pages_build_output_dir = "dist"
 binding = "FAVORITES"
 id = "969904de6cf24fe6982d2b8ee01c9b1a"
 
+[[kv_namespaces]]
+binding = "REFERENCE_IMAGES_KV"
+id = "2d408128295d451eae65935b9fdac082"
+
 [[env.preview.kv_namespaces]]
 binding = "FAVORITES"
 id = "d4d4852d9be04115830789aaffbf4aca"
