@@ -64,6 +64,19 @@ test('前端初始化不会自动触发今日推荐生成', () => {
   assert.ok(appSource.includes('function handleGenerateTodaySnapshot()'));
 });
 
+test('Codex 明日预览保留团队操作和完整词卡详情', () => {
+  const appSource = fs.readFileSync(new URL('../app.js', import.meta.url), 'utf8');
+  assert.ok(appSource.includes('function toggleCodexDraftFavorite(kanji)'));
+  assert.ok(appSource.includes('function applyCodexDraftFeedback(kanji'));
+  assert.ok(appSource.includes("renderFeedbackControl(item.kanji, { context: 'codex-preview' })"));
+  assert.ok(appSource.includes('加入收藏 / 选题池'));
+  assert.ok(appSource.includes('目标受众'));
+  assert.ok(appSource.includes('封面建议'));
+  assert.ok(appSource.includes('互动引导'));
+  assert.ok(appSource.includes('相近词'));
+  assert.ok(appSource.includes('风险与使用提醒'));
+});
+
 test('scheduled Worker 分离日更和 aiCard 批量 cron', () => {
   const workerConfig = fs.readFileSync(new URL('../wrangler.worker.toml', import.meta.url), 'utf8');
   const workerSource = fs.readFileSync(new URL('../worker/favorites-worker.js', import.meta.url), 'utf8');
