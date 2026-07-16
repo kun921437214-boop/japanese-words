@@ -331,7 +331,11 @@ test('reference image falls back to expiring KV storage with public edge caching
       headers: { Authorization: 'Bearer codex-secret', 'Content-Type': 'image/jpeg' },
       body: new Uint8Array([4, 5, 6])
     }),
-    env: { REFERENCE_IMAGES_KV: kv, CODEX_AUTOMATION_SECRET: 'codex-secret' }
+    env: {
+      REFERENCE_IMAGES_KV: kv,
+      CODEX_AUTOMATION_SECRET: 'codex-secret',
+      ALLOW_PUBLIC_APP: 'true'
+    }
   });
   assert.equal(upload.status, 200);
   const uploaded = await upload.json();

@@ -237,10 +237,6 @@ export async function authorizeRequest(request, env = {}, options = {}) {
     }
   }
 
-  if (String(env.ALLOW_PUBLIC_APP || '').toLowerCase() === 'true') {
-    return { ok: true, actor: 'public-app', method: 'public_app' };
-  }
-
   const bearer = getBearerToken(request);
   const adminToken = cleanText(env.ADMIN_API_TOKEN, 2000);
   if (adminToken && bearer && constantTimeEqual(bearer, adminToken)) {
@@ -263,6 +259,13 @@ export async function authorizeRequest(request, env = {}, options = {}) {
 
   const accessIdentity = await getAccessIdentity(request, env, options);
   if (accessIdentity) return { ok: true, ...accessIdentity };
+
+  // Public mode is a fallback identity. Check scoped bearer credentials first so
+  // endpoints such as /codex-image can distinguish an authorized automation
+  // upload from an ordinary same-site public request.
+  if (String(env.ALLOW_PUBLIC_APP || '').toLowerCase() === 'true') {
+    return { ok: true, actor: 'public-app', method: 'public_app' };
+  }
 
   if (String(env.ALLOW_INSECURE_LOCAL_DEV || '').toLowerCase() === 'true') {
     try {
