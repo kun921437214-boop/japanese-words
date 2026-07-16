@@ -74,6 +74,21 @@ test('public app mode allows same-site access without team authentication', asyn
   assert.equal(authorization.method, 'public_app');
 });
 
+test('public app mode preserves scoped bearer identity before using the public fallback', async () => {
+  const authorization = await authorizeRequest(request(undefined, {
+    method: 'PUT',
+    headers: { Authorization: 'Bearer codex-secret' }
+  }), {
+    ALLOW_PUBLIC_APP: 'true',
+    CODEX_AUTOMATION_SECRET: 'codex-secret'
+  }, {
+    allowCodexAutomation: true
+  });
+  assert.equal(authorization.ok, true);
+  assert.equal(authorization.actor, 'codex-automation');
+  assert.equal(authorization.method, 'codex_automation_secret');
+});
+
 test('public app mode still rejects cross-site browser writes', async () => {
   const authorization = await authorizeRequest(request(undefined, {
     method: 'POST',
