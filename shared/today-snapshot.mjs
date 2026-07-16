@@ -3,6 +3,7 @@ import { APP_TIME_ZONE, WORDS_PER_DAY, dateKey } from './rankings.mjs';
 import {
   archiveTodaySnapshotIntoSnapshotHistory,
   cleanStoredWorkflow as cleanWorkflowSchema,
+  isCompatibleTodaySnapshotGeneratorVersion,
   TODAY_SNAPSHOT_GENERATOR_VERSION
 } from './workflow-schema.mjs';
 import {
@@ -621,11 +622,11 @@ export function cleanTodaySnapshot(snapshot = {}) {
     dateKey: snapshotDateKey,
     words,
     generatedAt: typeof snapshot?.generatedAt === 'string' ? snapshot.generatedAt : '',
-    source: 'candidatePool',
+    source: cleanText(snapshot?.source || 'candidatePool', 80) || 'candidatePool',
     batchIds: uniqueWords(snapshot?.batchIds).slice(0, 30),
     version: clamp(toInt(snapshot?.version, words.length ? TODAY_SNAPSHOT_VERSION : 0), 0, 999),
     generatorVersion: cleanText(snapshot?.generatorVersion, 80),
-    createdBy: ['server', 'frontend', 'worker', 'manual'].includes(snapshot?.createdBy) ? snapshot.createdBy : '',
+    createdBy: ['server', 'frontend', 'worker', 'manual', 'codex'].includes(snapshot?.createdBy) ? snapshot.createdBy : '',
     dedupDaysUsed: clamp(toInt(snapshot?.dedupDaysUsed, 0), 0, 365),
     relaxedDedup: Boolean(snapshot?.relaxedDedup),
     shortage: Boolean(snapshot?.shortage),
@@ -639,7 +640,7 @@ export function isCurrentGeneratorSnapshot(snapshot = {}, now = new Date()) {
   const cleanSnapshot = cleanTodaySnapshot(snapshot);
   return cleanSnapshot.dateKey === dateKey(now)
     && cleanSnapshot.words.length > 0
-    && cleanSnapshot.generatorVersion === TODAY_SNAPSHOT_GENERATOR_VERSION;
+    && isCompatibleTodaySnapshotGeneratorVersion(cleanSnapshot.generatorVersion);
 }
 
 export function cleanHistorySnapshot(snapshot = {}, fallbackDateKey = '') {
@@ -654,7 +655,7 @@ export function cleanHistorySnapshot(snapshot = {}, fallbackDateKey = '') {
     batchIds: uniqueWords(record?.batchIds).slice(0, 30),
     version: clamp(toInt(record?.version, words.length ? TODAY_SNAPSHOT_VERSION : 1), 1, 999),
     generatorVersion: cleanText(record?.generatorVersion, 80),
-    createdBy: ['server', 'frontend', 'worker', 'manual'].includes(record?.createdBy) ? record.createdBy : '',
+    createdBy: ['server', 'frontend', 'worker', 'manual', 'codex'].includes(record?.createdBy) ? record.createdBy : '',
     dedupDaysUsed: clamp(toInt(record?.dedupDaysUsed, 0), 0, 365),
     relaxedDedup: Boolean(record?.relaxedDedup),
     shortage: Boolean(record?.shortage),

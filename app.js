@@ -2832,6 +2832,12 @@ function mergeAiBatches(localBatches, remoteBatches) {
     .slice(0, 100);
 }
 
+function isCompatibleTodaySnapshotGeneratorVersion(value = '') {
+  const generatorVersion = cleanShortText(value, 80);
+  return generatorVersion === TODAY_SNAPSHOT_GENERATOR_VERSION
+    || generatorVersion.startsWith(`${TODAY_SNAPSHOT_GENERATOR_VERSION}+`);
+}
+
 function cleanTodaySnapshot(snapshot = {}) {
   const snapshotDateKey = /^\d{4}-\d{2}-\d{2}$/.test(String(snapshot.dateKey || ''))
     ? String(snapshot.dateKey)
@@ -2840,11 +2846,11 @@ function cleanTodaySnapshot(snapshot = {}) {
     dateKey: snapshotDateKey,
     words: getUniqueWords(snapshot.words || []).slice(0, WORDS_PER_DAY),
     generatedAt: typeof snapshot.generatedAt === 'string' ? snapshot.generatedAt : '',
-    source: snapshot.source === 'candidatePool' ? 'candidatePool' : 'candidatePool',
+    source: cleanShortText(snapshot.source || 'candidatePool', 80) || 'candidatePool',
     batchIds: getUniqueWords(snapshot.batchIds || []).slice(0, 30),
     version: clamp(toInt(snapshot.version, 0), 0, 999),
     generatorVersion: cleanShortText(snapshot.generatorVersion, 80),
-    createdBy: ['server', 'frontend', 'worker', 'manual'].includes(snapshot.createdBy) ? snapshot.createdBy : '',
+    createdBy: ['server', 'frontend', 'worker', 'manual', 'codex'].includes(snapshot.createdBy) ? snapshot.createdBy : '',
     dedupDaysUsed: clamp(toInt(snapshot.dedupDaysUsed, 0), 0, 365),
     relaxedDedup: Boolean(snapshot.relaxedDedup),
     shortage: Boolean(snapshot.shortage),
@@ -2867,7 +2873,7 @@ function cleanHistorySnapshot(snapshot = {}, fallbackDateKey = '') {
     batchIds: getUniqueWords(record.batchIds || []).slice(0, 30),
     version: clamp(toInt(record.version, 1), 1, 999),
     generatorVersion: cleanShortText(record.generatorVersion, 80),
-    createdBy: ['server', 'frontend', 'worker', 'manual'].includes(record.createdBy) ? record.createdBy : '',
+    createdBy: ['server', 'frontend', 'worker', 'manual', 'codex'].includes(record.createdBy) ? record.createdBy : '',
     dedupDaysUsed: clamp(toInt(record.dedupDaysUsed, 0), 0, 365),
     relaxedDedup: Boolean(record.relaxedDedup),
     shortage: Boolean(record.shortage),
@@ -3012,7 +3018,7 @@ function hasTodaySnapshotForToday(snapshot = todaySnapshot) {
   const cleanSnapshot = cleanTodaySnapshot(snapshot);
   return cleanSnapshot.dateKey === todayKey()
     && cleanSnapshot.words.length > 0
-    && cleanSnapshot.generatorVersion === TODAY_SNAPSHOT_GENERATOR_VERSION;
+    && isCompatibleTodaySnapshotGeneratorVersion(cleanSnapshot.generatorVersion);
 }
 
 function cleanAutoDailyRefreshState(state = {}) {

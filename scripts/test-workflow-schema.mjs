@@ -2,11 +2,13 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import {
   cleanStoredWorkflow,
+  isCompatibleTodaySnapshotGeneratorVersion,
   mergeWorkflow,
   mergeWorkflowForFullSave,
   stripInvalidCurrentTodaySnapshot
 } from '../shared/workflow-schema.mjs';
 import {
+  cleanTodaySnapshot,
   generateTodaySnapshot,
   getRecentDailyHotBlockedWords,
   TODAY_HISTORY_DEDUP_DAYS,
@@ -75,6 +77,38 @@ test('Codex 明日预览保留团队操作和完整词卡详情', () => {
   assert.ok(appSource.includes('互动引导'));
   assert.ok(appSource.includes('相近词'));
   assert.ok(appSource.includes('风险与使用提醒'));
+});
+
+test('Codex 组合生成器版本在前端保持为当日快照', () => {
+  const appSource = fs.readFileSync(new URL('../app.js', import.meta.url), 'utf8');
+  assert.ok(appSource.includes('function isCompatibleTodaySnapshotGeneratorVersion(value'));
+  assert.ok(appSource.includes("generatorVersion.startsWith(`${TODAY_SNAPSHOT_GENERATOR_VERSION}+`)"));
+  assert.ok(appSource.includes("source: cleanShortText(snapshot.source || 'candidatePool', 80)"));
+  assert.ok(appSource.includes("['server', 'frontend', 'worker', 'manual', 'codex'].includes(snapshot.createdBy)"));
+  assert.ok(appSource.includes('&& isCompatibleTodaySnapshotGeneratorVersion(cleanSnapshot.generatorVersion)'));
+});
+
+test('Codex 当日快照通过共享版本门并保留来源元数据', () => {
+  const now = new Date('2026-07-16T03:16:07.412Z');
+  const snapshot = {
+    dateKey: '2026-07-16',
+    words: ['胸がざわつく'],
+    generatedAt: now.toISOString(),
+    source: 'codex_draft',
+    version: 2,
+    generatorVersion: `${TODAY_SNAPSHOT_GENERATOR_VERSION}+codex-daily-v1`,
+    createdBy: 'codex'
+  };
+  const cleanedSnapshot = cleanTodaySnapshot(snapshot);
+  assert.equal(isCompatibleTodaySnapshotGeneratorVersion(snapshot.generatorVersion), true);
+  assert.equal(isCurrentGeneratorSnapshot(snapshot, now), true);
+  assert.equal(cleanedSnapshot.source, 'codex_draft');
+  assert.equal(cleanedSnapshot.createdBy, 'codex');
+
+  const workflow = stripInvalidCurrentTodaySnapshot({ todaySnapshot: snapshot }, now);
+  assert.deepEqual(workflow.todaySnapshot.words, snapshot.words);
+  assert.equal(workflow.todaySnapshot.source, 'codex_draft');
+  assert.equal(workflow.todaySnapshot.createdBy, 'codex');
 });
 
 test('scheduled Worker 分离日更和 aiCard 批量 cron', () => {
