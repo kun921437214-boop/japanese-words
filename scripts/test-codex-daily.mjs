@@ -281,6 +281,51 @@ test('scheduled Worker promotion writes the workflow and is idempotent', async (
   assert.equal((await second.json()).alreadyPublished, true);
 });
 
+test('a valid Codex draft replaces a same-day non-Codex fallback snapshot', async () => {
+  const fallbackWords = Array.from({ length: 20 }, (_, index) => `候选词${index + 1}`);
+  const kv = makeKv({
+    'favorites:global': {
+      words: ['余裕'],
+      todaySnapshot: {
+        dateKey: '2026-07-14',
+        words: fallbackWords,
+        generatedAt: '2026-07-13T16:00:00.000Z',
+        source: 'candidatePool',
+        version: 1,
+        createdBy: 'server'
+      }
+    }
+  });
+  const env = { FAVORITES: kv, CODEX_AUTOMATION_SECRET: 'codex-secret', AUTO_REFRESH_SECRET: 'cron-secret' };
+  await handleCodexDaily({
+    request: apiRequest('/codex-daily?date=2026-07-14', {
+      method: 'PUT',
+      headers: { Authorization: 'Bearer codex-secret', 'Content-Type': 'application/json' },
+      body: JSON.stringify(makeDraft())
+    }),
+    env
+  });
+
+  const response = await handleCodexDaily({
+    request: apiRequest('/codex-daily?date=2026-07-14', {
+      method: 'POST',
+      headers: { Authorization: 'Bearer cron-secret', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'promote', targetDateKey: '2026-07-14' })
+    }),
+    env
+  });
+  const result = await response.json();
+  const stored = await kv.get('favorites:global', 'json');
+
+  assert.equal(response.status, 200);
+  assert.equal(result.published, true);
+  assert.equal(result.alreadyPublished, false);
+  assert.equal(result.source, 'codex_draft');
+  assert.deepEqual(stored.todaySnapshot.words, CURATED_WORDS);
+  assert.equal(stored.todaySnapshot.source, 'codex_draft');
+  assert.equal(stored.todaySnapshot.version, 2);
+});
+
 test('reference image upload is scoped to Codex and can be read by its opaque key', async () => {
   const objects = new Map();
   const r2 = {

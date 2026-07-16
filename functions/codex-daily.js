@@ -199,7 +199,10 @@ export async function onRequest({ request, env }) {
     const workflow = cleanStoredWorkflow(await env.FAVORITES.get(workflowKey, 'json'));
     const storedDraft = await env.FAVORITES.get(draftKey, 'json');
 
-    if (workflow.todaySnapshot?.dateKey === expectedDateKey && workflow.todaySnapshot?.words?.length === 20) {
+    const existingSnapshotIsCodex = workflow.todaySnapshot?.dateKey === expectedDateKey
+      && workflow.todaySnapshot?.words?.length === 20
+      && workflow.todaySnapshot?.source === 'codex_draft';
+    if (existingSnapshotIsCodex) {
       if (storedDraft) {
         const publishedDraft = {
           ...validateCodexDailyDraft(storedDraft, { workflow, expectedDateKey }),
