@@ -12,6 +12,14 @@ import {
   promoteCodexDailyDraft,
   validateCodexDailyDraft
 } from '../shared/codex-daily-draft.mjs';
+import {
+  CODEX_BATCH_IMAGE_MAX_BYTES,
+  applyCodexImageManifestResult,
+  applyCodexImageUploadResult,
+  getCodexImageContentType,
+  getPendingCodexImageItems,
+  isRetryableCodexImageUploadError
+} from '../shared/codex-image-batch.mjs';
 import { addDays, dateKey } from '../shared/rankings.mjs';
 import { buildTodayRecommendationAudit } from '../shared/today-snapshot.mjs';
 import { triggerDailyPublishOrFallback } from '../worker/favorites-worker.js';
@@ -141,6 +149,63 @@ test('a complete 20-word Codex draft passes while missing images remain non-bloc
   assert.equal(draft.cardReadyCount, 20);
   assert.equal(draft.imageReadyCount, 0);
   assert.ok(draft.validation.warnings.some(message => message.includes('参考图片未全部就绪')));
+});
+
+test('Codex batch image helpers skip ready cards and preserve local generation metadata', () => {
+  const draft = makeDraft(CURATED_WORDS.slice(0, 2));
+  draft.items[0].aiCard.referenceImage = {
+    status: 'ready',
+    url: '/codex-image?key=existing',
+    prompt: 'existing prompt',
+    provider: 'openai-imagegen',
+    generatedAt: '2026-07-13T06:00:00.000Z'
+  };
+  const pending = getPendingCodexImageItems(draft);
+  assert.deepEqual(pending.map(entry => [entry.order, entry.word]), [[2, CURATED_WORDS[1]]]);
+
+  const upload = {
+    key: 'codex-daily/2026-07-14/new.webp',
+    url: '/codex-image?key=new',
+    storage: 'kv',
+    contentType: 'image/webp',
+    size: 1234
+  };
+  const image = applyCodexImageUploadResult(
+    draft,
+    CURATED_WORDS[1],
+    upload,
+    '2026-07-13T07:00:00.000Z'
+  );
+  assert.equal(image.status, 'ready');
+  assert.equal(image.url, upload.url);
+  assert.equal(image.key, upload.key);
+  assert.equal(image.provider, 'codex');
+  assert.equal(image.prompt, `为 ${CURATED_WORDS[1]} 生成参考图片`);
+
+  const manifest = {};
+  const saved = applyCodexImageManifestResult(manifest, CURATED_WORDS[1], upload, {
+    file: '02-word.webp',
+    generatedAt: '2026-07-13T07:00:00.000Z'
+  });
+  assert.equal(saved.storage, 'kv');
+  assert.equal(saved.file, '02-word.webp');
+  assert.equal(saved.size, 1234);
+  assert.equal(manifest[CURATED_WORDS[1]].status, 'ready');
+});
+
+test('Codex batch image helpers enforce supported formats and retry only transient failures', () => {
+  assert.equal(CODEX_BATCH_IMAGE_MAX_BYTES, 800 * 1024);
+  assert.equal(getCodexImageContentType('card.WEBP'), 'image/webp');
+  assert.equal(getCodexImageContentType('card.gif'), '');
+  assert.equal(isRetryableCodexImageUploadError(new Error('network')), true);
+  assert.equal(isRetryableCodexImageUploadError({ status: 429 }), true);
+  assert.equal(isRetryableCodexImageUploadError({ status: 502 }), true);
+  assert.equal(isRetryableCodexImageUploadError({
+    status: 503,
+    data: { error: { code: 'IMAGE_STORAGE_NOT_CONFIGURED' } }
+  }), false);
+  assert.equal(isRetryableCodexImageUploadError({ status: 403 }), false);
+  assert.equal(isRetryableCodexImageUploadError({ status: 413 }), false);
 });
 
 test('tomorrow preview is public and sanitized while the full draft stays protected', async () => {

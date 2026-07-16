@@ -42,12 +42,15 @@ CODEX_AUTOMATION_SECRET=replace-locally
 npm run codex:daily -- context --date 2026-07-14
 npm run codex:daily -- draft --date 2026-07-14
 npm run codex:daily -- validate --date 2026-07-14 --draft exports/codex-daily/2026-07-14/draft.json
+npm run codex:daily -- upload-images --date 2026-07-14 --draft exports/codex-daily/2026-07-14/draft.json --images-dir exports/codex-daily/2026-07-14/images --manifest exports/codex-daily/2026-07-14/image-uploads.json --require-storage kv --confirm-submit
 npm run codex:daily -- upload-image --date 2026-07-14 --word モヤる --file /absolute/path/moyaru.webp --confirm-submit
 npm run codex:daily -- submit --date 2026-07-14 --draft exports/codex-daily/2026-07-14/draft.json --confirm-submit
 npm run codex:daily -- status --date 2026-07-14
 ```
 
-KV 模式下单张图片不能超过 800 KiB。优先生成 WebP；若原图过大，可在本机缩放并压缩为 JPEG 后再上传。`exports/` 已被 git 忽略。不要把上下文、生成图片、草稿或 secret 提交到仓库。
+`upload-images` 会按 `01-` 至 `20-` 文件名前缀匹配草稿词序，优先使用 WebP，并跳过已经 `ready` 的图片。每上传成功一张就立即写回 `draft.json` 与 `image-uploads.json`；瞬时网络错误和 5xx 会有限重试，鉴权失败或存储未配置则停止，下一次运行从缺失项继续。`upload-image` 仅用于单张人工修复。
+
+KV 模式下单张图片不能超过 800 KiB，批量命令会在联网前完成本地预检。优先生成 WebP；若原图过大，可在本机缩放并压缩为 JPEG 后再上传。`exports/` 已被 git 忽略。不要把上下文、生成图片、草稿或 secret 提交到仓库。
 
 ## Cloudflare 激活前置项
 
@@ -56,7 +59,7 @@ KV 模式下单张图片不能超过 800 KiB。优先生成 WebP；若原图过�
 1. 为 Pages 配置独立 secret `CODEX_AUTOMATION_SECRET`，不要复用 `AUTO_REFRESH_SECRET`。
 2. 创建独立 KV namespace，并以 `REFERENCE_IMAGES_KV` 绑定到 Production Pages Functions。KV 图片保存 60 天后自动过期，不与 workflow 主数据混用；Preview 未绑定时保持 503 安全降级。
 3. 部署 Pages 和 Worker 后，先用 Preview/只读 status 验证。
-4. 再启用固定 Codex 任务的 14:00 和 17:00 两个 heartbeat。
+4. 再启用固定 Codex 任务的 14:00、16:00 和 17:00 三个 heartbeat。
 
 本 PR 不迁移或清理现有 KV，不触发日更。图片只能通过带 Codex 专用凭证的 `/codex-image` 写入独立 namespace。
 
@@ -77,4 +80,6 @@ KV 模式下单张图片不能超过 800 KiB。优先生成 WebP；若原图过�
 
 14:00 主任务：读取明日上下文，生成并验证 20 个词/卡片/图片，只提交草稿，不发布、不调用 DeepSeek、不部署。
 
-17:00 补漏任务：读取同一日期的现有草稿，只补未完成词卡或图片；已有内容不重做。若草稿仍不合格，应在同一 Codex 任务中报告错误并保留 DeepSeek 午夜兜底。
+16:00 恢复检查：读取同一日期的现有草稿；如果 14:00 因网络或审批链路中断，使用同一个 `upload-images` 命令从缺失图片继续，不重做 ready 内容。
+
+17:00 最终补漏：再次只补未完成词卡或图片。若草稿仍不合格，应在同一 Codex 任务中报告错误并保留 DeepSeek 午夜兜底。
