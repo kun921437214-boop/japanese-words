@@ -111,6 +111,19 @@ test('Codex 当日快照通过共享版本门并保留来源元数据', () => {
   assert.equal(workflow.todaySnapshot.createdBy, 'codex');
 });
 
+test('Codex 参考图在列表卡和详情卡中完整展示', () => {
+  const appSource = fs.readFileSync(new URL('../app.js', import.meta.url), 'utf8');
+  const styleSource = fs.readFileSync(new URL('../styles.css', import.meta.url), 'utf8');
+  assert.ok(appSource.includes("aiCard?.referenceImage?.status === 'ready'"));
+  assert.ok(appSource.includes('daily-hot-reference-card'));
+  assert.ok(appSource.includes('function renderWordDetailHero(word, aiCard, fallbackHero)'));
+  assert.ok(appSource.includes('modal-hero-full-reference'));
+  assert.ok(appSource.includes('查看原图 ↗'));
+  assert.match(styleSource, /\.daily-hot-reference-card \.card-image\s*\{[^}]*object-fit:contain;/);
+  assert.match(styleSource, /\.modal-hero-full-reference \.modal-hero-img\s*\{[^}]*object-fit:contain;/);
+  assert.ok(styleSource.includes('aspect-ratio:3 / 4;'));
+});
+
 test('scheduled Worker 分离日更和 aiCard 批量 cron', () => {
   const workerConfig = fs.readFileSync(new URL('../wrangler.worker.toml', import.meta.url), 'utf8');
   const workerSource = fs.readFileSync(new URL('../worker/favorites-worker.js', import.meta.url), 'utf8');
