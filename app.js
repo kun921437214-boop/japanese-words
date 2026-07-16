@@ -7578,6 +7578,8 @@ function renderTodayCard(word) {
   const riskStateKey = getRiskStateKey(riskStateLabel);
   const entry = cleanCandidatePoolEntry(word.kanji, candidatePool[word.kanji] || word.candidateMeta || {}) || {};
   const aiCard = cleanAiCard(entry.aiCard || word.aiCard || {});
+  const hasReferenceImage = aiCard?.referenceImage?.status === 'ready' && Boolean(aiCard.referenceImage.url);
+  const cardImageUrl = hasReferenceImage ? aiCard.referenceImage.url : word.imageUrl;
   const aiCardInFlight = aiCardAutoInFlight.has(word.kanji);
   const aiCardStatus = aiCardInFlight ? 'pending' : (aiCard?.cardStatus || 'none');
   const aiCardActionLabel = getTodayAiCardActionLabel(aiCard, aiCardInFlight, entry);
@@ -7587,10 +7589,10 @@ function renderTodayCard(word) {
   const safeId = escapeJSString(word.id);
   const safeKanjiAction = escapeJSString(word.kanji);
   return `
-    <div class="word-card recommendation-card daily-hot-card" onclick="openDetail('${safeId}')">
+    <div class="word-card recommendation-card daily-hot-card${hasReferenceImage ? ' daily-hot-reference-card' : ''}" onclick="openDetail('${safeId}')">
       <div class="card-image-wrapper">
-        <img class="card-image" src="${escapeHTML(word.imageUrl)}" alt="${escapeHTML(word.kanji)}" loading="lazy" onerror="this.src='${fallbackSvg}'">
-        <div class="card-image-overlay"></div>
+        <img class="card-image" src="${escapeHTML(cardImageUrl)}" alt="${escapeHTML(word.kanji)}" loading="lazy" onerror="this.src='${fallbackSvg}'">
+        ${hasReferenceImage ? '' : `<div class="card-image-overlay"></div>
         <div class="card-word-overlay">
           <div class="card-kanji">${escapeHTML(word.kanji)}</div>
           <div class="card-reading">${escapeHTML(word.reading)}</div>
@@ -7600,9 +7602,21 @@ function renderTodayCard(word) {
             <img class="fav-icon" src="assets/illustrations/dorayaki.png" alt="收藏">
           </button>
           <button class="card-dismiss-btn" title="不感兴趣" aria-label="不感兴趣" onclick="dismissDailyHotRecommendation('${safeKanjiAction}')">×</button>
-        </div>
+        </div>`}
       </div>
       <div class="card-body">
+        ${hasReferenceImage ? `<div class="daily-hot-reference-header">
+          <div class="daily-hot-reference-title">
+            <div class="daily-hot-reference-word">${escapeHTML(word.kanji)}</div>
+            <div class="daily-hot-reference-reading">${escapeHTML(word.reading)}</div>
+          </div>
+          <div class="daily-hot-reference-controls" onclick="event.stopPropagation()">
+            <button class="card-fav-btn ${isFav ? 'favorited' : ''}" title="收藏" aria-label="收藏" onclick="toggleFavorite('${safeKanjiAction}')">
+              <img class="fav-icon" src="assets/illustrations/dorayaki.png" alt="收藏">
+            </button>
+            <button class="card-dismiss-btn" title="不感兴趣" aria-label="不感兴趣" onclick="dismissDailyHotRecommendation('${safeKanjiAction}')">×</button>
+          </div>
+        </div>` : ''}
         <div class="card-title-row">
           <div class="card-meaning">${escapeHTML(word.meaning)}</div>
         </div>
@@ -8809,6 +8823,37 @@ function findWord(idOrKanji) {
   return null;
 }
 
+function renderWordDetailHero(word, aiCard, fallbackHero) {
+  const referenceImageUrl = aiCard?.referenceImage?.status === 'ready'
+    ? cleanShortText(aiCard.referenceImage.url, 1000)
+    : '';
+  const safeImageUrl = escapeHTML(referenceImageUrl || word.imageUrl || getHeroImageUrl(word.kanji));
+  if (referenceImageUrl) {
+    return `
+      <div class="modal-hero modal-hero-recommendation modal-hero-full-reference">
+        <img class="modal-hero-img" src="${safeImageUrl}" alt="${escapeHTML(word.kanji)} 完整参考图" onerror="this.src='${fallbackHero}'">
+        <button class="modal-close" onclick="closeModal()">✕</button>
+      </div>
+      <div class="modal-reference-heading">
+        <div>
+          <div class="modal-reference-word">${escapeHTML(word.kanji)}</div>
+          <div class="modal-reference-reading">${escapeHTML(word.reading || word.kana || '')}</div>
+        </div>
+        <a class="modal-reference-open" href="${escapeHTML(referenceImageUrl)}" target="_blank" rel="noopener" onclick="event.stopPropagation()">查看原图 ↗</a>
+      </div>`;
+  }
+  return `
+    <div class="modal-hero modal-hero-recommendation">
+      <img class="modal-hero-img" src="${safeImageUrl}" alt="${escapeHTML(word.kanji)}" onerror="this.src='${fallbackHero}'">
+      <div class="modal-hero-overlay"></div>
+      <div class="modal-hero-content">
+        <div class="modal-kanji">${escapeHTML(word.kanji)}</div>
+        <div class="modal-reading-hero">${escapeHTML(word.reading || '')}</div>
+      </div>
+      <button class="modal-close" onclick="closeModal()">✕</button>
+    </div>`;
+}
+
 function openDetail(idOrKanji) {
   const word = findWord(idOrKanji);
   if (!word) return;
@@ -8825,15 +8870,7 @@ function openDetail(idOrKanji) {
     const basicRomaji = entry.romaji || word.romaji || '';
     const basicKana = entry.kana || word.kana || word.reading || '';
     document.getElementById('modalContainer').innerHTML = `
-      <div class="modal-hero modal-hero-recommendation">
-        <img class="modal-hero-img" src="${escapeHTML(word.imageUrl || getHeroImageUrl(word.kanji))}" alt="${escapeHTML(word.kanji)}" onerror="this.src='${fallbackHero}'">
-        <div class="modal-hero-overlay"></div>
-        <div class="modal-hero-content">
-          <div class="modal-kanji">${escapeHTML(word.kanji)}</div>
-          <div class="modal-reading-hero">${escapeHTML(word.reading || entry.kana || '')}</div>
-        </div>
-        <button class="modal-close" onclick="closeModal()">✕</button>
-      </div>
+      ${renderWordDetailHero(word, aiCard, fallbackHero)}
       <div class="modal-body">
         <div class="modal-section compact-section">
           <div class="modal-section-title">核心判断</div>
@@ -8881,15 +8918,7 @@ function openDetail(idOrKanji) {
   const reviewCheckText = entry.reviewReason || (entry.confidenceLevel === 'review' || entry.evidenceType === 'unknown' ? '证据或用法不够稳定，发布前建议人工查证。' : '');
   const avoidScenarioText = displayCover.avoid || entry.riskWarning || '';
   document.getElementById('modalContainer').innerHTML = `
-    <div class="modal-hero modal-hero-recommendation">
-      <img class="modal-hero-img" src="${escapeHTML(word.imageUrl || getHeroImageUrl(word.kanji))}" alt="${escapeHTML(word.kanji)}" onerror="this.src='${fallbackHero}'">
-      <div class="modal-hero-overlay"></div>
-      <div class="modal-hero-content">
-        <div class="modal-kanji">${escapeHTML(word.kanji)}</div>
-        <div class="modal-reading-hero">${escapeHTML(word.reading)}</div>
-      </div>
-      <button class="modal-close" onclick="closeModal()">✕</button>
-    </div>
+    ${renderWordDetailHero(word, aiCard, fallbackHero)}
     <div class="modal-body">
       <div class="modal-section compact-section">
         <div class="modal-section-title">核心判断</div>
