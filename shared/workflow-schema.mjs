@@ -68,6 +68,12 @@ function cleanText(value, maxLength = 240) {
   return String(value ?? '').trim().slice(0, maxLength);
 }
 
+export function isCompatibleTodaySnapshotGeneratorVersion(value = '') {
+  const generatorVersion = cleanText(value, 80);
+  return generatorVersion === TODAY_SNAPSHOT_GENERATOR_VERSION
+    || generatorVersion.startsWith(`${TODAY_SNAPSHOT_GENERATOR_VERSION}+`);
+}
+
 function cleanEnum(value, options, fallback = '') {
   const cleanValue = cleanText(value, 120);
   return options.includes(cleanValue) ? cleanValue : fallback;
@@ -878,7 +884,7 @@ export function isCurrentGeneratorSnapshot(snapshot = {}, now = new Date()) {
   const cleanSnapshot = cleanTodaySnapshot(snapshot);
   return cleanSnapshot.dateKey === workflowDateKey(now)
     && cleanSnapshot.words.length > 0
-    && cleanSnapshot.generatorVersion === TODAY_SNAPSHOT_GENERATOR_VERSION;
+    && isCompatibleTodaySnapshotGeneratorVersion(cleanSnapshot.generatorVersion);
 }
 
 export function stripInvalidCurrentTodaySnapshot(workflow = {}, now = new Date()) {
@@ -887,7 +893,7 @@ export function stripInvalidCurrentTodaySnapshot(workflow = {}, now = new Date()
   if (
     snapshot.dateKey === workflowDateKey(now)
     && snapshot.words.length > 0
-    && snapshot.generatorVersion !== TODAY_SNAPSHOT_GENERATOR_VERSION
+    && !isCompatibleTodaySnapshotGeneratorVersion(snapshot.generatorVersion)
   ) {
     return cleanStoredWorkflow({
       ...cleanWorkflow,
