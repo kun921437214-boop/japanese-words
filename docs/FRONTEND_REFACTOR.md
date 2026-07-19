@@ -87,6 +87,15 @@ Remove inline HTML handlers only after the corresponding page module has executa
 - Executable tests cover valid share parsing, lookalike-domain and insecure-URL rejection, count/date helpers, multiline markup, and deployment-module integrity.
 - Computer Use browser validation caught and verified both deployment-module loading and multiline paste behavior. The final check rejected a lookalike domain and correctly filled a valid link, title, author, publish time, description, and all five metrics without saving a record.
 
+## Completed: Phase 6 — Workflow Backup Safety
+
+- `frontend/workflow-backup.mjs` owns workflow backup construction, JSON parsing, root validation, summary copy, serialization, filename generation, and the shared 10 MB browser limit.
+- Export and restore still pass through the existing application workflow cleaner, so favorites, statuses, feedback, published records, candidate cards, AI batches, today snapshots, history, revision, and audit metadata keep their current schema behavior.
+- Invalid JSON and non-object roots are rejected before any local state replacement or cloud save; oversized file selection now also resets the file input so the same file can be selected again after correction.
+- The browser keeps the existing confirmation boundary before restoration and reuses the shared text-download path for exports; no API path, localStorage key, Cloudflare binding, or workflow mutation behavior changed.
+- Executable tests cover cleaning before export/restore, complete summary counts, serialization, filenames, size limits, invalid JSON, invalid roots, and missing-cleaner failure.
+- Computer Use validation on the built site confirmed Daily Recommendations, Favorites, Published Records, settings open/close, both backup actions, and the desktop modal layout without exporting, restoring, or saving workflow data.
+
 ## Required Validation
 
 ```bash

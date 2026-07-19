@@ -27,6 +27,14 @@ import {
 } from './frontend/published-page.mjs';
 import { buildWordCardViewModel } from './frontend/word-card-view.mjs';
 import { createWorkflowActionsController } from './frontend/workflow-actions.mjs';
+import {
+  MAX_WORKFLOW_BACKUP_BYTES,
+  buildWorkflowBackup,
+  formatWorkflowBackupSummary,
+  getWorkflowBackupFilename,
+  parseWorkflowBackupText,
+  serializeWorkflowBackup
+} from './frontend/workflow-backup.mjs';
 import { createWorkflowCache, DEFAULT_CANDIDATE_LIMIT } from './frontend/workflow-cache.mjs';
 import { createWorkflowStore } from './frontend/workflow-store.mjs';
 import { createWorkflowSync } from './frontend/workflow-sync.mjs';
@@ -9444,15 +9452,14 @@ function selectWorkflowBackupForRestore() {
 async function restoreWorkflowBackup(event) {
   const file = event?.target?.files?.[0];
   if (!file) return;
-  if (file.size > 10 * 1024 * 1024) {
+  if (file.size > MAX_WORKFLOW_BACKUP_BYTES) {
     showToast('备份文件不能超过 10 MB');
+    if (event?.target) event.target.value = '';
     return;
   }
   try {
-    const raw = JSON.parse(await file.text());
-    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new Error('备份根节点必须是 JSON 对象');
-    const restored = cleanStoredWorkflow(raw);
-    const summary = `选题 ${restored.words.length} 个、候选 ${Object.keys(restored.candidatePool).length} 个、发布记录 ${restored.publishedRecords.length} 条、今日推荐 ${restored.todaySnapshot.words.length} 个`;
+    const restored = parseWorkflowBackupText(await file.text(), { cleanWorkflow: cleanStoredWorkflow });
+    const summary = formatWorkflowBackupSummary(restored);
     if (!window.confirm(`备份校验通过：${summary}。\n\n确认用这份备份覆盖当前团队工作流吗？`)) return;
 
     const currentMetadata = workflowStore.getMetadata();
@@ -9476,7 +9483,7 @@ async function restoreWorkflowBackup(event) {
 }
 
 function exportWorkflowBackup() {
-  const backup = cleanStoredWorkflow({
+  const backup = buildWorkflowBackup({
     words: filterKnownFavorites(favorites),
     statuses: favoriteStatuses,
     feedback: wordFeedback,
@@ -9492,16 +9499,12 @@ function exportWorkflowBackup() {
     auditLog: workflowStore.getAuditLog(),
     updated: nowIso(),
     schemaVersion: 2
-  });
-  const blob = new Blob([JSON.stringify(backup, null, 2)], { type: 'application/json;charset=utf-8' });
-  const url = URL.createObjectURL(blob);
-  const link = document.createElement('a');
-  link.href = url;
-  link.download = `japanese-words-workflow-backup-${todayKey()}.json`;
-  document.body.appendChild(link);
-  link.click();
-  link.remove();
-  URL.revokeObjectURL(url);
+  }, { cleanWorkflow: cleanStoredWorkflow });
+  downloadTextFile(
+    getWorkflowBackupFilename(todayKey()),
+    serializeWorkflowBackup(backup),
+    'application/json;charset=utf-8'
+  );
   showToast('✅ 已导出全部选题数据备份');
 }
 

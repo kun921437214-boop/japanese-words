@@ -39,6 +39,14 @@ import { createWorkflowStore } from '../frontend/workflow-store.mjs';
 import { createWorkflowSync } from '../frontend/workflow-sync.mjs';
 import { buildWordCardViewModel, WORD_CARD_STATUS_LABELS } from '../frontend/word-card-view.mjs';
 import { createWorkflowActionsController } from '../frontend/workflow-actions.mjs';
+import {
+  MAX_WORKFLOW_BACKUP_BYTES,
+  buildWorkflowBackup,
+  formatWorkflowBackupSummary,
+  getWorkflowBackupFilename,
+  parseWorkflowBackupText,
+  serializeWorkflowBackup
+} from '../frontend/workflow-backup.mjs';
 
 function cleanTestWorkflow(value = {}) {
   return {
@@ -60,6 +68,43 @@ function cleanTestWorkflow(value = {}) {
     schemaVersion: 2
   };
 }
+
+test('workflow backup builder cleans and serializes the complete workflow payload', () => {
+  const backup = buildWorkflowBackup({
+    words: ['抜け感', '抜け感', '気が重い'],
+    candidatePool: { '抜け感': {}, '気が重い': {} },
+    publishedRecords: [{ id: 'published-1' }],
+    todaySnapshot: { words: ['抜け感'] },
+    revision: 7
+  }, { cleanWorkflow: cleanTestWorkflow });
+
+  assert.deepEqual(backup.words, ['抜け感', '気が重い']);
+  assert.equal(backup.revision, 7);
+  assert.equal(formatWorkflowBackupSummary(backup), '选题 2 个、候选 2 个、发布记录 1 条、今日推荐 1 个');
+  assert.equal(JSON.parse(serializeWorkflowBackup(backup)).revision, 7);
+  assert.equal(getWorkflowBackupFilename('2026-07-19'), 'japanese-words-workflow-backup-2026-07-19.json');
+  assert.equal(MAX_WORKFLOW_BACKUP_BYTES, 10 * 1024 * 1024);
+});
+
+test('workflow backup parser rejects invalid roots before cleaning restored data', () => {
+  const restored = parseWorkflowBackupText('{"words":["抜け感","抜け感"],"revision":8}', {
+    cleanWorkflow: cleanTestWorkflow
+  });
+  assert.deepEqual(restored.words, ['抜け感']);
+  assert.equal(restored.revision, 8);
+  assert.throws(
+    () => parseWorkflowBackupText('{broken', { cleanWorkflow: cleanTestWorkflow }),
+    /备份文件不是有效的 JSON/
+  );
+  assert.throws(
+    () => parseWorkflowBackupText('[]', { cleanWorkflow: cleanTestWorkflow }),
+    /备份根节点必须是 JSON 对象/
+  );
+  assert.throws(
+    () => parseWorkflowBackupText('{}'),
+    /工作流清理器不可用/
+  );
+});
 
 test('API client adds workflow revision and operation headers', async () => {
   let receivedOptions = null;
