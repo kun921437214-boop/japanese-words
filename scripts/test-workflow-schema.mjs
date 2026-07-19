@@ -23,6 +23,10 @@ import {
 } from '../shared/today-quality.mjs';
 import { getAccountLearningSummary } from '../shared/account-learning.mjs';
 import { buildDeepSeekExclusionContext } from '../shared/deepseek-exclusion.mjs';
+import {
+  AI_CARD_PENDING_TTL_MS as FRONTEND_AI_CARD_PENDING_TTL_MS,
+  isAiCardStalePending as isFrontendAiCardStalePending
+} from '../frontend/ai-card-generation.mjs';
 import { applyFavoriteAction, buildAppWorkflowView, buildFavoriteCommandView } from '../functions/favorites.js';
 import {
   applyAiCardGenerationResult,
@@ -263,7 +267,12 @@ test('前端收藏使用小命令响应并防止旧同步覆盖新版本', () =>
 
 test('历史日期缺少 aiCard 时安全渲染并按需重新加载词卡', () => {
   const appSource = fs.readFileSync(new URL('../app.js', import.meta.url), 'utf8');
-  assert.ok(appSource.includes("if (!card || card.cardStatus !== 'pending') return false;"));
+  const nowMs = Date.parse('2026-07-19T12:00:00.000Z');
+  assert.equal(isFrontendAiCardStalePending({
+    cardStatus: 'pending',
+    generatedAt: new Date(nowMs - FRONTEND_AI_CARD_PENDING_TTL_MS - 1).toISOString()
+  }, {}, { nowMs }), true);
+  assert.equal(isFrontendAiCardStalePending({ cardStatus: 'none' }, {}, { nowMs }), false);
   assert.ok(appSource.includes("const card = cleanAiCard(aiCard || {}) || { cardStatus: 'none' };"));
   assert.ok(appSource.includes('正在加载这一天的词卡内容'));
   assert.ok(appSource.includes("void ensureWorkflowScopeLoaded('today', { historyDate }).then"));

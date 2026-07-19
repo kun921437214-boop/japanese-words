@@ -2,6 +2,17 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import test from 'node:test';
 import { createApiClient, createApiError, getApiErrorMessage } from '../frontend/api-client.mjs';
+import {
+  AI_CARD_AUTO_MAX_ATTEMPTS_PER_DAY,
+  AI_CARD_PENDING_TTL_MS,
+  buildTodayAiCardsRequest,
+  buildWordCardRequestPayload,
+  canAutoGenerateAiCard,
+  getSingleTodayAiCardGenerationOptions,
+  getTodayAiCardActionState,
+  isAiCardStalePending,
+  selectMissingTodayAiCardKanjis
+} from '../frontend/ai-card-generation.mjs';
 import { createAppShellController } from '../frontend/app-shell.mjs';
 import {
   buildFavoriteSelectionExportText,
@@ -74,6 +85,115 @@ function cleanTestWorkflow(value = {}) {
     schemaVersion: 2
   };
 }
+
+test('AI card pending timeout and action state stay deterministic', () => {
+  const nowMs = Date.parse('2026-07-19T12:00:00.000Z');
+  const freshPending = { cardStatus: 'pending', generatedAt: new Date(nowMs - AI_CARD_PENDING_TTL_MS + 1000).toISOString() };
+  const stalePending = { cardStatus: 'pending', generatedAt: new Date(nowMs - AI_CARD_PENDING_TTL_MS - 1000).toISOString() };
+
+  assert.equal(isAiCardStalePending(freshPending, {}, { nowMs }), false);
+  assert.equal(isAiCardStalePending(stalePending, {}, { nowMs }), true);
+  assert.deepEqual(getTodayAiCardActionState({ aiCard: freshPending, nowMs }), {
+    status: 'pending',
+    stalePending: false,
+    label: '生成中',
+    disabled: true
+  });
+  assert.deepEqual(getTodayAiCardActionState({ aiCard: stalePending, nowMs }), {
+    status: 'pending',
+    stalePending: true,
+    label: '重试',
+    disabled: false
+  });
+  assert.equal(getTodayAiCardActionState({ aiCard: { cardStatus: 'ready' } }).label, '重新生成');
+  assert.equal(getTodayAiCardActionState({ aiCard: { cardStatus: 'failed' } }).label, '重试');
+  assert.deepEqual(getTodayAiCardActionState({ aiCard: { cardStatus: 'none' }, inFlight: true }), {
+    status: 'none',
+    stalePending: false,
+    label: '生成中',
+    disabled: true
+  });
+});
+
+test('single today-card generation enables only the matching retry mode', () => {
+  const nowMs = Date.parse('2026-07-19T12:00:00.000Z');
+  assert.deepEqual(getSingleTodayAiCardGenerationOptions({ aiCard: { cardStatus: 'ready' }, nowMs }), {
+    force: true,
+    retryFailed: false,
+    retryStalePending: false,
+    maxWords: 1
+  });
+  assert.deepEqual(getSingleTodayAiCardGenerationOptions({ aiCard: { cardStatus: 'failed' }, nowMs }), {
+    force: false,
+    retryFailed: true,
+    retryStalePending: false,
+    maxWords: 1
+  });
+  const stalePending = { cardStatus: 'pending', generatedAt: new Date(nowMs - AI_CARD_PENDING_TTL_MS - 1).toISOString() };
+  assert.equal(getSingleTodayAiCardGenerationOptions({ aiCard: stalePending, nowMs }).retryStalePending, true);
+});
+
+test('automatic AI-card policy preserves in-flight, status, and daily-attempt guards', () => {
+  assert.equal(canAutoGenerateAiCard({ aiCard: { cardStatus: 'none' }, attemptCount: 0 }), true);
+  assert.equal(canAutoGenerateAiCard({ aiCard: { cardStatus: 'failed' }, attemptCount: 1 }), true);
+  assert.equal(canAutoGenerateAiCard({ aiCard: { cardStatus: 'ready' }, force: true }), false);
+  assert.equal(canAutoGenerateAiCard({ aiCard: { cardStatus: 'pending' }, force: true }), false);
+  assert.equal(canAutoGenerateAiCard({ aiCard: { cardStatus: 'none' }, inFlight: true }), false);
+  assert.equal(canAutoGenerateAiCard({
+    aiCard: { cardStatus: 'failed' },
+    attemptCount: AI_CARD_AUTO_MAX_ATTEMPTS_PER_DAY
+  }), false);
+  assert.equal(canAutoGenerateAiCard({
+    aiCard: { cardStatus: 'failed' },
+    attemptCount: AI_CARD_AUTO_MAX_ATTEMPTS_PER_DAY,
+    force: true
+  }), true);
+});
+
+test('missing today-card selection skips ready, pending, failed, duplicates, and overflow', () => {
+  const kanjis = ['未生成', '已完成', '生成中', '失败', '需更新', '未生成', '补位一', '补位二', '补位三', '补位四'];
+  const candidatePool = {
+    已完成: { aiCard: { cardStatus: 'ready' } },
+    生成中: { aiCard: { cardStatus: 'pending' } },
+    失败: { aiCard: { cardStatus: 'failed' } },
+    需更新: { aiCard: { cardStatus: 'stale' } }
+  };
+  assert.deepEqual(selectMissingTodayAiCardKanjis({ kanjis, candidatePool }), [
+    '未生成', '需更新', '补位一', '补位二', '补位三'
+  ]);
+});
+
+test('AI-card request builders preserve limits, retry flags, and account context', () => {
+  assert.deepEqual(buildTodayAiCardsRequest(['一', '一', '二', '三', '四', '五', '六'], {
+    force: true,
+    retryFailed: true,
+    retryStalePending: true,
+    maxWords: 99
+  }), {
+    mode: 'today',
+    words: ['一', '二', '三', '四', '五'],
+    force: true,
+    retryFailed: true,
+    retryStalePending: true,
+    maxWords: 5
+  });
+
+  const words = Array.from({ length: 22 }, (_, index) => ({ kanji: `词${index + 1}` }));
+  const payload = buildWordCardRequestPayload({
+    words,
+    favorites: ['気が重い'],
+    negativeFeedback: { 基本: { reason: 'tooBasic' } },
+    publishedWords: ['抜け感'],
+    accountLearningSummary: { priority: 'saves' }
+  });
+  assert.equal(payload.action, 'generate_word_card');
+  assert.equal(payload.count, 20);
+  assert.equal(payload.context.words.length, 20);
+  assert.deepEqual(payload.context.favorites, ['気が重い']);
+  assert.deepEqual(payload.context.publishedWords, ['抜け感']);
+  assert.deepEqual(payload.context.accountLearningSummary, { priority: 'saves' });
+  assert.equal(payload.preferences.includeHighRisk, 'review_only');
+});
 
 test('workflow backup builder cleans and serializes the complete workflow payload', () => {
   const backup = buildWorkflowBackup({
@@ -1283,6 +1403,7 @@ test('module migration removes inline handlers and the temporary window compatib
   const appSource = fs.readFileSync(new URL('../app.js', import.meta.url), 'utf8');
   const combined = `${indexSource}\n${appSource}`;
   assert.ok(indexSource.includes('<script type="module" src="app.js"></script>'));
+  assert.ok(appSource.includes("from './frontend/ai-card-generation.mjs'"));
   assert.ok(appSource.includes("from './frontend/app-shell.mjs'"));
   assert.ok(appSource.includes("from './frontend/content-export.mjs'"));
   assert.ok(appSource.includes("from './frontend/image-fallback.mjs'"));

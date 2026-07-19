@@ -107,6 +107,17 @@ Remove inline HTML handlers only after the corresponding page module has executa
 - Computer Use validation on the built site confirmed the management entries, audit-modal layout, Favorites export entry, and Published Records navigation without generating recommendations, downloading files, or mutating cloud workflow data.
 - No API path, localStorage key, Cloudflare binding, KV data, daily snapshot, candidate pool, or draft content changed.
 
+## Completed: Phase 8 — AI Word-Card Generation Policy
+
+- `frontend/ai-card-generation.mjs` owns the browser's pure AI-card timeout, action-state, single-word retry, automatic-attempt, missing-card selection, and request-building rules.
+- Pending cards keep the existing 10-minute timeout boundary: active pending cards stay disabled, while stale pending cards expose the explicit retry path.
+- Ready cards remain protected from automatic regeneration, in-flight cards cannot be queued twice, and the existing two-attempt daily guard is preserved unless an explicit force action is used.
+- “Generate missing cards” still skips ready, active pending, and failed cards, deduplicates words, and limits each request to five; failed cards continue to require an explicit per-card retry.
+- Today-card requests preserve the existing `force`, `retryFailed`, `retryStalePending`, and five-word server contract. DeepSeek word-card requests preserve the 20-word limit, account-learning context, Favorites feedback, and Published Records context.
+- API calls, localStorage writes, candidate-pool updates, workflow saves, Cloudflare bindings, and KV mutation boundaries remain in `app.js` and were not changed in this phase.
+- Executable tests cover fresh/stale pending boundaries, every action label and disabled state, retry-mode selection, duplicate/in-flight/attempt guards, missing-card filtering, request limits, and account-learning context.
+- Computer Use validation on the built site confirmed Daily Recommendations, its management and missing-card controls, Favorites, and Published Records in Chrome, with a second Safari load check. No generation, refresh, export, or cloud write was triggered.
+
 ## Required Validation
 
 ```bash
