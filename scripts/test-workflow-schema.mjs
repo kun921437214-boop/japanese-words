@@ -148,7 +148,12 @@ test('app 工作流只返回页面所需候选且不改变云端完整候选池'
         dateKey: '2026-07-18',
         words: ['历史词'],
         generatedAt: '2026-07-18T00:00:00.000Z',
-        version: 1
+        version: 1,
+        recommendationAudit: {
+          date: '2026-07-18',
+          total: 1,
+          items: [{ kanji: '历史词', recommendationLevel: 'A', finalScore: 88 }]
+        }
       }
     }
   };
@@ -163,10 +168,14 @@ test('app 工作流只返回页面所需候选且不改变云端完整候选池'
   assert.equal(todayScope.appView.partialCandidatePool, true);
   assert.deepEqual(todayScope.candidatePool['今日词'].aiCardHistory, []);
   assert.equal(todayScope.candidatePool['今日词'].sourceText, '');
+  assert.deepEqual(todayScope.historySnapshots['2026-07-18'].recommendationAudit, {});
   const historyScope = buildAppWorkflowView(fullWorkflow, { scope: 'today', historyDate: '2026-07-18' });
   assert.deepEqual(Object.keys(historyScope.candidatePool), ['历史词']);
+  assert.equal(historyScope.historySnapshots['2026-07-18'].recommendationAudit.items.length, 1);
   const favoritesScope = buildAppWorkflowView(fullWorkflow, { scope: 'favorites' });
   assert.deepEqual(Object.keys(favoritesScope.candidatePool), ['收藏词']);
+  assert.deepEqual(favoritesScope.historySnapshots, {});
+  assert.deepEqual(favoritesScope.todaySnapshotHistory, []);
   const publishedScope = buildAppWorkflowView(fullWorkflow, { scope: 'published' });
   assert.deepEqual(Object.keys(publishedScope.candidatePool), ['发布词']);
   const savedFromCompactCandidate = applyFavoriteAction(fullWorkflow, {
@@ -177,6 +186,11 @@ test('app 工作流只返回页面所需候选且不改变云端完整候选池'
   });
   assert.equal(savedFromCompactCandidate.candidatePool['今日词'].sourceText, '不应发送到 app view 的生成原文');
   assert.equal(savedFromCompactCandidate.candidatePool['今日词'].aiCardHistory.length, 1);
+  const savedFromCompactHistory = mergeWorkflowForFullSave(fullWorkflow, {
+    historySnapshots: todayScope.historySnapshots,
+    todaySnapshotHistory: todayScope.todaySnapshotHistory
+  });
+  assert.equal(savedFromCompactHistory.historySnapshots['2026-07-18'].recommendationAudit.items.length, 1);
   assert.equal(Object.keys(candidatePool).length, 5);
   assert.ok(candidatePool['无关词']);
   assert.equal(candidatePool['今日词'].sourceText, '不应发送到 app view 的生成原文');
@@ -191,7 +205,8 @@ test('前端按页面加载候选并在收藏数据到齐前禁止渲染', () =>
   assert.ok(appSource.includes("renderWorkflowScopeState('favorites');"));
   assert.ok(appSource.includes("scope: cleanScope,"));
   assert.ok(appSource.includes('mergeCandidatePool: true'));
-  assert.ok(appSource.includes('const nextCandidatePool = options.mergeCandidatePool'));
+  assert.ok(appSource.includes('const mergePartialState = Boolean(options.mergeCandidatePool || data.appView?.partialCandidatePool);'));
+  assert.ok(appSource.includes('historySnapshots = mergePartialState ? mergeHistorySnapshots'));
   assert.ok(appSource.includes('getUniqueWords(data.words).map(normalizeKanjiSpelling)'));
 });
 

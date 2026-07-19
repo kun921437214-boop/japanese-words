@@ -2904,6 +2904,12 @@ function cleanHistorySnapshots(snapshots = {}) {
   }, {});
 }
 
+function preserveRicherSnapshotAudit(selected = {}, fallback = {}) {
+  return safeArray(fallback.recommendationAudit?.items).length > safeArray(selected.recommendationAudit?.items).length
+    ? { ...selected, recommendationAudit: fallback.recommendationAudit }
+    : selected;
+}
+
 function cleanTodaySnapshotHistory(history = []) {
   const byDate = new Map();
   safeArray(history).forEach(snapshot => {
@@ -2918,7 +2924,11 @@ function cleanTodaySnapshotHistory(history = []) {
       byDate.set(cleanSnapshot.dateKey, cleanSnapshot.version > current.version ? cleanSnapshot : current);
       return;
     }
-    byDate.set(cleanSnapshot.dateKey, String(cleanSnapshot.generatedAt || cleanSnapshot.archivedAt || '') >= String(current.generatedAt || current.archivedAt || '') ? cleanSnapshot : current);
+    const cleanTimestamp = String(cleanSnapshot.generatedAt || cleanSnapshot.archivedAt || '');
+    const currentTimestamp = String(current.generatedAt || current.archivedAt || '');
+    const selected = cleanTimestamp >= currentTimestamp ? cleanSnapshot : current;
+    const fallback = selected === cleanSnapshot ? current : cleanSnapshot;
+    byDate.set(cleanSnapshot.dateKey, cleanTimestamp === currentTimestamp ? preserveRicherSnapshotAudit(selected, fallback) : selected);
   });
   return [...byDate.values()]
     .sort((left, right) => String(right.dateKey || '').localeCompare(String(left.dateKey || '')))
@@ -2937,7 +2947,11 @@ function mergeHistorySnapshots(localSnapshots, remoteSnapshots) {
       merged.set(snapshot.dateKey, snapshot.version > current.version ? snapshot : current);
       return;
     }
-    merged.set(snapshot.dateKey, String(snapshot.archivedAt || snapshot.generatedAt || '') >= String(current.archivedAt || current.generatedAt || '') ? snapshot : current);
+    const snapshotTimestamp = String(snapshot.archivedAt || snapshot.generatedAt || '');
+    const currentTimestamp = String(current.archivedAt || current.generatedAt || '');
+    const selected = snapshotTimestamp >= currentTimestamp ? snapshot : current;
+    const fallback = selected === snapshot ? current : snapshot;
+    merged.set(snapshot.dateKey, snapshotTimestamp === currentTimestamp ? preserveRicherSnapshotAudit(selected, fallback) : selected);
   });
   return [...merged.values()].reduce((result, snapshot) => {
     result[snapshot.dateKey] = snapshot;
@@ -3022,7 +3036,11 @@ function mergeTodaySnapshot(localSnapshot, remoteSnapshot) {
   if (!remoteClean.dateKey) return localClean;
   if (localClean.dateKey !== remoteClean.dateKey) return localClean.dateKey > remoteClean.dateKey ? localClean : remoteClean;
   if (remoteClean.version !== localClean.version) return remoteClean.version > localClean.version ? remoteClean : localClean;
-  return String(remoteClean.generatedAt || '') >= String(localClean.generatedAt || '') ? remoteClean : localClean;
+  const remoteGeneratedAt = String(remoteClean.generatedAt || '');
+  const localGeneratedAt = String(localClean.generatedAt || '');
+  const selected = remoteGeneratedAt >= localGeneratedAt ? remoteClean : localClean;
+  const fallback = selected === remoteClean ? localClean : remoteClean;
+  return remoteGeneratedAt === localGeneratedAt ? preserveRicherSnapshotAudit(selected, fallback) : selected;
 }
 
 function hasTodaySnapshotForToday(snapshot = todaySnapshot) {
@@ -3564,7 +3582,8 @@ function applyRemoteWorkflowState(remoteData, options = {}) {
     return { applied: false, stale: true, data };
   }
 
-  const nextCandidatePool = options.mergeCandidatePool
+  const mergePartialState = Boolean(options.mergeCandidatePool || data.appView?.partialCandidatePool);
+  const nextCandidatePool = mergePartialState
     ? cleanCandidatePool({ ...candidatePool, ...data.candidatePool })
     : data.candidatePool;
   favorites = getUniqueWords(data.words).map(normalizeKanjiSpelling).filter(Boolean);
@@ -3577,8 +3596,8 @@ function applyRemoteWorkflowState(remoteData, options = {}) {
   syncAiPreviewGlobalsFromWorkflow();
   todaySnapshot = data.todaySnapshot;
   todayDismissed = cleanTeamDismissedState(data.todayDismissed || {});
-  historySnapshots = data.historySnapshots;
-  todaySnapshotHistory = data.todaySnapshotHistory;
+  historySnapshots = mergePartialState ? mergeHistorySnapshots(historySnapshots, data.historySnapshots) : data.historySnapshots;
+  todaySnapshotHistory = mergePartialState ? mergeTodaySnapshotHistory(todaySnapshotHistory, data.todaySnapshotHistory) : data.todaySnapshotHistory;
   workflowRevision = data.revision;
   workflowAuditLog = data.auditLog;
   cloudWorkflowFailed = false;

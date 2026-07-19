@@ -745,6 +745,14 @@ export function cleanTodaySnapshot(snapshot = {}) {
   };
 }
 
+function preserveRicherSnapshotAudit(selected = {}, fallback = {}) {
+  const selectedItems = safeArray(selected?.recommendationAudit?.items).length;
+  const fallbackItems = safeArray(fallback?.recommendationAudit?.items).length;
+  return fallbackItems > selectedItems
+    ? { ...selected, recommendationAudit: fallback.recommendationAudit }
+    : selected;
+}
+
 export function cleanHistorySnapshot(snapshot = {}, fallbackDateKey = '') {
   const dateKey = /^\d{4}-\d{2}-\d{2}$/.test(cleanText(snapshot?.dateKey, 20))
     ? cleanText(snapshot.dateKey, 20)
@@ -793,7 +801,11 @@ export function cleanTodaySnapshotHistory(history = []) {
       byDate.set(cleanSnapshot.dateKey, cleanSnapshot.version > current.version ? cleanSnapshot : current);
       return;
     }
-    byDate.set(cleanSnapshot.dateKey, cleanText(cleanSnapshot.generatedAt || cleanSnapshot.archivedAt, 80) >= cleanText(current.generatedAt || current.archivedAt, 80) ? cleanSnapshot : current);
+    const cleanTimestamp = cleanText(cleanSnapshot.generatedAt || cleanSnapshot.archivedAt, 80);
+    const currentTimestamp = cleanText(current.generatedAt || current.archivedAt, 80);
+    const selected = cleanTimestamp >= currentTimestamp ? cleanSnapshot : current;
+    const fallback = selected === cleanSnapshot ? current : cleanSnapshot;
+    byDate.set(cleanSnapshot.dateKey, cleanTimestamp === currentTimestamp ? preserveRicherSnapshotAudit(selected, fallback) : selected);
   });
   return [...byDate.values()]
     .sort((left, right) => cleanText(right.dateKey, 20).localeCompare(cleanText(left.dateKey, 20)))
@@ -1194,7 +1206,11 @@ function chooseTodaySnapshot(localSnapshot = {}, remoteSnapshot = {}) {
   if (!remote.words.length) return local;
   if (local.dateKey !== remote.dateKey) return cleanText(local.dateKey, 20) >= cleanText(remote.dateKey, 20) ? local : remote;
   if (local.version !== remote.version) return local.version > remote.version ? local : remote;
-  return cleanText(local.generatedAt, 80) >= cleanText(remote.generatedAt, 80) ? local : remote;
+  const localGeneratedAt = cleanText(local.generatedAt, 80);
+  const remoteGeneratedAt = cleanText(remote.generatedAt, 80);
+  const selected = localGeneratedAt >= remoteGeneratedAt ? local : remote;
+  const fallback = selected === local ? remote : local;
+  return localGeneratedAt === remoteGeneratedAt ? preserveRicherSnapshotAudit(selected, fallback) : selected;
 }
 
 function mergeHistorySnapshots(localSnapshots = {}, remoteSnapshots = {}) {
@@ -1209,7 +1225,11 @@ function mergeHistorySnapshots(localSnapshots = {}, remoteSnapshots = {}) {
       merged.set(snapshot.dateKey, snapshot.version > current.version ? snapshot : current);
       return;
     }
-    merged.set(snapshot.dateKey, cleanText(snapshot.archivedAt || snapshot.generatedAt, 80) >= cleanText(current.archivedAt || current.generatedAt, 80) ? snapshot : current);
+    const snapshotTimestamp = cleanText(snapshot.archivedAt || snapshot.generatedAt, 80);
+    const currentTimestamp = cleanText(current.archivedAt || current.generatedAt, 80);
+    const selected = snapshotTimestamp >= currentTimestamp ? snapshot : current;
+    const fallback = selected === snapshot ? current : snapshot;
+    merged.set(snapshot.dateKey, snapshotTimestamp === currentTimestamp ? preserveRicherSnapshotAudit(selected, fallback) : selected);
   });
   return [...merged.values()]
     .sort((left, right) => cleanText(right.dateKey, 20).localeCompare(cleanText(left.dateKey, 20)))
