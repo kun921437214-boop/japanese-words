@@ -13,6 +13,7 @@
     "test:workflow": "node scripts/test-workflow-schema.mjs",
     "audit:library-delete": "node scripts/audit-library-delete.mjs",
     "audit:library-delete:strict": "node scripts/audit-library-delete.mjs --strict",
+    "smoke:production": "node scripts/smoke-production.mjs",
     "backup:workflow": "node scripts/workflow-backup.mjs",
     "restore:workflow": "node scripts/workflow-restore.mjs",
     "codex:daily": "node scripts/codex-daily.mjs",

@@ -322,6 +322,42 @@ test('favorite mutation is idempotent and rejects a stale revision', async () =>
   assert.equal(kv.putCalls, 1);
 });
 
+test('favorite command view returns only mutation state and the target candidate', async () => {
+  const kv = createKv({
+    words: ['既有收藏'],
+    statuses: {},
+    candidatePool: {
+      既有收藏: { kanji: '既有收藏', meaning: '已存在', sourceType: 'manual_keep' },
+      状态词: { kanji: '状态词', meaning: '待发布词', sourceType: 'manual_keep' }
+    },
+    aiBatches: [{ id: 'large-batch', action: 'generate_candidates', rawOutput: 'x'.repeat(10000) }],
+    revision: 0,
+    auditLog: []
+  });
+  const response = await handleFavorites({
+    request: request('https://jiyimianbao.pages.dev/favorites?view=command&word=%E7%8A%B6%E6%80%81%E8%AF%8D', {
+      method: 'POST',
+      headers: {
+        Authorization: 'Bearer admin-secret',
+        'Content-Type': 'application/json',
+        'X-Operation-Id': 'favorite-command-op',
+        'X-Workflow-Revision': '0'
+      },
+      body: JSON.stringify({ action: 'status', word: '状态词', status: 'pending' })
+    }),
+    env: { FAVORITES: kv, ADMIN_API_TOKEN: 'admin-secret' }
+  });
+  const text = await response.text();
+  const data = JSON.parse(text);
+  assert.equal(response.status, 200);
+  assert.ok(data.words.includes('状态词'));
+  assert.equal(data.statuses['状态词'], 'pending');
+  assert.equal(data.candidate.kanji, '状态词');
+  assert.equal('aiBatches' in data, false);
+  assert.equal('todaySnapshot' in data, false);
+  assert.ok(Buffer.byteLength(text) < 10000);
+});
+
 test('AI endpoint authenticates before exposing provider configuration', async () => {
   const response = await handleAiCandidates({
     request: request('https://jiyimianbao.pages.dev/ai-candidates', {
