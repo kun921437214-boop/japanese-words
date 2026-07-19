@@ -48,7 +48,8 @@ try {
   if (!health.data.storageConfigured) fail('Production FAVORITES binding 未生效');
   if (!health.data.imageStorageConfigured) fail('Production 图片 KV binding 未生效');
 
-  const workflow = await fetchJson('/favorites?view=app');
+  const workflow = await fetchJson('/favorites?view=app&scope=today');
+  const favoritesWorkflow = await fetchJson('/favorites?view=app&scope=favorites');
   const dateKey = todayKey();
   const snapshot = workflow.data.todaySnapshot || {};
   const words = Array.isArray(snapshot.words) ? snapshot.words : [];
@@ -60,16 +61,24 @@ try {
   const readyImages = words.filter(word => candidatePool[word]?.aiCard?.referenceImage?.status === 'ready');
   if (readyCards.length !== words.length) fail('Production 今日词卡尚未全部 ready', { ready: readyCards.length, total: words.length });
   if (readyImages.length !== words.length) fail('Production 今日图片尚未全部 ready', { ready: readyImages.length, total: words.length });
+  if (workflow.data.appView?.scope !== 'today') fail('Production 今日页面未返回 scoped app view');
+  if (favoritesWorkflow.data.appView?.scope !== 'favorites') fail('Production 收藏页面未返回 scoped app view');
+  const favoriteWords = Array.isArray(favoritesWorkflow.data.words) ? favoritesWorkflow.data.words : [];
+  const favoriteCandidates = Object.keys(favoritesWorkflow.data.candidatePool || {});
+  if (favoriteCandidates.length < favoriteWords.length) {
+    fail('Production 收藏页面候选词卡不完整', { favorites: favoriteWords.length, candidates: favoriteCandidates.length });
+  }
 
   console.log(JSON.stringify({
     ok: true,
     site: SITE_URL,
     dateKey,
-    favorites: Array.isArray(workflow.data.words) ? workflow.data.words.length : 0,
+    favorites: favoriteWords.length,
     todayWords: words.length,
     readyCards: readyCards.length,
     readyImages: readyImages.length,
-    appResponseBytes: workflow.bytes,
+    todayResponseBytes: workflow.bytes,
+    favoritesResponseBytes: favoritesWorkflow.bytes,
     revision: Number(workflow.data.revision) || 0,
     requestId: workflow.requestId
   }, null, 2));

@@ -432,9 +432,12 @@ function cleanStoredData(data) {
 }
 
 const APP_CANDIDATE_LIMIT = 240;
+const APP_VIEW_SCOPES = new Set(['all', 'today', 'favorites', 'published']);
 
 export function buildAppWorkflowView(data = {}, options = {}) {
   const workflow = cleanStoredData(data);
+  const requestedScope = String(options.scope || 'all');
+  const scope = APP_VIEW_SCOPES.has(requestedScope) ? requestedScope : 'all';
   const historyDate = /^\d{4}-\d{2}-\d{2}$/.test(String(options.historyDate || ''))
     ? String(options.historyDate)
     : '';
@@ -443,20 +446,45 @@ export function buildAppWorkflowView(data = {}, options = {}) {
       || workflow.todaySnapshotHistory.find(snapshot => snapshot.dateKey === historyDate)
       || {})
     : {};
-  const appWords = cleanWords([
-    ...workflow.todaySnapshot.words,
-    ...(requestedHistory.words || []),
-    ...workflow.words,
-    ...workflow.publishedRecords.map(record => record.word)
-  ]).slice(0, APP_CANDIDATE_LIMIT);
+  const todayWords = historyDate && requestedHistory.words?.length
+    ? requestedHistory.words
+    : workflow.todaySnapshot.words;
+  const scopeWords = {
+    today: todayWords,
+    favorites: workflow.words,
+    published: cleanWords([
+      ...workflow.publishedRecords.map(record => record.word),
+      ...workflow.words.filter(word => workflow.statuses[word] === 'published')
+    ])
+  };
+  const appWords = cleanWords(scope === 'all'
+    ? [
+      ...workflow.todaySnapshot.words,
+      ...(requestedHistory.words || []),
+      ...workflow.words,
+      ...workflow.publishedRecords.map(record => record.word)
+    ]
+    : scopeWords[scope]).slice(0, APP_CANDIDATE_LIMIT);
   const candidatePool = appWords.reduce((result, word) => {
-    if (workflow.candidatePool[word]) result[word] = workflow.candidatePool[word];
+    if (workflow.candidatePool[word]) {
+      result[word] = {
+        ...workflow.candidatePool[word],
+        aiCardHistory: [],
+        sourceText: ''
+      };
+    }
     return result;
   }, {});
   return {
     ...workflow,
     candidatePool,
-    aiBatches: []
+    aiBatches: [],
+    appView: {
+      scope,
+      historyDate,
+      partialCandidatePool: scope !== 'all',
+      candidateCount: Object.keys(candidatePool).length
+    }
   };
 }
 
@@ -478,7 +506,12 @@ export function buildFavoriteCommandView(data = {}, targetWord = '') {
 function getWorkflowResponseData(data, url) {
   const view = url.searchParams.get('view');
   if (view === 'command') return buildFavoriteCommandView(data, url.searchParams.get('word'));
-  if (view === 'app') return buildAppWorkflowView(data, { historyDate: url.searchParams.get('historyDate') });
+  if (view === 'app') {
+    return buildAppWorkflowView(data, {
+      historyDate: url.searchParams.get('historyDate'),
+      scope: url.searchParams.get('scope')
+    });
+  }
   return cleanStoredData(data);
 }
 
