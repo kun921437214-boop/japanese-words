@@ -66,6 +66,14 @@ test('前端初始化不会自动触发今日推荐生成', () => {
   assert.ok(appSource.includes('function handleGenerateTodaySnapshot()'));
 });
 
+test('首次 pageshow 不会取消手机端初始化同步，BFCache 恢复时才重新同步', () => {
+  const appSource = fs.readFileSync(new URL('../app.js', import.meta.url), 'utf8');
+  assert.ok(appSource.includes("window.addEventListener('pageshow', event =>"));
+  assert.ok(appSource.includes('if (!event.persisted) return;'));
+  assert.ok(appSource.includes('timeoutMs: 45000'));
+  assert.ok(appSource.includes('void syncRemoteDataInBackground();'));
+});
+
 test('Codex 明日预览保留团队操作和完整词卡详情', () => {
   const appSource = fs.readFileSync(new URL('../app.js', import.meta.url), 'utf8');
   assert.ok(appSource.includes('function toggleCodexDraftFavorite(kanji)'));
@@ -129,9 +137,11 @@ test('scheduled Worker 分离日更和 aiCard 批量 cron', () => {
   const workerSource = fs.readFileSync(new URL('../worker/favorites-worker.js', import.meta.url), 'utf8');
 
   assert.ok(workerConfig.includes('"0 16 * * *"'));
+  assert.ok(workerConfig.includes('"5,25,45 * * * *"'));
   assert.ok(workerConfig.includes('"10,20,30,40,50 16 * * *"'));
   assert.ok(workerConfig.includes('"0 17 * * *"'));
   assert.ok(workerSource.includes("const DAILY_REFRESH_CRON = '0 16 * * *';"));
+  assert.ok(workerSource.includes("const CODEX_LATE_PROMOTION_CRON = '5,25,45 * * * *';"));
   assert.ok(workerSource.includes("const AI_CARD_BATCH_MAX_WORDS = 5;"));
   assert.ok(workerSource.includes("new URL(`${siteUrl}/codex-daily`)"));
   assert.ok(workerSource.includes("action: 'promote'"));
@@ -148,6 +158,7 @@ test('scheduled Worker 分离日更和 aiCard 批量 cron', () => {
   assert.ok(workerSource.includes('words: plan.targetWords'));
   assert.ok(workerSource.includes('if (!plan.shouldRun)'));
   assert.ok(workerSource.includes('cron !== DAILY_REFRESH_CRON'));
+  assert.ok(workerSource.includes('triggerCodexPromotionIfAvailable(env)'));
   assert.equal(workerSource.includes('force: true'), false);
 });
 

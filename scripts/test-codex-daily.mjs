@@ -22,7 +22,10 @@ import {
 } from '../shared/codex-image-batch.mjs';
 import { addDays, dateKey } from '../shared/rankings.mjs';
 import { buildTodayRecommendationAudit } from '../shared/today-snapshot.mjs';
-import { triggerDailyPublishOrFallback } from '../worker/favorites-worker.js';
+import {
+  triggerCodexPromotionIfAvailable,
+  triggerDailyPublishOrFallback
+} from '../worker/favorites-worker.js';
 
 const CURATED_WORDS = [
   'モヤる', '甘えん坊', '心地よい', 'ツンデレ', '余裕',
@@ -515,4 +518,43 @@ test('midnight trigger prefers Codex and calls DeepSeek only as fallback', async
   assert.equal(fallbackCalls.length, 2);
   assert.match(fallbackCalls[1].url, /\/daily-refresh/);
   assert.equal(fallbackCalls[1].options.headers['Content-Type'], 'application/json');
+});
+
+test('late Codex promotion skips missing drafts without triggering a fallback', async () => {
+  let fetchCalls = 0;
+  const result = await triggerCodexPromotionIfAvailable({
+    SITE_URL: 'https://jiyimianbao.pages.dev',
+    AUTO_REFRESH_SECRET: 'cron-secret',
+    FAVORITES: { async get() { return null; } }
+  }, async () => {
+    fetchCalls += 1;
+    return new Response('{}', { status: 500 });
+  });
+  assert.equal(result.ok, true);
+  assert.equal(result.reason, 'draft_missing');
+  assert.equal(fetchCalls, 0);
+});
+
+test('late Codex promotion publishes a valid unpublished draft without DeepSeek', async () => {
+  const calls = [];
+  const result = await triggerCodexPromotionIfAvailable({
+    SITE_URL: 'https://jiyimianbao.pages.dev',
+    AUTO_REFRESH_SECRET: 'cron-secret',
+    FAVORITES: {
+      async get() {
+        return { status: 'valid', publishedAt: '', validation: { valid: true } };
+      }
+    }
+  }, async (url, options) => {
+    calls.push({ url, options });
+    return new Response(JSON.stringify({ ok: true, published: true, source: 'codex_draft' }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' }
+    });
+  });
+  assert.equal(result.ok, true);
+  assert.equal(result.source, 'codex');
+  assert.equal(calls.length, 1);
+  assert.match(calls[0].url, /\/codex-daily/);
+  assert.equal(JSON.parse(calls[0].options.body).action, 'promote');
 });

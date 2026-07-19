@@ -3465,7 +3465,10 @@ async function loadCloudWorkflow(options = false) {
 
   try {
     if (showMessages) updateSyncStatus('正在同步工作流数据...');
-    const response = await apiFetch(endpoint, { headers: { Accept: 'application/json' } }, { cancelKey: 'workflow-load' });
+    const response = await apiFetch(endpoint, { headers: { Accept: 'application/json' } }, {
+      cancelKey: 'workflow-load',
+      timeoutMs: 45000
+    });
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     const remoteData = cleanStoredWorkflow(await response.json());
 
@@ -9754,11 +9757,13 @@ async function init() {
   setTimeout(() => ensureTodayGridVisible(), 0);
 }
 
-window.addEventListener('pageshow', () => {
+window.addEventListener('pageshow', event => {
+  if (!event.persisted) return;
   activeApiControllers.forEach(controller => controller.abort());
   activeApiControllers.clear();
   resetTransientUiState();
   ensureTodayGridVisible();
+  void syncRemoteDataInBackground();
 });
 
 init();
