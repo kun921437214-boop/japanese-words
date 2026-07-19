@@ -21,12 +21,16 @@ Reduce `app.js` risk through small, behavior-preserving extractions. Keep the st
 - Local-cache and cloud-save payloads are built through one stable field allowlist.
 - Favorite command responses update revision and audit metadata through the store.
 
-## Next: Phase 3 — Page Modules
+## In Progress: Phase 3 — Page Modules
 
 Extract one page at a time:
 
-1. Favorites / Topic Pool;
-2. Published Records;
+1. Favorites / Topic Pool — completed:
+   - `frontend/favorites-page.mjs` owns the page view model, source/status filtering, immutable favorite transitions, and delegated page events;
+   - Favorites page controls and cards no longer depend on inline click/change handlers;
+   - favorite removal clears stale status in one tested transition, while status changes always preserve membership in the topic pool;
+   - executable tests cover filters, counts, add/remove transitions, status transitions, and event routing.
+2. Published Records — next;
 3. Daily Recommendations and history;
 4. shared word-card rendering.
 

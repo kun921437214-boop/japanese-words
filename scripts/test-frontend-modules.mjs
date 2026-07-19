@@ -2,6 +2,13 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import test from 'node:test';
 import { createApiClient, createApiError, getApiErrorMessage } from '../frontend/api-client.mjs';
+import {
+  buildFavoritesPageModel,
+  createFavoritesPageController,
+  normalizeFavoriteStatusFilter,
+  transitionFavoriteStatus,
+  transitionFavoriteToggle
+} from '../frontend/favorites-page.mjs';
 import { createWorkflowCache } from '../frontend/workflow-cache.mjs';
 import { createWorkflowStore } from '../frontend/workflow-store.mjs';
 import { createWorkflowSync } from '../frontend/workflow-sync.mjs';
@@ -275,6 +282,116 @@ test('workflow cache quota errors do not escape into cloud sync flow', () => {
   assert.equal(warnings[0][0], '本地缓存写入失败，已保留当前云端数据');
 });
 
+test('favorites page model applies source and status filters without changing the full pool', () => {
+  const words = [
+    { kanji: '思い切って', source: '每日热门', status: 'none' },
+    { kanji: '詰めが甘い', source: '手动添加', status: 'pending' },
+    { kanji: '立て直す', source: '每日热门', status: 'pending' }
+  ];
+  const model = buildFavoritesPageModel({
+    words,
+    sourceFilter: '每日热门',
+    statusFilter: 'pending',
+    getStatus: word => word.status
+  });
+
+  assert.deepEqual(model.visibleWords.map(word => word.kanji), ['立て直す']);
+  assert.equal(model.total, 3);
+  assert.equal(model.visible, 1);
+  assert.equal(model.countText, '筛选显示 1 / 3 个词');
+  assert.deepEqual(model.autoGenerateWords, ['立て直す']);
+  assert.equal(normalizeFavoriteStatusFilter('published'), 'all');
+  assert.equal(words.length, 3);
+});
+
+test('favorite transitions are immutable and clear stale status when removing a word', () => {
+  const favorites = ['思い切って', '詰めが甘い'];
+  const statuses = { 思い切って: 'pending', 詰めが甘い: 'published' };
+  const removed = transitionFavoriteToggle({ kanji: '思い切って', favorites, statuses, forceState: false });
+
+  assert.equal(removed.action, 'remove');
+  assert.deepEqual(removed.favorites, ['詰めが甘い']);
+  assert.deepEqual(removed.statuses, { 詰めが甘い: 'published' });
+  assert.deepEqual(favorites, ['思い切って', '詰めが甘い']);
+  assert.deepEqual(statuses, { 思い切って: 'pending', 詰めが甘い: 'published' });
+
+  const added = transitionFavoriteToggle({ kanji: '立て直す', favorites: removed.favorites, statuses: removed.statuses, forceState: true });
+  assert.equal(added.action, 'add');
+  assert.deepEqual(added.favorites, ['立て直す', '詰めが甘い']);
+});
+
+test('favorite status transition adds missing words and normalizes invalid status', () => {
+  const pending = transitionFavoriteStatus({
+    kanji: '手間取る',
+    status: 'pending',
+    favorites: ['思い切って'],
+    statuses: {}
+  });
+  assert.deepEqual(pending.favorites, ['手間取る', '思い切って']);
+  assert.deepEqual(pending.statuses, { 手間取る: 'pending' });
+
+  const cleared = transitionFavoriteStatus({
+    kanji: '手間取る',
+    status: 'unexpected',
+    favorites: pending.favorites,
+    statuses: pending.statuses
+  });
+  assert.equal(cleared.status, 'none');
+  assert.deepEqual(cleared.statuses, {});
+});
+
+test('favorites page controller delegates card and filter actions without window handlers', () => {
+  const listeners = new Map();
+  const root = {
+    addEventListener: (type, listener) => listeners.set(type, listener),
+    removeEventListener: type => listeners.delete(type),
+    contains: () => true
+  };
+  const calls = [];
+  const controller = createFavoritesPageController({
+    root,
+    onOpenDetail: id => calls.push(['detail', id]),
+    onToggleFavorite: (kanji, forceState) => calls.push(['favorite', kanji, forceState]),
+    onSelectStatus: (kanji, status) => calls.push(['status', kanji, status]),
+    onSourceFilter: value => calls.push(['source', value]),
+    onStatusFilter: value => calls.push(['filter', value])
+  });
+  const dispatch = (type, actionElement, { stop = false } = {}) => {
+    let stopped = false;
+    listeners.get(type)({
+      target: {
+        closest: selector => {
+          if (selector === '[data-favorites-action]') return actionElement;
+          if (selector === '[data-favorites-stop]') return stop ? {} : null;
+          return null;
+        }
+      },
+      stopPropagation: () => { stopped = true; },
+      preventDefault() {}
+    });
+    return stopped;
+  };
+
+  dispatch('click', { dataset: { favoritesAction: 'open-detail', wordId: 'favorite-card-1' } });
+  const stopped = dispatch('click', {
+    dataset: { favoritesAction: 'toggle-favorite', kanji: '思い切って', forceState: 'false' }
+  }, { stop: true });
+  dispatch('click', { dataset: { favoritesAction: 'select-status', kanji: '詰めが甘い', status: 'pending' } }, { stop: true });
+  dispatch('change', { dataset: { favoritesAction: 'source-filter' }, value: '每日热门' });
+  dispatch('change', { dataset: { favoritesAction: 'status-filter' }, value: 'pending' });
+
+  assert.equal(stopped, true);
+  assert.deepEqual(calls, [
+    ['detail', 'favorite-card-1'],
+    ['favorite', '思い切って', false],
+    ['status', '詰めが甘い', 'pending'],
+    ['source', '每日热门'],
+    ['filter', 'pending']
+  ]);
+  controller.destroy();
+  assert.equal(listeners.size, 0);
+});
+
 test('module migration exposes every inline handler through the compatibility facade', () => {
   const indexSource = fs.readFileSync(new URL('../index.html', import.meta.url), 'utf8');
   const appSource = fs.readFileSync(new URL('../app.js', import.meta.url), 'utf8');
@@ -292,4 +409,8 @@ test('module migration exposes every inline handler through the compatibility fa
   assert.ok(indexSource.includes('<script type="module" src="app.js"></script>'));
   assert.ok(facadeStart > 0);
   handlers.forEach(handler => assert.match(facade, new RegExp(`\\b${handler}\\b`), `missing window handler: ${handler}`));
+  const favoritesMarkup = indexSource.slice(indexSource.indexOf('id="page-favorites"'), indexSource.indexOf('id="page-published"'));
+  const favoriteCardSource = appSource.slice(appSource.indexOf('function renderFavoriteCard'), appSource.indexOf('function renderTodayGrid'));
+  assert.doesNotMatch(favoritesMarkup, /on(?:click|change)=/);
+  assert.doesNotMatch(favoriteCardSource, /onclick=/);
 });

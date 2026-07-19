@@ -124,14 +124,14 @@
           </div>
           <div class="page-actions">
             <div class="page-actions-deco" aria-hidden="true">✦</div>
-            <select class="filter-select" id="favoritesSourceFilter" onchange="setSourceFilter('favorites', this.value)" aria-label="按来源筛选选题池"></select>
-            <select class="filter-select" id="favoritesStatusFilter" onchange="setStatusFilter(this.value)" aria-label="按状态筛选选题池">
+            <select class="filter-select" id="favoritesSourceFilter" data-favorites-action="source-filter" aria-label="按来源筛选选题池"></select>
+            <select class="filter-select" id="favoritesStatusFilter" data-favorites-action="status-filter" aria-label="按状态筛选选题池">
               <option value="all">全部状态</option>
               <option value="none">已收藏</option>
               <option value="pending">待发布</option>
             </select>
-            <button class="btn btn-ghost" onclick="openManualWordModal()">＋ 添加单词</button>
-            <button class="btn btn-primary" onclick="exportSelected()">📤 导出选词</button>
+            <button class="btn btn-ghost" data-favorites-action="add-manual-word">＋ 添加单词</button>
+            <button class="btn btn-primary" data-favorites-action="export">📤 导出选词</button>
           </div>
         </div>
       </div>

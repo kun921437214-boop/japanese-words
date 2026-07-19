@@ -1,4 +1,12 @@
 import { createApiClient } from './frontend/api-client.mjs';
+import {
+  buildFavoritesPageModel,
+  createFavoritesPageController,
+  normalizeFavoriteStatus,
+  normalizeFavoriteStatusFilter,
+  transitionFavoriteStatus,
+  transitionFavoriteToggle
+} from './frontend/favorites-page.mjs';
 import { createWorkflowCache, DEFAULT_CANDIDATE_LIMIT } from './frontend/workflow-cache.mjs';
 import { createWorkflowStore } from './frontend/workflow-store.mjs';
 import { createWorkflowSync } from './frontend/workflow-sync.mjs';
@@ -2011,11 +2019,11 @@ function filterKnownFavorites(words, pool = candidatePool) {
 }
 
 function cleanFavoriteStatus(status) {
-  return FAVORITE_STATUS_ORDER.includes(status) ? status : 'none';
+  return normalizeFavoriteStatus(status);
 }
 
 function cleanStatusFilter(status) {
-  return ['all', 'none', 'pending'].includes(status) ? status : 'all';
+  return normalizeFavoriteStatusFilter(status);
 }
 
 function cleanConfidenceLevel(level) {
@@ -6891,8 +6899,16 @@ function getFavoriteWords() {
 }
 
 function getVisibleFavoriteWords() {
-  const sourceFilteredWords = applySourceFilter(getFavoriteWords(), 'favorites');
-  return statusFilter === 'all' ? sourceFilteredWords : sourceFilteredWords.filter(word => getFavoriteStatus(word.kanji) === statusFilter);
+  return getFavoritesPageModel().visibleWords;
+}
+
+function getFavoritesPageModel(words = getFavoriteWords()) {
+  return buildFavoritesPageModel({
+    words,
+    sourceFilter: sourceFilters.favorites,
+    statusFilter,
+    getStatus: word => getFavoriteStatus(word.kanji)
+  });
 }
 
 function getPerformanceScore(record) {
@@ -7210,23 +7226,24 @@ async function toggleFavorite(kanji, forceState = null) {
     const previousCandidate = candidatePool[kanji]
       ? cleanCandidatePoolEntry(kanji, candidatePool[kanji])
       : null;
-    const exists = favorites.includes(kanji);
-    const shouldFavorite = forceState === null ? !exists : Boolean(forceState);
-    let action = '';
+    const transition = transitionFavoriteToggle({
+      kanji,
+      favorites,
+      statuses: favoriteStatuses,
+      forceState
+    });
+    const action = transition.action;
     let entry = null;
-    if (!shouldFavorite && exists) {
-      favorites = favorites.filter(item => item !== kanji);
-      delete favoriteStatuses[kanji];
-      action = 'remove';
+    if (action === 'remove') {
       showToast('正在从选题池移除');
-    } else if (shouldFavorite && !exists) {
-      favorites.unshift(kanji);
+    } else if (action === 'add') {
       entry = ensureManualKeepEntry(kanji);
       removeWordFromTodaySnapshot(kanji);
-      action = 'add';
       showToast('正在加入选题池');
     }
     if (!action) return true;
+    favorites = transition.favorites;
+    favoriteStatuses = transition.statuses;
     saveLocalWorkflow();
     updateAllBadges();
     refreshCurrentGrid();
@@ -7260,9 +7277,10 @@ async function toggleFavorite(kanji, forceState = null) {
 
 async function markPending(kanji) {
   if (uiOperationsInFlight.has(`status:${kanji}`)) return;
-  ensureFavoriteWord(kanji);
+  const transition = transitionFavoriteStatus({ kanji, status: 'pending', favorites, statuses: favoriteStatuses });
+  favorites = transition.favorites;
+  favoriteStatuses = transition.statuses;
   ensureManualKeepEntry(kanji);
-  favoriteStatuses[kanji] = 'pending';
   removeWordFromTodaySnapshot(kanji);
   activeStatusMenuKanji = null;
   saveLocalWorkflow();
@@ -7274,9 +7292,10 @@ async function markPending(kanji) {
 
 async function markPublishedStatusOnly(kanji) {
   if (uiOperationsInFlight.has(`status:${kanji}`)) return;
-  ensureFavoriteWord(kanji);
+  const transition = transitionFavoriteStatus({ kanji, status: 'published', favorites, statuses: favoriteStatuses });
+  favorites = transition.favorites;
+  favoriteStatuses = transition.statuses;
   ensureManualKeepEntry(kanji);
-  favoriteStatuses[kanji] = 'published';
   removeWordFromTodaySnapshot(kanji);
   saveLocalWorkflow();
   updateAllBadges();
@@ -7284,28 +7303,36 @@ async function markPublishedStatusOnly(kanji) {
   await runUiOperation(`status:${kanji}`, () => syncFavoriteStatus(kanji, 'published'));
 }
 
-function renderStatusControl(kanji) {
+function renderStatusControl(kanji, options = {}) {
   const status = getFavoriteStatus(kanji);
   const statusLabel = FAVORITE_STATUS_LABELS[status];
   const safeKanjiAction = escapeJSString(kanji);
+  const useFavoritesController = options.context === 'favorites';
   const isOpen = activeStatusMenuKanji === kanji;
-  const options = FAVORITE_STATUS_ORDER.map(option => {
+  const optionButtons = FAVORITE_STATUS_ORDER.map(option => {
     const selected = option === status;
+    const actionAttributes = useFavoritesController
+      ? `data-favorites-action="select-status" data-kanji="${escapeHTML(kanji)}" data-status="${escapeHTML(option)}"`
+      : `onclick="event.stopPropagation();selectFavoriteStatus('${safeKanjiAction}','${option}')"`;
     return `
-      <button class="card-status-option status-${option} ${selected ? 'selected' : ''}" onclick="event.stopPropagation();selectFavoriteStatus('${safeKanjiAction}','${option}')">
+      <button class="card-status-option status-${option} ${selected ? 'selected' : ''}" ${actionAttributes}>
         <span class="status-dot"></span>
         <span>${FAVORITE_STATUS_LABELS[option]}</span>
         <span class="status-check">${selected ? '✓' : ''}</span>
       </button>`;
   }).join('');
+  const toggleAttributes = useFavoritesController
+    ? `data-favorites-action="toggle-status" data-kanji="${escapeHTML(kanji)}"`
+    : `onclick="event.stopPropagation();toggleStatusMenu('${safeKanjiAction}')"`;
+  const menuAttributes = useFavoritesController ? '' : 'onclick="event.stopPropagation()"';
 
   return `
-    <div class="card-status-control" data-kanji="${escapeHTML(kanji)}">
-      <button class="card-status-btn status-${status}" aria-expanded="${isOpen ? 'true' : 'false'}" onclick="event.stopPropagation();toggleStatusMenu('${safeKanjiAction}')" title="选择选题状态">
+    <div class="card-status-control" data-kanji="${escapeHTML(kanji)}" ${useFavoritesController ? 'data-favorites-stop' : ''}>
+      <button class="card-status-btn status-${status}" aria-expanded="${isOpen ? 'true' : 'false'}" ${toggleAttributes} title="选择选题状态">
         <span class="status-dot"></span>${statusLabel}<span class="status-chevron">⌄</span>
       </button>
-      <div class="card-status-menu ${isOpen ? 'open' : ''}" onclick="event.stopPropagation()">
-        ${options}
+      <div class="card-status-menu ${isOpen ? 'open' : ''}" ${menuAttributes}>
+        ${optionButtons}
       </div>
     </div>`;
 }
@@ -7325,7 +7352,7 @@ function closeStatusMenu() {
 function refreshStatusControls() {
   document.querySelectorAll('.card-status-control:not(.card-feedback-control)').forEach(control => {
     const kanji = control.dataset.kanji;
-    if (kanji) control.outerHTML = renderStatusControl(kanji);
+    if (kanji) control.outerHTML = renderStatusControl(kanji, { context: control.closest('#page-favorites') ? 'favorites' : '' });
   });
   document.querySelectorAll('.card-feedback-control').forEach(control => {
     const kanji = control.dataset.kanji;
@@ -7335,11 +7362,11 @@ function refreshStatusControls() {
 
 async function selectFavoriteStatus(kanji, status) {
   if (uiOperationsInFlight.has(`status:${kanji}`)) return;
-  ensureFavoriteWord(kanji);
-  const nextStatus = cleanFavoriteStatus(status);
+  const transition = transitionFavoriteStatus({ kanji, status, favorites, statuses: favoriteStatuses });
+  const nextStatus = transition.status;
+  favorites = transition.favorites;
+  favoriteStatuses = transition.statuses;
   activeStatusMenuKanji = null;
-  if (nextStatus === 'none') delete favoriteStatuses[kanji];
-  else favoriteStatuses[kanji] = nextStatus;
   if (['pending', 'published'].includes(nextStatus)) removeWordFromTodaySnapshot(kanji);
   saveLocalWorkflow();
   updateAllBadges();
@@ -7796,14 +7823,12 @@ function openCodexDraftPreview(index) {
 
 function renderFavoriteCard(word) {
   const fallbackSvg = `data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 520 390%22><rect fill=%22%23fdeef0%22 width=%22520%22 height=%22390%22/><text x=%22260%22 y=%22195%22 text-anchor=%22middle%22 font-size=%2272%22 fill=%22%23f47a9a%22>${encodeURIComponent(word.kanji)}</text></svg>`;
-  const safeId = escapeJSString(word.id || word.kanji);
-  const safeKanjiAction = escapeJSString(word.kanji);
   const isFav = favorites.includes(word.kanji);
   const entry = cleanCandidatePoolEntry(word.kanji, candidatePool[word.kanji] || word.candidateMeta || {}) || {};
   const aiCard = cleanAiCard(entry.aiCard || word.aiCard || {});
   const aiCardText = word.suggestedTitle || getAiCardStatusLabel(aiCard);
   return `
-    <div class="word-card workflow-card" onclick="openDetail('${safeId}')">
+    <div class="word-card workflow-card" data-favorites-action="open-detail" data-word-id="${escapeHTML(word.id || word.kanji)}">
       <div class="card-image-wrapper">
         <img class="card-image" src="${escapeHTML(word.imageUrl)}" alt="${escapeHTML(word.kanji)}" loading="lazy" onerror="this.src='${fallbackSvg}'">
         <div class="card-image-overlay"></div>
@@ -7811,8 +7836,8 @@ function renderFavoriteCard(word) {
           <div class="card-kanji">${escapeHTML(word.kanji)}</div>
           <div class="card-reading">${escapeHTML(word.reading)}</div>
         </div>
-        <div class="card-top-actions" onclick="event.stopPropagation()">
-          <button class="card-fav-btn ${isFav ? 'favorited' : ''}" title="取消收藏" aria-label="取消收藏" onclick="event.stopPropagation();toggleFavorite('${safeKanjiAction}', false)">
+        <div class="card-top-actions" data-favorites-stop>
+          <button class="card-fav-btn ${isFav ? 'favorited' : ''}" title="取消收藏" aria-label="取消收藏" data-favorites-action="toggle-favorite" data-kanji="${escapeHTML(word.kanji)}" data-force-state="false">
             <img class="fav-icon" src="assets/illustrations/dorayaki.png" alt="取消收藏">
           </button>
         </div>
@@ -7827,7 +7852,7 @@ function renderFavoriteCard(word) {
         </div>
         <div class="card-meta workflow-meta">
           ${renderFavoriteSourceChip(entry)}
-          ${renderStatusControl(word.kanji)}
+          ${renderStatusControl(word.kanji, { context: 'favorites' })}
         </div>
       </div>
     </div>`;
@@ -8419,20 +8444,19 @@ function renderFavorites() {
   populateSourceFilter('favorites', allFavWords);
   const statusSelect = document.getElementById('favoritesStatusFilter');
   if (statusSelect) statusSelect.value = statusFilter;
-  const visibleWords = getVisibleFavoriteWords();
+  const pageModel = getFavoritesPageModel(allFavWords);
+  const visibleWords = pageModel.visibleWords;
   const empty = document.getElementById('favEmpty');
   const count = document.getElementById('favCount');
   if (!visibleWords.length) {
     renderFavoritesGrid([]);
     empty.style.display = 'flex';
-    count.textContent = allFavWords.length ? '当前筛选条件下没有词' : '保存你感兴趣、准备发布和已进入工作流的词';
+    count.textContent = pageModel.countText;
   } else {
     empty.style.display = 'none';
     renderFavoritesGrid(visibleWords);
-    count.textContent = visibleWords.length === allFavWords.length
-      ? `当前选题池 ${visibleWords.length} 个词`
-      : `筛选显示 ${visibleWords.length} / ${allFavWords.length} 个词`;
-    void queueAutoGenerateAiCards(visibleWords.map(word => word.kanji), { source: 'favorites-visible', toast: false });
+    count.textContent = pageModel.countText;
+    void queueAutoGenerateAiCards(pageModel.autoGenerateWords, { source: 'favorites-visible', toast: false });
   }
   updateFavBadge();
 }
@@ -9814,6 +9838,22 @@ Object.assign(window, {
   autofillPublishedRecordFromLink,
   savePublishedRecord,
   openPublishedDetail
+});
+
+createFavoritesPageController({
+  root: document.getElementById('page-favorites'),
+  onOpenDetail: openDetail,
+  onToggleFavorite: toggleFavorite,
+  onToggleStatus: toggleStatusMenu,
+  onSelectStatus: selectFavoriteStatus,
+  onAddManualWord: openManualWordModal,
+  onExport: exportSelected,
+  onSourceFilter: value => setSourceFilter('favorites', value),
+  onStatusFilter: setStatusFilter,
+  onError: error => {
+    console.warn('收藏页操作失败', error);
+    showToast('收藏页操作失败，请刷新后重试');
+  }
 });
 
 init();
