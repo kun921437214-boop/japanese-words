@@ -3299,6 +3299,8 @@ let hasUnsavedFormChanges = false;
 let cloudSaveEpoch = 0;
 let cloudSaveQueue = Promise.resolve(false);
 let pendingCloudSaveCount = 0;
+let cloudWorkflowLoadEpoch = 0;
+let backgroundSyncPromise = null;
 
 function createOperationId(prefix = 'web') {
   const randomId = globalThis.crypto?.randomUUID?.()
@@ -3320,6 +3322,7 @@ function createApiError(data, status = 0) {
   error.status = status;
   error.code = data?.error?.code || '';
   error.retryable = Boolean(data?.error?.retryable);
+  error.requestId = cleanShortText(data?.requestId, 160);
   return error;
 }
 
@@ -3332,7 +3335,11 @@ async function apiFetch(endpoint, options = {}, config = {}) {
   const externalSignal = options.signal;
   const abortFromExternal = () => controller.abort(externalSignal?.reason);
   externalSignal?.addEventListener('abort', abortFromExternal, { once: true });
-  const timeout = setTimeout(() => controller.abort(new DOMException('Request timed out', 'TimeoutError')), timeoutMs);
+  let timedOut = false;
+  const timeout = setTimeout(() => {
+    timedOut = true;
+    controller.abort(new DOMException('Request timed out', 'TimeoutError'));
+  }, timeoutMs);
   const headers = new Headers(options.headers || {});
   if (config.workflowMutation) {
     headers.set('X-Operation-Id', config.operationId || createOperationId(config.operationPrefix || 'workflow'));
@@ -3348,9 +3355,9 @@ async function apiFetch(endpoint, options = {}, config = {}) {
     });
   } catch (error) {
     if (controller.signal.aborted) {
-      const timeoutError = new Error('请求超时或已取消');
-      timeoutError.code = 'REQUEST_ABORTED';
-      throw timeoutError;
+      const abortError = new Error(timedOut ? '请求超时' : '请求已取消');
+      abortError.code = timedOut ? 'REQUEST_TIMEOUT' : 'REQUEST_ABORTED';
+      throw abortError;
     }
     throw error;
   } finally {
@@ -3382,6 +3389,14 @@ function getSyncEndpoint() {
   if (/^\d{4}-\d{2}-\d{2}$/.test(currentDailyHotDateKey) && currentDailyHotDateKey !== tomorrow) {
     url.searchParams.set('historyDate', currentDailyHotDateKey);
   }
+  return url.toString();
+}
+
+function getFavoriteCommandEndpoint(kanji) {
+  if (!SYNC_API_URL) return '';
+  const url = new URL(`${SYNC_API_URL}/favorites`, window.location.origin);
+  url.searchParams.set('view', 'command');
+  url.searchParams.set('word', cleanShortText(kanji, 80));
   return url.toString();
 }
 
@@ -3495,9 +3510,104 @@ function updateSyncStatus(message, color = 'var(--text-secondary)') {
   status.style.color = color;
 }
 
+function applyRemoteWorkflowState(remoteData, options = {}) {
+  const data = cleanStoredWorkflow(remoteData);
+  if (!options.allowOlderRevision && data.revision < workflowRevision) {
+    console.info('已忽略旧版云端工作流响应', {
+      remoteRevision: data.revision,
+      currentRevision: workflowRevision
+    });
+    return { applied: false, stale: true, data };
+  }
+
+  favorites = filterKnownFavorites(data.words, data.candidatePool);
+  favoriteStatuses = data.statuses;
+  wordFeedback = data.feedback;
+  publishedRecords = data.publishedRecords;
+  candidatePool = data.candidatePool;
+  aiBatches = data.aiBatches;
+  aiPreview = data.aiPreview || {};
+  syncAiPreviewGlobalsFromWorkflow();
+  todaySnapshot = data.todaySnapshot;
+  todayDismissed = cleanTeamDismissedState(data.todayDismissed || {});
+  historySnapshots = data.historySnapshots;
+  todaySnapshotHistory = data.todaySnapshotHistory;
+  workflowRevision = data.revision;
+  workflowAuditLog = data.auditLog;
+  cloudWorkflowFailed = false;
+  lastCloudSyncAt = nowIso();
+  hydrateTodayWordsFromSnapshot();
+  cacheCurrentWorkflow(data.updated || lastCloudSyncAt);
+  return { applied: true, stale: false, data };
+}
+
+function applyFavoriteCommandResponse(responseData, kanji) {
+  const candidate = cleanCandidatePoolEntry(kanji, responseData?.candidate || {});
+  if (candidate) candidatePool[kanji] = candidate;
+  favorites = filterKnownFavorites(responseData?.words, candidatePool);
+  favoriteStatuses = cleanStoredWorkflow({
+    words: favorites,
+    statuses: responseData?.statuses
+  }).statuses;
+  workflowRevision = clamp(toInt(responseData?.revision, workflowRevision), workflowRevision, Number.MAX_SAFE_INTEGER);
+  if (responseData?.auditEvent) {
+    workflowAuditLog = cleanStoredWorkflow({
+      auditLog: [responseData.auditEvent, ...workflowAuditLog]
+    }).auditLog;
+  }
+  cloudWorkflowFailed = false;
+  lastCloudSyncAt = nowIso();
+  cacheCurrentWorkflow(responseData?.updated || lastCloudSyncAt);
+}
+
+function buildFavoriteCommandPayload(kanji, action, status = '') {
+  const payload = { action, word: kanji };
+  if (action === 'status') payload.status = status;
+  const candidate = cleanCandidatePoolEntry(kanji, candidatePool[kanji] || {});
+  if (candidate && ['add', 'status'].includes(action)) {
+    payload.candidatePool = { [kanji]: candidate };
+  }
+  return payload;
+}
+
+function isRetryableWorkflowReadError(error) {
+  if (error?.code === 'REQUEST_ABORTED') return false;
+  if (error?.code === 'REQUEST_TIMEOUT') return true;
+  const status = Number(error?.status) || 0;
+  return !status || status === 408 || status === 429 || status >= 500;
+}
+
+async function fetchWorkflowView(endpoint, loadEpoch) {
+  let lastError = null;
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    if (loadEpoch !== cloudWorkflowLoadEpoch) {
+      const canceledError = new Error('请求已被新的同步替代');
+      canceledError.code = 'REQUEST_ABORTED';
+      throw canceledError;
+    }
+    try {
+      const response = await apiFetch(endpoint, { headers: { Accept: 'application/json' } }, {
+        cancelKey: 'workflow-load',
+        timeoutMs: 45000
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw createApiError(data, response.status);
+      return data;
+    } catch (error) {
+      lastError = error;
+      if (attempt > 0 || !isRetryableWorkflowReadError(error)) throw error;
+      await new Promise(resolve => {
+        setTimeout(resolve, 300);
+      });
+    }
+  }
+  throw lastError || new Error('工作流读取失败');
+}
+
 async function loadCloudWorkflow(options = false) {
   const showMessages = typeof options === 'boolean' ? options : Boolean(options.showMessages);
   const endpoint = getSyncEndpoint();
+  const loadEpoch = ++cloudWorkflowLoadEpoch;
   if (!endpoint) {
     if (showMessages) showToast('云端后端还没有配置');
     cloudWorkflowFailed = true;
@@ -3506,33 +3616,16 @@ async function loadCloudWorkflow(options = false) {
 
   try {
     if (showMessages) updateSyncStatus('正在同步工作流数据...');
-    const response = await apiFetch(endpoint, { headers: { Accept: 'application/json' } }, {
-      cancelKey: 'workflow-load',
-      timeoutMs: 45000
-    });
-    if (!response.ok) throw new Error(`HTTP ${response.status}`);
-    const remoteData = cleanStoredWorkflow(await response.json());
-
-    favorites = filterKnownFavorites(remoteData.words, remoteData.candidatePool);
-    favoriteStatuses = remoteData.statuses;
-    wordFeedback = remoteData.feedback;
-    publishedRecords = remoteData.publishedRecords;
-    candidatePool = remoteData.candidatePool;
-    aiBatches = remoteData.aiBatches;
-    aiPreview = remoteData.aiPreview || {};
-    syncAiPreviewGlobalsFromWorkflow();
-    todaySnapshot = remoteData.todaySnapshot;
-    todayDismissed = cleanTeamDismissedState(remoteData.todayDismissed || {});
-    historySnapshots = remoteData.historySnapshots;
-    todaySnapshotHistory = remoteData.todaySnapshotHistory;
-    workflowRevision = remoteData.revision;
-    workflowAuditLog = remoteData.auditLog;
-    cloudWorkflowFailed = false;
-    lastCloudSyncAt = nowIso();
+    const responseData = await fetchWorkflowView(endpoint, loadEpoch);
+    if (loadEpoch !== cloudWorkflowLoadEpoch) return false;
+    const applied = applyRemoteWorkflowState(responseData);
+    if (!applied.applied) {
+      cloudWorkflowFailed = false;
+      if (showMessages) showToast('已保留页面中的较新数据');
+      return true;
+    }
     archiveStaleTodaySnapshot();
     verifyDeepSeekLibraryAuditCoverage();
-    hydrateTodayWordsFromSnapshot();
-    cacheCurrentWorkflow(remoteData.updated || lastCloudSyncAt);
     try {
       updateAllBadges();
       refreshCurrentGrid();
@@ -3547,6 +3640,10 @@ async function loadCloudWorkflow(options = false) {
     }
     return true;
   } catch (error) {
+    if (loadEpoch !== cloudWorkflowLoadEpoch || error?.code === 'REQUEST_ABORTED') {
+      console.info('旧的工作流同步已取消');
+      return false;
+    }
     console.warn('工作流同步失败', error);
     cloudWorkflowFailed = true;
     if (showMessages) {
@@ -3604,25 +3701,7 @@ async function performCloudWorkflowSave(showMessages, payload, queuedEpoch) {
     }, { workflowMutation: true, operationPrefix: 'workflow-save', timeoutMs: 30000 });
     const responseData = await response.json().catch(() => payload);
     if (!response.ok) throw createApiError(responseData, response.status);
-    const savedData = cleanStoredWorkflow(responseData);
-    favorites = filterKnownFavorites(savedData.words, savedData.candidatePool);
-    favoriteStatuses = savedData.statuses;
-    wordFeedback = savedData.feedback;
-    publishedRecords = savedData.publishedRecords;
-    candidatePool = savedData.candidatePool;
-    aiBatches = savedData.aiBatches;
-    aiPreview = savedData.aiPreview || aiPreview;
-    syncAiPreviewGlobalsFromWorkflow();
-    todaySnapshot = savedData.todaySnapshot;
-    todayDismissed = cleanTeamDismissedState(savedData.todayDismissed || todayDismissed);
-    historySnapshots = savedData.historySnapshots;
-    todaySnapshotHistory = savedData.todaySnapshotHistory;
-    workflowRevision = savedData.revision;
-    workflowAuditLog = savedData.auditLog;
-    hydrateTodayWordsFromSnapshot();
-    cloudWorkflowFailed = false;
-    lastCloudSyncAt = nowIso();
-    cacheCurrentWorkflow(savedData.updated || payload.updated);
+    applyRemoteWorkflowState(responseData);
     if (showMessages) {
       updateSyncStatus('已保存到云端', '#4caf50');
       showToast('已保存到云端');
@@ -3703,7 +3782,7 @@ async function refreshPublishedMetrics(recordId = '') {
 }
 
 async function syncFavoriteChange(kanji, action) {
-  const endpoint = getSyncEndpoint();
+  const endpoint = getFavoriteCommandEndpoint(kanji);
   if (!endpoint) return false;
   try {
     ensureFavoriteWordsHaveCandidateEntries();
@@ -3713,37 +3792,11 @@ async function syncFavoriteChange(kanji, action) {
         Accept: 'application/json',
         'Content-Type': 'application/json'
       },
-      body: JSON.stringify({
-        action,
-        word: kanji,
-        feedback: cleanWordFeedback(wordFeedback),
-        publishedRecords: cleanPublishedRecords(publishedRecords),
-        candidatePool: cleanCandidatePool(candidatePool),
-        aiBatches: cleanAiBatches(aiBatches),
-        aiPreview
-      })
+      body: JSON.stringify(buildFavoriteCommandPayload(kanji, action))
     }, { workflowMutation: true, operationPrefix: `favorite-${action}` });
     const responseData = await response.json().catch(() => ({}));
     if (!response.ok) throw createApiError(responseData, response.status);
-    const data = cleanStoredWorkflow(responseData);
-    favorites = data.words;
-    favoriteStatuses = data.statuses;
-    wordFeedback = data.feedback;
-    publishedRecords = data.publishedRecords;
-    candidatePool = data.candidatePool;
-    aiBatches = data.aiBatches;
-    aiPreview = data.aiPreview || aiPreview;
-    syncAiPreviewGlobalsFromWorkflow();
-    todaySnapshot = data.todaySnapshot;
-    todayDismissed = cleanTeamDismissedState(data.todayDismissed || todayDismissed);
-    historySnapshots = data.historySnapshots;
-    todaySnapshotHistory = data.todaySnapshotHistory;
-    workflowRevision = data.revision;
-    workflowAuditLog = data.auditLog;
-    cloudWorkflowFailed = false;
-    lastCloudSyncAt = nowIso();
-    hydrateTodayWordsFromSnapshot();
-    cacheCurrentWorkflow(data.updated || lastCloudSyncAt);
+    applyFavoriteCommandResponse(responseData, kanji);
     updateAllBadges();
     refreshCurrentGrid();
     return true;
@@ -3757,7 +3810,7 @@ async function syncFavoriteChange(kanji, action) {
 }
 
 async function syncFavoriteStatus(kanji, status) {
-  const endpoint = getSyncEndpoint();
+  const endpoint = getFavoriteCommandEndpoint(kanji);
   if (!endpoint) return false;
   try {
     ensureFavoriteWordsHaveCandidateEntries();
@@ -3767,38 +3820,11 @@ async function syncFavoriteStatus(kanji, status) {
         Accept: 'application/json',
         'Content-Type': 'application/json'
       },
-      body: JSON.stringify({
-        action: 'status',
-        word: kanji,
-        status,
-        feedback: cleanWordFeedback(wordFeedback),
-        publishedRecords: cleanPublishedRecords(publishedRecords),
-        candidatePool: cleanCandidatePool(candidatePool),
-        aiBatches: cleanAiBatches(aiBatches),
-        aiPreview
-      })
+      body: JSON.stringify(buildFavoriteCommandPayload(kanji, 'status', status))
     }, { workflowMutation: true, operationPrefix: 'favorite-status' });
     const responseData = await response.json().catch(() => ({}));
     if (!response.ok) throw createApiError(responseData, response.status);
-    const data = cleanStoredWorkflow(responseData);
-    favorites = data.words;
-    favoriteStatuses = data.statuses;
-    wordFeedback = data.feedback;
-    publishedRecords = data.publishedRecords;
-    candidatePool = data.candidatePool;
-    aiBatches = data.aiBatches;
-    aiPreview = data.aiPreview || aiPreview;
-    syncAiPreviewGlobalsFromWorkflow();
-    todaySnapshot = data.todaySnapshot;
-    todayDismissed = cleanTeamDismissedState(data.todayDismissed || todayDismissed);
-    historySnapshots = data.historySnapshots;
-    todaySnapshotHistory = data.todaySnapshotHistory;
-    workflowRevision = data.revision;
-    workflowAuditLog = data.auditLog;
-    cloudWorkflowFailed = false;
-    lastCloudSyncAt = nowIso();
-    hydrateTodayWordsFromSnapshot();
-    cacheCurrentWorkflow(data.updated || lastCloudSyncAt);
+    applyFavoriteCommandResponse(responseData, kanji);
     updateAllBadges();
     refreshCurrentGrid();
     return true;
@@ -9661,15 +9687,23 @@ async function ensureTodayRecommendationsLoaded() {
   }
 }
 
-async function syncRemoteDataInBackground() {
-  const rankingsLoaded = await loadCloudRankings(false);
-  if (!rankingsLoaded) generateFallbackRankings();
-  const cloudLoaded = await loadCloudWorkflow({ mode: 'remote-first', showMessages: false });
-  if (!cloudLoaded) return false;
-  hydrateTodayWordsFromSnapshot();
-  updateAllBadges();
-  refreshCurrentGrid();
-  return true;
+function syncRemoteDataInBackground() {
+  if (backgroundSyncPromise) return backgroundSyncPromise;
+  const operation = (async () => {
+    const rankingsLoaded = await loadCloudRankings(false);
+    if (!rankingsLoaded) generateFallbackRankings();
+    const cloudLoaded = await loadCloudWorkflow({ mode: 'remote-first', showMessages: false });
+    if (!cloudLoaded) return false;
+    hydrateTodayWordsFromSnapshot();
+    updateAllBadges();
+    refreshCurrentGrid();
+    return true;
+  });
+  const trackedOperation = operation().finally(() => {
+    if (backgroundSyncPromise === trackedOperation) backgroundSyncPromise = null;
+  });
+  backgroundSyncPromise = trackedOperation;
+  return backgroundSyncPromise;
 }
 
 function openSettingsModal() {
@@ -9798,11 +9832,27 @@ async function init() {
 
 window.addEventListener('pageshow', event => {
   if (!event.persisted) return;
+  cloudWorkflowLoadEpoch += 1;
   activeApiControllers.forEach(controller => controller.abort());
   activeApiControllers.clear();
+  backgroundSyncPromise = null;
   resetTransientUiState();
   ensureTodayGridVisible();
   void syncRemoteDataInBackground();
+});
+
+window.addEventListener('offline', () => {
+  cloudWorkflowFailed = true;
+  updateSyncStatus('当前网络不可用，正在显示最近一次云端缓存。', '#c0392b');
+});
+
+window.addEventListener('online', () => {
+  updateSyncStatus('网络已恢复，正在重新同步云端数据...');
+  void syncRemoteDataInBackground().then(synced => {
+    if (!synced) return;
+    updateSyncStatus('网络已恢复，云端数据已同步。', '#4caf50');
+    showToast('网络已恢复，数据已重新同步');
+  });
 });
 
 init();

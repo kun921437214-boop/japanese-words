@@ -23,7 +23,7 @@ import {
 } from '../shared/today-quality.mjs';
 import { getAccountLearningSummary } from '../shared/account-learning.mjs';
 import { buildDeepSeekExclusionContext } from '../shared/deepseek-exclusion.mjs';
-import { applyFavoriteAction, buildAppWorkflowView } from '../functions/favorites.js';
+import { applyFavoriteAction, buildAppWorkflowView, buildFavoriteCommandView } from '../functions/favorites.js';
 import {
   applyAiCardGenerationResult,
   isAiCardStalePending,
@@ -151,6 +151,46 @@ test('app 工作流只返回页面所需候选且不改变云端完整候选池'
   assert.deepEqual(Object.keys(historyView.candidatePool).sort(), ['今日词', '发布词', '历史词', '收藏词'].sort());
   assert.equal(Object.keys(candidatePool).length, 5);
   assert.ok(candidatePool['无关词']);
+});
+
+test('收藏命令只返回小响应且状态操作可补回缺失收藏', () => {
+  const current = {
+    words: ['既有收藏'],
+    statuses: {},
+    candidatePool: {
+      既有收藏: { kanji: '既有收藏', meaning: '既有词', sourceType: 'manual_keep' },
+      新状态词: { kanji: '新状态词', meaning: '状态词', sourceType: 'manual_keep' }
+    },
+    aiBatches: [{ id: 'large-batch', action: 'generate_candidates', rawOutput: 'x'.repeat(4000) }],
+    todaySnapshot: { dateKey: '2026-07-19', words: ['既有收藏'], version: 1 }
+  };
+  const updated = applyFavoriteAction(current, { action: 'status', word: '新状态词', status: 'pending' });
+  assert.ok(updated.words.includes('新状态词'));
+  assert.equal(updated.statuses['新状态词'], 'pending');
+
+  const commandView = buildFavoriteCommandView(updated, '新状态词');
+  assert.deepEqual(commandView.words, updated.words);
+  assert.equal(commandView.statuses['新状态词'], 'pending');
+  assert.equal(commandView.candidate.kanji, '新状态词');
+  assert.equal('aiBatches' in commandView, false);
+  assert.equal('todaySnapshot' in commandView, false);
+});
+
+test('前端收藏使用小命令响应并防止旧同步覆盖新版本', () => {
+  const appSource = fs.readFileSync(new URL('../app.js', import.meta.url), 'utf8');
+  const commandSource = appSource.slice(
+    appSource.indexOf('function buildFavoriteCommandPayload'),
+    appSource.indexOf('function isRetryableWorkflowReadError')
+  );
+  assert.ok(appSource.includes("url.searchParams.set('view', 'command');"));
+  assert.ok(appSource.includes('function applyFavoriteCommandResponse(responseData, kanji)'));
+  assert.ok(commandSource.includes('payload.candidatePool = { [kanji]: candidate };'));
+  assert.equal(commandSource.includes('publishedRecords'), false);
+  assert.equal(commandSource.includes('aiBatches'), false);
+  assert.equal(commandSource.includes('aiPreview'), false);
+  assert.ok(appSource.includes('data.revision < workflowRevision'));
+  assert.ok(appSource.includes("error?.code === 'REQUEST_ABORTED'"));
+  assert.ok(appSource.includes("window.addEventListener('online', () =>"));
 });
 
 test('历史日期缺少 aiCard 时安全渲染并按需重新加载词卡', () => {

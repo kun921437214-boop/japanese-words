@@ -460,10 +460,26 @@ export function buildAppWorkflowView(data = {}, options = {}) {
   };
 }
 
+export function buildFavoriteCommandView(data = {}, targetWord = '') {
+  const workflow = cleanStoredData(data);
+  const word = cleanWords([targetWord])[0];
+  return {
+    ok: true,
+    words: workflow.words,
+    statuses: workflow.statuses,
+    candidate: word ? (workflow.candidatePool[word] || null) : null,
+    revision: workflow.revision,
+    auditEvent: workflow.auditLog[0] || null,
+    updated: workflow.updated,
+    schemaVersion: workflow.schemaVersion
+  };
+}
+
 function getWorkflowResponseData(data, url) {
-  return url.searchParams.get('view') === 'app'
-    ? buildAppWorkflowView(data, { historyDate: url.searchParams.get('historyDate') })
-    : cleanStoredData(data);
+  const view = url.searchParams.get('view');
+  if (view === 'command') return buildFavoriteCommandView(data, url.searchParams.get('word'));
+  if (view === 'app') return buildAppWorkflowView(data, { historyDate: url.searchParams.get('historyDate') });
+  return cleanStoredData(data);
 }
 
 function getStorageKey(url) {
@@ -478,9 +494,10 @@ export function applyFavoriteAction(currentWorkflow = {}, body = {}) {
   let words = currentWords;
   if (body.action === 'add') words = cleanWords([word, ...currentWords]);
   if (body.action === 'remove') words = currentWords.filter(item => item !== word);
+  if (body.action === 'status' && !currentWords.includes(word)) words = cleanWords([word, ...currentWords]);
   const statuses = cleanStatuses(current.statuses, words);
   if (body.action === 'remove') delete statuses[word];
-  if (body.action === 'status' && currentWords.includes(word)) {
+  if (body.action === 'status' && words.includes(word)) {
     const status = cleanStatus(body.status);
     if (status === 'none') delete statuses[word];
     else statuses[word] = status;

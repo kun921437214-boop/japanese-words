@@ -32,6 +32,14 @@ Deploy the scheduled Worker:
 npm run deploy:worker
 ```
 
+Run the read-only production smoke check after deployment:
+
+```bash
+npm run smoke:production
+```
+
+The smoke check does not write workflow or KV data. It verifies the Pages bindings, current Daily Hot snapshot, card/image readiness, and the compact app response size.
+
 ## Environment Variables
 
 Configure these in Cloudflare, not in source code:
