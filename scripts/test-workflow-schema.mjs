@@ -110,6 +110,7 @@ test('收藏页面显示已收藏并请求精简 app 工作流', () => {
   assert.ok(appSource.includes("none: '已收藏'"));
   assert.ok(indexSource.includes('<option value="none">已收藏</option>'));
   assert.ok(appSource.includes("url.searchParams.set('view', 'app');"));
+  assert.ok(appSource.includes("url.searchParams.set('historyDate', currentDailyHotDateKey);"));
   assert.equal(appSource.includes("none: '无'"), false);
 });
 
@@ -118,6 +119,7 @@ test('app 工作流只返回页面所需候选且不改变云端完整候选池'
     收藏词: { kanji: '收藏词', kana: 'しゅうぞうし', meaning: '收藏测试词', sourceType: 'manual_keep' },
     今日词: { kanji: '今日词', kana: 'きょうし', meaning: '今日测试词', sourceType: 'deepseek_generated' },
     发布词: { kanji: '发布词', kana: 'はっぴょうし', meaning: '发布测试词', sourceType: 'deepseek_reviewed' },
+    历史词: { kanji: '历史词', kana: 'れきしし', meaning: '历史测试词', sourceType: 'deepseek_generated' },
     无关词: { kanji: '无关词', kana: 'むかんし', meaning: '无关测试词', sourceType: 'deepseek_generated' }
   };
   const fullWorkflow = {
@@ -132,13 +134,32 @@ test('app 工作流只返回页面所需候选且不改变云端完整候选池'
       generatedAt: '2026-07-19T00:00:00.000Z',
       generatorVersion: TODAY_SNAPSHOT_GENERATOR_VERSION,
       version: 1
+    },
+    historySnapshots: {
+      '2026-07-18': {
+        dateKey: '2026-07-18',
+        words: ['历史词'],
+        generatedAt: '2026-07-18T00:00:00.000Z',
+        version: 1
+      }
     }
   };
   const appView = buildAppWorkflowView(fullWorkflow);
   assert.deepEqual(Object.keys(appView.candidatePool).sort(), ['今日词', '发布词', '收藏词'].sort());
   assert.deepEqual(appView.aiBatches, []);
-  assert.equal(Object.keys(candidatePool).length, 4);
+  const historyView = buildAppWorkflowView(fullWorkflow, { historyDate: '2026-07-18' });
+  assert.deepEqual(Object.keys(historyView.candidatePool).sort(), ['今日词', '发布词', '历史词', '收藏词'].sort());
+  assert.equal(Object.keys(candidatePool).length, 5);
   assert.ok(candidatePool['无关词']);
+});
+
+test('历史日期缺少 aiCard 时安全渲染并按需重新加载词卡', () => {
+  const appSource = fs.readFileSync(new URL('../app.js', import.meta.url), 'utf8');
+  assert.ok(appSource.includes("if (!card || card.cardStatus !== 'pending') return false;"));
+  assert.ok(appSource.includes("const card = cleanAiCard(aiCard || {}) || { cardStatus: 'none' };"));
+  assert.ok(appSource.includes('正在加载这一天的词卡内容'));
+  assert.ok(appSource.includes("void loadCloudWorkflow({ mode: 'remote-first', showMessages: false }).then"));
+  assert.ok(appSource.includes("console.error('工作流已同步，但页面渲染失败'"));
 });
 
 test('Codex 明日预览保留团队操作和完整词卡详情', () => {

@@ -433,10 +433,19 @@ function cleanStoredData(data) {
 
 const APP_CANDIDATE_LIMIT = 240;
 
-export function buildAppWorkflowView(data = {}) {
+export function buildAppWorkflowView(data = {}, options = {}) {
   const workflow = cleanStoredData(data);
+  const historyDate = /^\d{4}-\d{2}-\d{2}$/.test(String(options.historyDate || ''))
+    ? String(options.historyDate)
+    : '';
+  const requestedHistory = historyDate
+    ? (workflow.historySnapshots[historyDate]
+      || workflow.todaySnapshotHistory.find(snapshot => snapshot.dateKey === historyDate)
+      || {})
+    : {};
   const appWords = cleanWords([
     ...workflow.todaySnapshot.words,
+    ...(requestedHistory.words || []),
     ...workflow.words,
     ...workflow.publishedRecords.map(record => record.word)
   ]).slice(0, APP_CANDIDATE_LIMIT);
@@ -453,7 +462,7 @@ export function buildAppWorkflowView(data = {}) {
 
 function getWorkflowResponseData(data, url) {
   return url.searchParams.get('view') === 'app'
-    ? buildAppWorkflowView(data)
+    ? buildAppWorkflowView(data, { historyDate: url.searchParams.get('historyDate') })
     : cleanStoredData(data);
 }
 
