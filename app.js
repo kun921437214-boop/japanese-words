@@ -83,7 +83,7 @@ const AI_CARD_AUTO_MAX_ATTEMPTS_PER_DAY = 2;
 const AI_CARD_PENDING_TTL_MS = 10 * 60 * 1000;
 const FAVORITE_STATUS_ORDER = ['none', 'pending', 'published'];
 const FAVORITE_STATUS_LABELS = {
-  none: '无',
+  none: '已收藏',
   pending: '待发布',
   published: '已发布'
 };
@@ -3376,7 +3376,9 @@ async function runUiOperation(key, operation) {
 
 function getSyncEndpoint() {
   if (!SYNC_API_URL) return '';
-  return `${SYNC_API_URL}/favorites`;
+  const url = new URL(`${SYNC_API_URL}/favorites`, window.location.origin);
+  url.searchParams.set('view', 'app');
+  return url.toString();
 }
 
 function getRankingsEndpoint(days = RANKINGS_DAYS) {
@@ -7386,7 +7388,7 @@ function renderStatusControl(kanji) {
 
   return `
     <div class="card-status-control" data-kanji="${escapeHTML(kanji)}">
-      <button class="card-status-btn status-${status}" aria-expanded="${isOpen ? 'true' : 'false'}" onclick="event.stopPropagation();toggleStatusMenu('${safeKanjiAction}')" title="选择工作流状态">
+      <button class="card-status-btn status-${status}" aria-expanded="${isOpen ? 'true' : 'false'}" onclick="event.stopPropagation();toggleStatusMenu('${safeKanjiAction}')" title="选择选题状态">
         <span class="status-dot"></span>${statusLabel}<span class="status-chevron">⌄</span>
       </button>
       <div class="card-status-menu ${isOpen ? 'open' : ''}" onclick="event.stopPropagation()">

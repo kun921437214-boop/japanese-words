@@ -23,7 +23,7 @@ import {
 } from '../shared/today-quality.mjs';
 import { getAccountLearningSummary } from '../shared/account-learning.mjs';
 import { buildDeepSeekExclusionContext } from '../shared/deepseek-exclusion.mjs';
-import { applyFavoriteAction } from '../functions/favorites.js';
+import { applyFavoriteAction, buildAppWorkflowView } from '../functions/favorites.js';
 import {
   applyAiCardGenerationResult,
   isAiCardStalePending,
@@ -102,6 +102,43 @@ test('候选池后台从用户界面下线但内部日更数据结构保持不�
   assert.ok(appSource.includes("(['today', 'favorites', 'published'].includes(savedTab)"));
   assert.ok(appSource.includes("const grid = document.getElementById('candidateGrid');\n  if (!grid) return;"));
   assert.ok(appSource.includes('candidatePool: cleanCandidatePool(candidatePool)'));
+});
+
+test('收藏页面显示已收藏并请求精简 app 工作流', () => {
+  const indexSource = fs.readFileSync(new URL('../index.html', import.meta.url), 'utf8');
+  const appSource = fs.readFileSync(new URL('../app.js', import.meta.url), 'utf8');
+  assert.ok(appSource.includes("none: '已收藏'"));
+  assert.ok(indexSource.includes('<option value="none">已收藏</option>'));
+  assert.ok(appSource.includes("url.searchParams.set('view', 'app');"));
+  assert.equal(appSource.includes("none: '无'"), false);
+});
+
+test('app 工作流只返回页面所需候选且不改变云端完整候选池', () => {
+  const candidatePool = {
+    收藏词: { kanji: '收藏词', kana: 'しゅうぞうし', meaning: '收藏测试词', sourceType: 'manual_keep' },
+    今日词: { kanji: '今日词', kana: 'きょうし', meaning: '今日测试词', sourceType: 'deepseek_generated' },
+    发布词: { kanji: '发布词', kana: 'はっぴょうし', meaning: '发布测试词', sourceType: 'deepseek_reviewed' },
+    无关词: { kanji: '无关词', kana: 'むかんし', meaning: '无关测试词', sourceType: 'deepseek_generated' }
+  };
+  const fullWorkflow = {
+    words: ['收藏词'],
+    statuses: {},
+    publishedRecords: [{ id: 'published-test', word: '发布词', title: '已发布测试' }],
+    candidatePool,
+    aiBatches: [{ id: 'batch-test', action: 'generate_candidates' }],
+    todaySnapshot: {
+      dateKey: '2026-07-19',
+      words: ['今日词'],
+      generatedAt: '2026-07-19T00:00:00.000Z',
+      generatorVersion: TODAY_SNAPSHOT_GENERATOR_VERSION,
+      version: 1
+    }
+  };
+  const appView = buildAppWorkflowView(fullWorkflow);
+  assert.deepEqual(Object.keys(appView.candidatePool).sort(), ['今日词', '发布词', '收藏词'].sort());
+  assert.deepEqual(appView.aiBatches, []);
+  assert.equal(Object.keys(candidatePool).length, 4);
+  assert.ok(candidatePool['无关词']);
 });
 
 test('Codex 明日预览保留团队操作和完整词卡详情', () => {

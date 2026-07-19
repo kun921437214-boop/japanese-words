@@ -431,6 +431,32 @@ function cleanStoredData(data) {
   return cleanWorkflowSchema(data);
 }
 
+const APP_CANDIDATE_LIMIT = 240;
+
+export function buildAppWorkflowView(data = {}) {
+  const workflow = cleanStoredData(data);
+  const appWords = cleanWords([
+    ...workflow.todaySnapshot.words,
+    ...workflow.words,
+    ...workflow.publishedRecords.map(record => record.word)
+  ]).slice(0, APP_CANDIDATE_LIMIT);
+  const candidatePool = appWords.reduce((result, word) => {
+    if (workflow.candidatePool[word]) result[word] = workflow.candidatePool[word];
+    return result;
+  }, {});
+  return {
+    ...workflow,
+    candidatePool,
+    aiBatches: []
+  };
+}
+
+function getWorkflowResponseData(data, url) {
+  return url.searchParams.get('view') === 'app'
+    ? buildAppWorkflowView(data)
+    : cleanStoredData(data);
+}
+
 function getStorageKey(url) {
   const code = cleanSyncCode(url.searchParams.get('code'));
   return code.length >= 8 ? `favorites:${code}` : 'favorites:global';
@@ -487,7 +513,7 @@ export async function onRequest({ request, env }) {
 
   if (request.method === 'GET') {
     const stored = await env.FAVORITES.get(key, 'json');
-    return respond(cleanStoredData(stored));
+    return respond(getWorkflowResponseData(stored, url));
   }
 
   if (request.method === 'PUT') {
@@ -519,7 +545,7 @@ export async function onRequest({ request, env }) {
     const data = mutation.workflow;
 
     if (!mutation.duplicate) await env.FAVORITES.put(key, JSON.stringify(data));
-    return respond({ ...data, mutation: { duplicate: mutation.duplicate, operationId: mutation.event?.id || '' } });
+    return respond({ ...getWorkflowResponseData(data, url), mutation: { duplicate: mutation.duplicate, operationId: mutation.event?.id || '' } });
   }
 
   if (request.method === 'POST') {
@@ -552,7 +578,7 @@ export async function onRequest({ request, env }) {
     const data = mutation.workflow;
 
     if (!mutation.duplicate) await env.FAVORITES.put(key, JSON.stringify(data));
-    return respond({ ...data, mutation: { duplicate: mutation.duplicate, operationId: mutation.event?.id || '' } });
+    return respond({ ...getWorkflowResponseData(data, url), mutation: { duplicate: mutation.duplicate, operationId: mutation.event?.id || '' } });
   }
 
   return fail(405, 'METHOD_NOT_ALLOWED', 'Method not allowed');
