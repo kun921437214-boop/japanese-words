@@ -45,7 +45,7 @@ Run the read-only production smoke check after deployment:
 npm run smoke:production
 ```
 
-The smoke check does not write workflow or KV data. It verifies the Pages bindings (including the workflow coordinator), current Daily Hot snapshot, card/image readiness, and the compact app response size.
+The smoke check does not write workflow or KV data. It verifies the Pages bindings (including the workflow coordinator), current Daily Hot snapshot, card/image readiness, compact app response size, and continuity between the current revision and latest mutation audit record.
 
 ## Environment Variables
 

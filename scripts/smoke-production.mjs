@@ -70,6 +70,26 @@ try {
     fail('Production 收藏页面候选词卡不完整', { favorites: favoriteWords.length, candidates: favoriteCandidates.length });
   }
 
+  const revision = Number(workflow.data.revision) || 0;
+  const auditLog = Array.isArray(workflow.data.auditLog) ? workflow.data.auditLog : [];
+  const latestAudit = auditLog[0] || null;
+  if (revision < 1) fail('Production workflow revision 尚未建立');
+  if (!latestAudit) fail('Production workflow 缺少写入审计记录', { revision });
+  if (Number(latestAudit.revision) !== revision) {
+    fail('Production workflow revision 与最新审计记录不一致', {
+      revision,
+      auditRevision: Number(latestAudit.revision) || 0,
+      action: latestAudit.action || ''
+    });
+  }
+  if (latestAudit.after?.todaySnapshotDateKey !== dateKey || Number(latestAudit.after?.todaySnapshotCount) !== 20) {
+    fail('Production 最新审计记录未保留今日 20 词快照', {
+      dateKey: latestAudit.after?.todaySnapshotDateKey || '',
+      count: Number(latestAudit.after?.todaySnapshotCount) || 0,
+      action: latestAudit.action || ''
+    });
+  }
+
   console.log(JSON.stringify({
     ok: true,
     site: SITE_URL,
@@ -80,7 +100,13 @@ try {
     readyImages: readyImages.length,
     todayResponseBytes: workflow.bytes,
     favoritesResponseBytes: favoritesWorkflow.bytes,
-    revision: Number(workflow.data.revision) || 0,
+    revision,
+    latestMutation: {
+      action: latestAudit.action || '',
+      actor: latestAudit.actor || '',
+      at: latestAudit.at || '',
+      revision: Number(latestAudit.revision) || 0
+    },
     requestId: workflow.requestId
   }, null, 2));
 } catch (error) {
