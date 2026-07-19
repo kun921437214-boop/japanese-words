@@ -3650,6 +3650,27 @@ function isRetryableWorkflowMutationError(error) {
   return !status || status === 408 || status === 429 || status >= 500;
 }
 
+function isFavoriteCommandSatisfied(kanji, action, status = '') {
+  const isFavorite = favorites.includes(kanji);
+  if (action === 'add') return isFavorite;
+  if (action === 'remove') return !isFavorite;
+  if (action === 'status') return isFavorite && getFavoriteStatus(kanji) === cleanFavoriteStatus(status);
+  return false;
+}
+
+function buildReconciledFavoriteCommandResponse(kanji) {
+  return {
+    ok: true,
+    words: favorites,
+    statuses: favoriteStatuses,
+    candidate: candidatePool[kanji] || null,
+    revision: workflowRevision,
+    auditEvent: null,
+    updated: lastCloudSyncAt,
+    schemaVersion: 2
+  };
+}
+
 async function requestFavoriteCommand(kanji, action, status = '') {
   const endpoint = getFavoriteCommandEndpoint(kanji);
   if (!endpoint) throw new Error('收藏同步接口还没有配置');
@@ -3679,6 +3700,9 @@ async function requestFavoriteCommand(kanji, action, status = '') {
       lastError = error;
       if (attempt > 0 || !isRetryableWorkflowMutationError(error)) break;
       const reconciled = await loadCloudWorkflow({ mode: 'remote-first', showMessages: false });
+      if (reconciled && isFavoriteCommandSatisfied(kanji, action, status)) {
+        return buildReconciledFavoriteCommandResponse(kanji);
+      }
       if (error.status === 409 && !reconciled) break;
       await new Promise(resolve => {
         setTimeout(resolve, 250);

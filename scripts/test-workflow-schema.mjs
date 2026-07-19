@@ -252,6 +252,8 @@ test('前端收藏使用小命令响应并防止旧同步覆盖新版本', () =>
   assert.ok(appSource.includes('for (let attempt = 0; attempt < 2; attempt += 1)'));
   assert.ok(appSource.includes('operationId,'));
   assert.ok(appSource.includes('timeoutMs: 30000'));
+  assert.ok(appSource.includes('function isFavoriteCommandSatisfied(kanji, action, status = \'\')'));
+  assert.ok(appSource.includes('return buildReconciledFavoriteCommandResponse(kanji);'));
   assert.ok(appSource.includes("if (error.status === 409 && !reconciled) break;"));
   assert.ok(appSource.includes('const previousFavorites = [...favorites];'));
   assert.ok(appSource.includes('if (cloudWorkflowFailed) {'));
