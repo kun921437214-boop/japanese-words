@@ -56,6 +56,12 @@ Remove inline HTML handlers only after the corresponding page module has executa
   - `index.html` no longer contains inline click/change/keydown handlers, and primary navigation now supports Enter/Space keyboard activation;
   - eight temporary `window` exports were removed after executable controller tests covered routing, outside-overlay safety, restore changes, keyboard navigation, error handling, and cleanup;
   - desktop and mobile browser checks cover navigation, automatic sidebar close, settings open/close, backup/restore entry visibility, Escape, keyboard navigation, and horizontal overflow.
+- Manual-word modal — completed:
+  - `frontend/manual-word-modal.mjs` owns delegated new-word submission, duplicate confirmation, detail opening, and close actions;
+  - generated manual-word modal markup no longer contains inline click handlers, and three temporary `window` exports were removed;
+  - validation, duplicate handling, team sync, and DeepSeek generation behavior remain in the existing application services;
+  - executable tests cover action routing, outside-root isolation, async failures, cleanup, and compatibility-facade removal;
+  - browser checks cover empty-word validation, cancel/close actions, and reopening without creating or syncing a word.
 - Next, move remaining generated modal interactions behind delegated controllers in small groups.
 - Remove each temporary `window` export only after its last inline consumer has an executable interaction test.
 - Keep generation, Cloudflare sync, KV, and workflow mutation behavior unchanged while reducing browser-global state.

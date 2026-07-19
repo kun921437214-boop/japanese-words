@@ -15,6 +15,7 @@ import {
   transitionFavoriteStatus,
   transitionFavoriteToggle
 } from './frontend/favorites-page.mjs';
+import { createManualWordModalController } from './frontend/manual-word-modal.mjs';
 import {
   buildPublishedPageModel,
   createPublishedPageController,
@@ -7048,7 +7049,7 @@ function openManualWordModal() {
     <div class="modal-shell record-shell">
       <div class="modal-header settings-header">
         <h2 class="modal-title">添加单词</h2>
-        <button class="modal-close" onclick="closeModal()">×</button>
+        <button class="modal-close" data-manual-word-action="close">×</button>
       </div>
       <div class="modal-body form-modal-body">
         <div class="form-grid two-col">
@@ -7058,8 +7059,8 @@ function openManualWordModal() {
         </div>
         <div class="published-score-note">添加后会先进入团队选题池；DeepSeek 词卡会随后生成。生成失败不会删除这个词。</div>
         <div class="modal-footer-actions form-actions">
-          <button class="btn btn-ghost" onclick="closeModal()">取消</button>
-          <button class="btn btn-primary" onclick="submitManualWord()">添加并生成词卡</button>
+          <button class="btn btn-ghost" data-manual-word-action="close">取消</button>
+          <button class="btn btn-primary" data-manual-word-action="submit">添加并生成词卡</button>
         </div>
       </div>
     </div>`;
@@ -7095,7 +7096,7 @@ function openManualWordDuplicateModal(kanji, state, options = {}) {
     <div class="modal-shell record-shell">
       <div class="modal-header settings-header">
         <h2 class="modal-title">${escapeHTML(copy.title)}</h2>
-        <button class="modal-close" onclick="closeModal()">×</button>
+        <button class="modal-close" data-manual-word-action="close">×</button>
       </div>
       <div class="modal-body form-modal-body">
         <div class="modal-section compact-section">
@@ -7103,9 +7104,9 @@ function openManualWordDuplicateModal(kanji, state, options = {}) {
           <div class="modal-section-content">${escapeHTML(copy.body)}</div>
         </div>
         <div class="modal-footer-actions form-actions">
-          ${state === 'favorite' ? '' : `<button class="btn btn-primary" data-manual-options="${optionsJson}" onclick="confirmAddExistingManualWord('${escapeJSString(cleanKanji)}', this.dataset.manualOptions)">加入选题池</button>`}
-          <button class="btn btn-ghost" onclick="openDetail('${escapeJSString(cleanKanji)}')">打开详情</button>
-          <button class="btn btn-ghost" onclick="closeModal()">取消</button>
+          ${state === 'favorite' ? '' : `<button class="btn btn-primary" data-manual-word-action="confirm-existing" data-kanji="${escapeHTML(cleanKanji)}" data-manual-options="${optionsJson}">加入选题池</button>`}
+          <button class="btn btn-ghost" data-manual-word-action="open-detail" data-kanji="${escapeHTML(cleanKanji)}">打开详情</button>
+          <button class="btn btn-ghost" data-manual-word-action="close">取消</button>
         </div>
       </div>
     </div>`;
@@ -9784,7 +9785,6 @@ Object.assign(window, {
   exportSelected,
   shiftHistoryDate,
   setStatusFilter,
-  openManualWordModal,
   openPublishedRecordModal,
   refreshPublishedMetrics,
   renderPublished,
@@ -9792,8 +9792,6 @@ Object.assign(window, {
   generateTodayAiCard,
   generateDeepSeekWordCard,
   closeModal,
-  submitManualWord,
-  confirmAddExistingManualWord,
   openDetail,
   selectFavoriteStatus,
   toggleStatusMenu,
@@ -9833,6 +9831,18 @@ createAppShellController({
   onError: error => {
     console.warn('应用外壳操作失败', error);
     showToast('页面操作失败，请刷新后重试');
+  }
+});
+
+createManualWordModalController({
+  root: document.getElementById('modalContainer'),
+  onClose: closeModal,
+  onSubmit: submitManualWord,
+  onConfirmExisting: confirmAddExistingManualWord,
+  onOpenDetail: openDetail,
+  onError: error => {
+    console.warn('手动词弹窗操作失败', error);
+    showToast('手动词操作失败，请稍后重试');
   }
 });
 

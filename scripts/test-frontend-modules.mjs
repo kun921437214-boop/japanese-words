@@ -17,6 +17,7 @@ import {
   transitionFavoriteStatus,
   transitionFavoriteToggle
 } from '../frontend/favorites-page.mjs';
+import { createManualWordModalController } from '../frontend/manual-word-modal.mjs';
 import {
   buildPublishedPageModel,
   createPublishedPageController,
@@ -208,6 +209,71 @@ test('app shell controller routes restore changes, keyboard navigation and error
     ['escape']
   ]);
   assert.deepEqual(errors, ['backup failed']);
+});
+
+test('manual word modal controller routes close, submit, duplicate confirmation and detail actions', () => {
+  const listeners = new Map();
+  const root = {
+    addEventListener: (type, listener) => listeners.set(type, listener),
+    removeEventListener: type => listeners.delete(type),
+    contains: () => true
+  };
+  const calls = [];
+  const controller = createManualWordModalController({
+    root,
+    onClose: () => calls.push(['close']),
+    onSubmit: () => calls.push(['submit']),
+    onConfirmExisting: (kanji, rawOptions) => calls.push(['confirm', kanji, rawOptions]),
+    onOpenDetail: kanji => calls.push(['detail', kanji])
+  });
+  const action = (name, dataset = {}) => {
+    const element = { dataset: { manualWordAction: name, ...dataset } };
+    element.closest = selector => selector === '[data-manual-word-action]' ? element : null;
+    return element;
+  };
+  const click = target => listeners.get('click')({ target });
+
+  click(action('close'));
+  click(action('submit'));
+  click(action('confirm-existing', {
+    kanji: '抜け感',
+    manualOptions: '{"discoverySource":"小红书"}'
+  }));
+  click(action('open-detail', { kanji: '抜け感' }));
+
+  assert.deepEqual(calls, [
+    ['close'],
+    ['submit'],
+    ['confirm', '抜け感', '{"discoverySource":"小红书"}'],
+    ['detail', '抜け感']
+  ]);
+  controller.destroy();
+  assert.equal(listeners.size, 0);
+});
+
+test('manual word modal controller ignores outside actions and reports async failures', async () => {
+  const listeners = new Map();
+  const root = {
+    addEventListener: (type, listener) => listeners.set(type, listener),
+    removeEventListener: type => listeners.delete(type),
+    contains: element => element.inside !== false
+  };
+  const errors = [];
+  createManualWordModalController({
+    root,
+    onSubmit: async () => { throw new Error('submit failed'); },
+    onClose: () => { throw new Error('outside action should be ignored'); },
+    onError: error => errors.push(error.message)
+  });
+  const outside = { dataset: { manualWordAction: 'close' }, inside: false };
+  outside.closest = () => outside;
+  listeners.get('click')({ target: outside });
+  const submit = { dataset: { manualWordAction: 'submit' }, inside: true };
+  submit.closest = () => submit;
+  listeners.get('click')({ target: submit });
+  await Promise.resolve();
+
+  assert.deepEqual(errors, ['submit failed']);
 });
 
 test('favorite conflict reconciles remote state before sending a duplicate mutation', async () => {
@@ -834,6 +900,7 @@ test('module migration keeps only remaining generated inline handlers in the com
   const facade = appSource.slice(facadeStart, facadeEnd);
   assert.ok(indexSource.includes('<script type="module" src="app.js"></script>'));
   assert.ok(appSource.includes("from './frontend/app-shell.mjs'"));
+  assert.ok(appSource.includes("from './frontend/manual-word-modal.mjs'"));
   assert.ok(appSource.includes("from './frontend/word-card-view.mjs'"));
   assert.ok(appSource.includes('buildWordCardViewModel'));
   assert.ok(facadeStart > 0);
@@ -846,6 +913,7 @@ test('module migration keeps only remaining generated inline handlers in the com
   const dailyHotCardSource = appSource.slice(appSource.indexOf('function renderTodayCard'), appSource.indexOf('function getCodexDraftAuditItem'));
   const codexPreviewCardSource = appSource.slice(appSource.indexOf('function renderCodexDraftPreviewCard'), appSource.indexOf('function openCodexDraftPreview'));
   const dailyHotGridSource = appSource.slice(appSource.indexOf('function renderTodayGrid'), appSource.indexOf('function renderHistoryGrid'));
+  const manualWordModalSource = appSource.slice(appSource.indexOf('function openManualWordModal'), appSource.indexOf('async function syncManualWordWorkflow'));
   assert.doesNotMatch(favoritesMarkup, /on(?:click|change)=/);
   assert.doesNotMatch(favoriteCardSource, /onclick=/);
   assert.doesNotMatch(publishedMarkup, /onclick=/);
@@ -854,6 +922,8 @@ test('module migration keeps only remaining generated inline handlers in the com
   assert.doesNotMatch(dailyHotCardSource, /onclick=/);
   assert.doesNotMatch(codexPreviewCardSource, /on(?:click|keydown)=/);
   assert.doesNotMatch(dailyHotGridSource, /onclick=/);
+  assert.doesNotMatch(manualWordModalSource, /onclick=/);
+  assert.ok(manualWordModalSource.includes('data-manual-word-action="submit"'));
   assert.doesNotMatch(indexSource, /on(?:click|change|keydown)=/);
   assert.ok(indexSource.includes('data-app-shell-action="switch-tab"'));
   [
@@ -864,5 +934,10 @@ test('module migration keeps only remaining generated inline handlers in the com
     'exportWorkflowBackup',
     'selectWorkflowBackupForRestore',
     'restoreWorkflowBackup'
+  ].forEach(handler => assert.doesNotMatch(facade, new RegExp(`\\b${handler}\\b`), `unexpected window handler: ${handler}`));
+  [
+    'openManualWordModal',
+    'submitManualWord',
+    'confirmAddExistingManualWord'
   ].forEach(handler => assert.doesNotMatch(facade, new RegExp(`\\b${handler}\\b`), `unexpected window handler: ${handler}`));
 });
