@@ -1,4 +1,5 @@
 import { createApiClient } from './frontend/api-client.mjs';
+import { createAppShellController } from './frontend/app-shell.mjs';
 import {
   buildDailyHotDateOptions,
   buildDailyHotSourceFilterModel,
@@ -9381,10 +9382,6 @@ function closeModal() {
   hasUnsavedFormChanges = false;
 }
 
-function closeModalOutside(event) {
-  if (event.target === document.getElementById('modalOverlay')) closeModal();
-}
-
 function resetTransientUiState() {
   activeStatusMenuKanji = null;
   activeFeedbackMenuKanji = null;
@@ -9678,15 +9675,6 @@ function showToast(message) {
   setTimeout(() => toast.classList.remove('show'), 2200);
 }
 
-document.addEventListener('keydown', event => {
-  if (event.key === 'Escape') {
-    closeStatusMenu();
-    closeDailyManageMenu();
-    closeModal();
-    closeSettingsModal();
-  }
-});
-
 document.addEventListener('click', event => {
   if (!event.target.closest('.action-menu')) {
     closeDailyManageMenu();
@@ -9787,9 +9775,6 @@ window.addEventListener('online', () => {
 
 // Compatibility facade for existing inline handlers while page modules are migrated incrementally.
 Object.assign(window, {
-  toggleSidebar,
-  switchTab,
-  openSettingsModal,
   setDailyHotDate,
   setSourceFilter,
   refreshData,
@@ -9803,11 +9788,6 @@ Object.assign(window, {
   openPublishedRecordModal,
   refreshPublishedMetrics,
   renderPublished,
-  closeModalOutside,
-  closeSettingsModal,
-  exportWorkflowBackup,
-  selectWorkflowBackupForRestore,
-  restoreWorkflowBackup,
   toggleAiPreviewSelection,
   generateTodayAiCard,
   generateDeepSeekWordCard,
@@ -9832,6 +9812,28 @@ Object.assign(window, {
   autofillPublishedRecordFromLink,
   savePublishedRecord,
   openPublishedDetail
+});
+
+createAppShellController({
+  root: document,
+  onToggleSidebar: toggleSidebar,
+  onSwitchTab: switchTab,
+  onOpenSettings: openSettingsModal,
+  onCloseSettings: closeSettingsModal,
+  onCloseModal: closeModal,
+  onExportBackup: exportWorkflowBackup,
+  onSelectRestore: selectWorkflowBackupForRestore,
+  onRestoreWorkflow: restoreWorkflowBackup,
+  onEscape: () => {
+    closeStatusMenu();
+    closeDailyManageMenu();
+    closeModal();
+    closeSettingsModal();
+  },
+  onError: error => {
+    console.warn('应用外壳操作失败', error);
+    showToast('页面操作失败，请刷新后重试');
+  }
 });
 
 createDailyHotPageController({

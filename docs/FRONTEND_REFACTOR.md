@@ -49,9 +49,14 @@ Extract one page at a time:
 
 Remove inline HTML handlers only after the corresponding page module has executable interaction tests.
 
-## Next: Phase 4 — Compatibility Facade Reduction
+## In Progress: Phase 4 — Compatibility Facade Reduction
 
-- Move remaining modal and settings interactions behind delegated controllers in small groups.
+- Application shell — completed:
+  - `frontend/app-shell.mjs` owns delegated mobile-sidebar, primary-navigation, settings, backup/restore, outside-overlay, and Escape-key events;
+  - `index.html` no longer contains inline click/change/keydown handlers, and primary navigation now supports Enter/Space keyboard activation;
+  - eight temporary `window` exports were removed after executable controller tests covered routing, outside-overlay safety, restore changes, keyboard navigation, error handling, and cleanup;
+  - desktop and mobile browser checks cover navigation, automatic sidebar close, settings open/close, backup/restore entry visibility, Escape, keyboard navigation, and horizontal overflow.
+- Next, move remaining generated modal interactions behind delegated controllers in small groups.
 - Remove each temporary `window` export only after its last inline consumer has an executable interaction test.
 - Keep generation, Cloudflare sync, KV, and workflow mutation behavior unchanged while reducing browser-global state.
 

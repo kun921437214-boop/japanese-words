@@ -11,7 +11,7 @@
 </head>
 <body>
 <div class="app-layout">
-  <button class="mobile-toggle" onclick="toggleSidebar()" aria-label="菜单">☰</button>
+  <button class="mobile-toggle" data-app-shell-action="toggle-sidebar" aria-label="菜单">☰</button>
   <aside class="sidebar" id="sidebar">
     <div class="sidebar-header">
       <div class="sidebar-brand">
@@ -24,17 +24,17 @@
       </div>
     </div>
     <nav class="sidebar-nav">
-      <div class="nav-item active" data-tab="today" onclick="switchTab('today')">
+      <div class="nav-item active" data-app-shell-action="switch-tab" data-tab="today" role="button" tabindex="0">
         <span class="nav-icon"><img src="assets/illustrations/memory-bread.png" alt=""></span>
         <span class="nav-label">每日热门</span>
         <span class="nav-badge" id="todayBadge">20</span>
       </div>
-      <div class="nav-item" data-tab="favorites" onclick="switchTab('favorites')">
+      <div class="nav-item" data-app-shell-action="switch-tab" data-tab="favorites" role="button" tabindex="0">
         <span class="nav-icon"><img src="assets/illustrations/anywhere-door.png" alt=""></span>
         <span class="nav-label">我的收藏 / 选题池</span>
         <span class="nav-badge" id="favBadge" style="display:none">0</span>
       </div>
-      <div class="nav-item" data-tab="published" onclick="switchTab('published')">
+      <div class="nav-item" data-app-shell-action="switch-tab" data-tab="published" role="button" tabindex="0">
         <span class="nav-icon"><img src="assets/illustrations/time-machine.png" alt=""></span>
         <span class="nav-label">已发布</span>
         <span class="nav-badge" id="publishedBadge" style="display:none">0</span>
@@ -44,7 +44,7 @@
       <div class="sidebar-illustration sidebar-illustration-bottom" aria-hidden="true">
         <img class="design-asset design-asset-sidebar-bottom" src="assets/illustrations/doraemon-door-bread.png" alt="" onerror="this.parentElement.classList.add('asset-missing');this.remove()">
       </div>
-      <button class="settings-btn" onclick="openSettingsModal()" title="设置">⚙️ 设置</button>
+      <button class="settings-btn" data-app-shell-action="open-settings" title="设置">⚙️ 设置</button>
       记忆面包 × 热门日语口袋道具<br>© 2026 每日灵感，为你而来
     </div>
   </aside>
@@ -184,10 +184,10 @@
     </div>
   </main>
 </div>
-<div class="modal-overlay" id="modalOverlay" onclick="closeModalOutside(event)">
+<div class="modal-overlay" id="modalOverlay" data-app-shell-action="close-modal-outside">
   <div class="modal-container" id="modalContainer"></div>
 </div>
-<div class="modal-overlay" id="settingsOverlay" onclick="if(event.target===this)closeSettingsModal()">
+<div class="modal-overlay" id="settingsOverlay" data-app-shell-action="close-settings-outside">
   <div class="modal-container settings-modal">
     <div class="settings-decor" aria-hidden="true">
       <img class="design-asset design-asset-settings-left" src="assets/illustrations/doraemon-door-bread.png" alt="" onerror="this.remove()">
@@ -199,7 +199,7 @@
     </div>
     <div class="modal-header settings-header">
       <h2 class="modal-title">公共收藏</h2>
-      <button class="modal-close" onclick="closeSettingsModal()">×</button>
+      <button class="modal-close" data-app-shell-action="close-settings">×</button>
     </div>
     <div class="modal-body settings-body">
       <p id="syncIntro" class="settings-copy">
@@ -208,10 +208,10 @@
       <div class="settings-divider" aria-hidden="true">🍞</div>
       <div id="tokenStatus" class="settings-status"></div>
       <div class="settings-actions">
-        <button class="btn btn-ghost" onclick="exportWorkflowBackup()">导出全部选题数据</button>
-        <button class="btn btn-ghost" onclick="selectWorkflowBackupForRestore()">校验并恢复备份</button>
-        <input id="workflowRestoreInput" type="file" accept="application/json,.json" hidden onchange="restoreWorkflowBackup(event)">
-        <button class="btn btn-primary" onclick="closeSettingsModal()">知道了 ✓</button>
+        <button class="btn btn-ghost" data-app-shell-action="export-backup">导出全部选题数据</button>
+        <button class="btn btn-ghost" data-app-shell-action="select-restore">校验并恢复备份</button>
+        <input id="workflowRestoreInput" type="file" accept="application/json,.json" hidden data-app-shell-action="restore-workflow">
+        <button class="btn btn-primary" data-app-shell-action="close-settings">知道了 ✓</button>
       </div>
     </div>
   </div>

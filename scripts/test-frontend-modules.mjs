@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import test from 'node:test';
 import { createApiClient, createApiError, getApiErrorMessage } from '../frontend/api-client.mjs';
+import { createAppShellController } from '../frontend/app-shell.mjs';
 import {
   buildDailyHotDateOptions,
   buildDailyHotSourceFilterModel,
@@ -113,6 +114,100 @@ test('API errors preserve status, code and request id', () => {
   assert.equal(error.code, 'REVISION_CONFLICT');
   assert.equal(error.retryable, true);
   assert.equal(error.requestId, 'request-123');
+});
+
+test('app shell controller routes navigation, settings, backup and outside-overlay actions', () => {
+  const listeners = new Map();
+  const root = {
+    addEventListener: (type, listener) => listeners.set(type, listener),
+    removeEventListener: type => listeners.delete(type),
+    contains: () => true
+  };
+  const calls = [];
+  const controller = createAppShellController({
+    root,
+    onToggleSidebar: () => calls.push(['sidebar']),
+    onSwitchTab: tab => calls.push(['tab', tab]),
+    onOpenSettings: () => calls.push(['settings', 'open']),
+    onCloseSettings: () => calls.push(['settings', 'close']),
+    onCloseModal: () => calls.push(['modal', 'close']),
+    onExportBackup: () => calls.push(['backup', 'export']),
+    onSelectRestore: () => calls.push(['backup', 'select'])
+  });
+  const action = (name, dataset = {}) => {
+    const element = { dataset: { appShellAction: name, ...dataset } };
+    element.closest = selector => selector === '[data-app-shell-action]' ? element : null;
+    return element;
+  };
+  const click = target => listeners.get('click')({ target });
+
+  click(action('toggle-sidebar'));
+  click(action('switch-tab', { tab: 'favorites' }));
+  click(action('open-settings'));
+  click(action('close-settings'));
+  click(action('export-backup'));
+  click(action('select-restore'));
+  const modalOverlay = action('close-modal-outside');
+  click({ closest: () => modalOverlay });
+  assert.equal(calls.some(call => call[0] === 'modal'), false);
+  click(modalOverlay);
+  const settingsOverlay = action('close-settings-outside');
+  click(settingsOverlay);
+
+  assert.deepEqual(calls, [
+    ['sidebar'],
+    ['tab', 'favorites'],
+    ['settings', 'open'],
+    ['settings', 'close'],
+    ['backup', 'export'],
+    ['backup', 'select'],
+    ['modal', 'close'],
+    ['settings', 'close']
+  ]);
+  controller.destroy();
+  assert.equal(listeners.size, 0);
+});
+
+test('app shell controller routes restore changes, keyboard navigation and errors safely', () => {
+  const listeners = new Map();
+  const root = {
+    addEventListener: (type, listener) => listeners.set(type, listener),
+    removeEventListener: type => listeners.delete(type),
+    contains: () => true
+  };
+  const calls = [];
+  const errors = [];
+  createAppShellController({
+    root,
+    onSwitchTab: tab => calls.push(['tab', tab]),
+    onRestoreWorkflow: event => calls.push(['restore', event.target.dataset.fileName]),
+    onEscape: () => calls.push(['escape']),
+    onExportBackup: () => { throw new Error('backup failed'); },
+    onError: error => errors.push(error.message)
+  });
+  const action = (name, dataset = {}) => {
+    const element = { dataset: { appShellAction: name, ...dataset } };
+    element.closest = selector => selector === '[data-app-shell-action]' ? element : null;
+    return element;
+  };
+  const restoreInput = action('restore-workflow', { fileName: 'backup.json' });
+  listeners.get('change')({ target: restoreInput });
+  let prevented = false;
+  listeners.get('keydown')({
+    key: 'Enter',
+    target: action('switch-tab', { tab: 'published' }),
+    preventDefault: () => { prevented = true; }
+  });
+  listeners.get('keydown')({ key: 'Escape', target: {} });
+  listeners.get('click')({ target: action('export-backup') });
+
+  assert.equal(prevented, true);
+  assert.deepEqual(calls, [
+    ['restore', 'backup.json'],
+    ['tab', 'published'],
+    ['escape']
+  ]);
+  assert.deepEqual(errors, ['backup failed']);
 });
 
 test('favorite conflict reconciles remote state before sending a duplicate mutation', async () => {
@@ -723,7 +818,7 @@ test('word card view centralizes fallback data and failure copy', () => {
   assert.match(view.unavailableMessage, /生成失败/);
 });
 
-test('module migration exposes every inline handler through the compatibility facade', () => {
+test('module migration keeps only remaining generated inline handlers in the compatibility facade', () => {
   const indexSource = fs.readFileSync(new URL('../index.html', import.meta.url), 'utf8');
   const appSource = fs.readFileSync(new URL('../app.js', import.meta.url), 'utf8');
   const combined = `${indexSource}\n${appSource}`;
@@ -738,6 +833,7 @@ test('module migration exposes every inline handler through the compatibility fa
   const facadeEnd = appSource.indexOf('\n});', facadeStart);
   const facade = appSource.slice(facadeStart, facadeEnd);
   assert.ok(indexSource.includes('<script type="module" src="app.js"></script>'));
+  assert.ok(appSource.includes("from './frontend/app-shell.mjs'"));
   assert.ok(appSource.includes("from './frontend/word-card-view.mjs'"));
   assert.ok(appSource.includes('buildWordCardViewModel'));
   assert.ok(facadeStart > 0);
@@ -758,4 +854,15 @@ test('module migration exposes every inline handler through the compatibility fa
   assert.doesNotMatch(dailyHotCardSource, /onclick=/);
   assert.doesNotMatch(codexPreviewCardSource, /on(?:click|keydown)=/);
   assert.doesNotMatch(dailyHotGridSource, /onclick=/);
+  assert.doesNotMatch(indexSource, /on(?:click|change|keydown)=/);
+  assert.ok(indexSource.includes('data-app-shell-action="switch-tab"'));
+  [
+    'toggleSidebar',
+    'switchTab',
+    'openSettingsModal',
+    'closeSettingsModal',
+    'exportWorkflowBackup',
+    'selectWorkflowBackupForRestore',
+    'restoreWorkflowBackup'
+  ].forEach(handler => assert.doesNotMatch(facade, new RegExp(`\\b${handler}\\b`), `unexpected window handler: ${handler}`));
 });
