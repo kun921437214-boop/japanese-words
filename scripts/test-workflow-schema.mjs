@@ -68,27 +68,24 @@ test('前端初始化不会自动触发今日推荐生成', () => {
 
 test('首次 pageshow 不会取消手机端初始化同步，BFCache 恢复时才重新同步', () => {
   const appSource = fs.readFileSync(new URL('../app.js', import.meta.url), 'utf8');
+  const syncSource = fs.readFileSync(new URL('../frontend/workflow-sync.mjs', import.meta.url), 'utf8');
   assert.ok(appSource.includes("window.addEventListener('pageshow', event =>"));
   assert.ok(appSource.includes('if (!event.persisted) return;'));
-  assert.ok(appSource.includes('timeoutMs: 45000'));
+  assert.ok(syncSource.includes('timeoutMs: config.timeoutMs || 45000'));
   assert.ok(appSource.includes('void syncRemoteDataInBackground();'));
 });
 
 test('移动端本地缓存超额不会把成功的云端同步误判为失败', () => {
   const appSource = fs.readFileSync(new URL('../app.js', import.meta.url), 'utf8');
-  assert.ok(appSource.includes('const LOCAL_WORKFLOW_CACHE_CANDIDATE_LIMIT = 120;'));
-  assert.ok(appSource.includes('function buildLocalWorkflowCachePayload(payload = {})'));
-  assert.ok(appSource.includes('...safeArray(cleanPayload.todaySnapshot?.words)'));
-  assert.ok(appSource.includes('candidatePool: compactCandidatePool'));
-  assert.ok(appSource.includes('aiBatches: []'));
-  assert.ok(appSource.includes('function setLocalStorageItemSafely(key, value)'));
-  assert.ok(appSource.includes("console.warn('本地缓存写入失败，已保留当前云端数据'"));
+  const cacheSource = fs.readFileSync(new URL('../frontend/workflow-cache.mjs', import.meta.url), 'utf8');
+  assert.ok(appSource.includes('const LOCAL_WORKFLOW_CACHE_CANDIDATE_LIMIT = DEFAULT_CANDIDATE_LIMIT;'));
+  assert.ok(appSource.includes('const workflowCache = createWorkflowCache({'));
+  assert.ok(cacheSource.includes('...safeArray(cleaned.todaySnapshot?.words)'));
+  assert.ok(cacheSource.includes('candidatePool: compactCandidatePool'));
+  assert.ok(cacheSource.includes('aiBatches: []'));
+  assert.ok(cacheSource.includes("logger.warn('本地缓存写入失败，已保留当前云端数据'"));
   assert.ok(appSource.includes('const workflowCached = writeLocalWorkflowCache(payload);'));
-  const workflowCacheSource = appSource.slice(
-    appSource.indexOf('function saveLocalWorkflow()'),
-    appSource.indexOf('const activeApiControllers')
-  );
-  assert.equal((workflowCacheSource.match(/localStorage\.setItem\(/g) || []).length, 1);
+  assert.equal((cacheSource.match(/storage\.setItem\(/g) || []).length, 1);
 });
 
 test('候选池后台从用户界面下线但内部日更数据结构保持不变', () => {
@@ -199,15 +196,17 @@ test('app 工作流只返回页面所需候选且不改变云端完整候选池'
 
 test('前端按页面加载候选并在收藏数据到齐前禁止渲染', () => {
   const appSource = fs.readFileSync(new URL('../app.js', import.meta.url), 'utf8');
-  assert.ok(appSource.includes('const loadedWorkflowScopes = new Set();'));
+  const storeSource = fs.readFileSync(new URL('../frontend/workflow-store.mjs', import.meta.url), 'utf8');
+  assert.ok(appSource.includes('const workflowStore = createWorkflowStore({'));
+  assert.ok(storeSource.includes('const loadedScopes = new Set();'));
   assert.ok(appSource.includes('function ensureWorkflowScopeLoaded(scope, options = {})'));
   assert.ok(appSource.includes("if (!isWorkflowScopeLoaded('favorites'))"));
   assert.ok(appSource.includes("renderWorkflowScopeState('favorites');"));
   assert.ok(appSource.includes("scope: cleanScope,"));
   assert.ok(appSource.includes('mergeCandidatePool: true'));
-  assert.ok(appSource.includes('const mergePartialState = Boolean(options.mergeCandidatePool || data.appView?.partialCandidatePool);'));
-  assert.ok(appSource.includes('historySnapshots = mergePartialState ? mergeHistorySnapshots'));
-  assert.ok(appSource.includes('getUniqueWords(data.words).map(normalizeKanjiSpelling)'));
+  assert.ok(storeSource.includes('const mergePartialState = Boolean(config.mergeCandidatePool || data.appView?.partialCandidatePool);'));
+  assert.ok(storeSource.includes('? mergeHistorySnapshots(currentState.historySnapshots, data.historySnapshots)'));
+  assert.ok(appSource.includes('applyWorkflowData(prepared.state);'));
 });
 
 test('收藏命令只返回小响应且状态操作可补回缺失收藏', () => {
@@ -235,9 +234,11 @@ test('收藏命令只返回小响应且状态操作可补回缺失收藏', () =>
 
 test('前端收藏使用小命令响应并防止旧同步覆盖新版本', () => {
   const appSource = fs.readFileSync(new URL('../app.js', import.meta.url), 'utf8');
+  const syncSource = fs.readFileSync(new URL('../frontend/workflow-sync.mjs', import.meta.url), 'utf8');
+  const storeSource = fs.readFileSync(new URL('../frontend/workflow-store.mjs', import.meta.url), 'utf8');
   const commandSource = appSource.slice(
     appSource.indexOf('function buildFavoriteCommandPayload'),
-    appSource.indexOf('function isRetryableWorkflowReadError')
+    appSource.indexOf('function isFavoriteCommandSatisfied')
   );
   assert.ok(appSource.includes("url.searchParams.set('view', 'command');"));
   assert.ok(appSource.includes('function applyFavoriteCommandResponse(responseData, kanji)'));
@@ -245,16 +246,16 @@ test('前端收藏使用小命令响应并防止旧同步覆盖新版本', () =>
   assert.equal(commandSource.includes('publishedRecords'), false);
   assert.equal(commandSource.includes('aiBatches'), false);
   assert.equal(commandSource.includes('aiPreview'), false);
-  assert.ok(appSource.includes('data.revision < workflowRevision'));
-  assert.ok(appSource.includes("error?.code === 'REQUEST_ABORTED'"));
-  assert.ok(appSource.includes('function isRetryableWorkflowMutationError(error)'));
+  assert.ok(storeSource.includes('data.revision < revision'));
+  assert.ok(syncSource.includes("error?.code === 'REQUEST_ABORTED'"));
+  assert.ok(syncSource.includes('function isRetryableWorkflowMutationError(error)'));
   assert.ok(appSource.includes('async function requestFavoriteCommand(kanji, action, status = \'\')'));
-  assert.ok(appSource.includes('for (let attempt = 0; attempt < 2; attempt += 1)'));
+  assert.ok(syncSource.includes('for (let attempt = 0; attempt < 2; attempt += 1)'));
   assert.ok(appSource.includes('operationId,'));
-  assert.ok(appSource.includes('timeoutMs: 30000'));
+  assert.ok(syncSource.includes('timeoutMs: config.timeoutMs || 30000'));
   assert.ok(appSource.includes('function isFavoriteCommandSatisfied(kanji, action, status = \'\')'));
-  assert.ok(appSource.includes('return buildReconciledFavoriteCommandResponse(kanji);'));
-  assert.ok(appSource.includes("if (error.status === 409 && !reconciled) break;"));
+  assert.ok(appSource.includes('buildReconciledResponse: () => buildReconciledFavoriteCommandResponse(kanji)'));
+  assert.ok(syncSource.includes("if (error?.status === 409 && !reconciled) break;"));
   assert.ok(appSource.includes('const previousFavorites = [...favorites];'));
   assert.ok(appSource.includes('if (cloudWorkflowFailed) {'));
   assert.ok(appSource.includes("window.addEventListener('online', () =>"));
@@ -286,8 +287,8 @@ test('Codex 组合生成器版本在前端保持为当日快照', () => {
   const appSource = fs.readFileSync(new URL('../app.js', import.meta.url), 'utf8');
   assert.ok(appSource.includes('function isCompatibleTodaySnapshotGeneratorVersion(value'));
   assert.ok(appSource.includes("generatorVersion.startsWith(`${TODAY_SNAPSHOT_GENERATOR_VERSION}+`)"));
-  assert.ok(appSource.includes("source: cleanShortText(snapshot.source || 'candidatePool', 80)"));
-  assert.ok(appSource.includes("['server', 'frontend', 'worker', 'manual', 'codex'].includes(snapshot.createdBy)"));
+  assert.ok(appSource.includes('cleanTodaySnapshot as cleanSharedTodaySnapshot'));
+  assert.ok(appSource.includes('return cleanSharedTodaySnapshot(snapshot);'));
   assert.ok(appSource.includes('&& isCompatibleTodaySnapshotGeneratorVersion(cleanSnapshot.generatorVersion)'));
 });
 

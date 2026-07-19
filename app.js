@@ -1,3 +1,17 @@
+import { createApiClient } from './frontend/api-client.mjs';
+import { createWorkflowCache, DEFAULT_CANDIDATE_LIMIT } from './frontend/workflow-cache.mjs';
+import { createWorkflowStore } from './frontend/workflow-store.mjs';
+import { createWorkflowSync } from './frontend/workflow-sync.mjs';
+import {
+  cleanHistorySnapshot as cleanSharedHistorySnapshot,
+  cleanHistorySnapshots as cleanSharedHistorySnapshots,
+  cleanTodaySnapshot as cleanSharedTodaySnapshot,
+  cleanTodaySnapshotHistory as cleanSharedTodaySnapshotHistory,
+  mergeHistorySnapshots as mergeSharedHistorySnapshots,
+  mergeTodaySnapshot as mergeSharedTodaySnapshot,
+  mergeTodaySnapshotHistory as mergeSharedTodaySnapshotHistory
+} from './shared/workflow-schema.mjs';
+
 /* ═══════════════════════════════════════════
    记忆面包 — 小红书日语选题推荐系统（Phase 1）
    保持旧收藏 / 状态 / Cloudflare KV 兼容
@@ -17,8 +31,6 @@ let aiBatches = [];
 let todaySnapshot = {};
 let historySnapshots = {};
 let todaySnapshotHistory = [];
-let workflowRevision = 0;
-let workflowAuditLog = [];
 let libraryReviewRecords = {};
 let libraryAuditCoverage = {
   total: 0,
@@ -64,7 +76,6 @@ const CANDIDATE_POOL_DAILY_INTAKE = 50;
 const CANDIDATE_POOL_MIN_SCORE = 60;
 const TODAY_HISTORY_DEDUP_DAYS = 30;
 const TODAY_HISTORY_DEDUP_RELAX_STEPS = [TODAY_HISTORY_DEDUP_DAYS];
-const TODAY_SNAPSHOT_HISTORY_LIMIT = 45;
 const ACTIVE_TAB_STORAGE_KEY = 'kotoba_active_tab';
 const SOURCE_FILTER_STORAGE_PREFIX = 'kotoba_source_filter_';
 const STATUS_FILTER_STORAGE_KEY = 'kotoba_status_filter';
@@ -2850,117 +2861,27 @@ function isCompatibleTodaySnapshotGeneratorVersion(value = '') {
 }
 
 function cleanTodaySnapshot(snapshot = {}) {
-  const snapshotDateKey = /^\d{4}-\d{2}-\d{2}$/.test(String(snapshot.dateKey || ''))
-    ? String(snapshot.dateKey)
-    : '';
-  return {
-    dateKey: snapshotDateKey,
-    words: getUniqueWords(snapshot.words || []).slice(0, WORDS_PER_DAY),
-    generatedAt: typeof snapshot.generatedAt === 'string' ? snapshot.generatedAt : '',
-    source: cleanShortText(snapshot.source || 'candidatePool', 80) || 'candidatePool',
-    batchIds: getUniqueWords(snapshot.batchIds || []).slice(0, 30),
-    version: clamp(toInt(snapshot.version, 0), 0, 999),
-    generatorVersion: cleanShortText(snapshot.generatorVersion, 80),
-    createdBy: ['server', 'frontend', 'worker', 'manual', 'codex'].includes(snapshot.createdBy) ? snapshot.createdBy : '',
-    dedupDaysUsed: clamp(toInt(snapshot.dedupDaysUsed, 0), 0, 365),
-    relaxedDedup: Boolean(snapshot.relaxedDedup),
-    shortage: Boolean(snapshot.shortage),
-    repeated30Count: clamp(toInt(snapshot.repeated30Count, 0), 0, WORDS_PER_DAY),
-    repeated30Words: getUniqueWords(snapshot.repeated30Words || []).slice(0, WORDS_PER_DAY),
-    recommendationAudit: cleanRecommendationAuditSummary(snapshot.recommendationAudit || {})
-  };
+  return cleanSharedTodaySnapshot(snapshot);
 }
 
 function cleanHistorySnapshot(snapshot = {}, fallbackDateKey = '') {
-  const record = snapshot || {};
-  const snapshotDateKey = /^\d{4}-\d{2}-\d{2}$/.test(String(record.dateKey || ''))
-    ? String(record.dateKey)
-    : (/^\d{4}-\d{2}-\d{2}$/.test(String(fallbackDateKey || '')) ? String(fallbackDateKey) : '');
-  return {
-    dateKey: snapshotDateKey,
-    words: getUniqueWords(record.words || []).slice(0, WORDS_PER_DAY),
-    generatedAt: typeof record.generatedAt === 'string' ? record.generatedAt : '',
-    source: record.source === 'todaySnapshot' ? 'todaySnapshot' : 'todaySnapshot',
-    batchIds: getUniqueWords(record.batchIds || []).slice(0, 30),
-    version: clamp(toInt(record.version, 1), 1, 999),
-    generatorVersion: cleanShortText(record.generatorVersion, 80),
-    createdBy: ['server', 'frontend', 'worker', 'manual', 'codex'].includes(record.createdBy) ? record.createdBy : '',
-    dedupDaysUsed: clamp(toInt(record.dedupDaysUsed, 0), 0, 365),
-    relaxedDedup: Boolean(record.relaxedDedup),
-    shortage: Boolean(record.shortage),
-    repeated30Count: clamp(toInt(record.repeated30Count, 0), 0, WORDS_PER_DAY),
-    repeated30Words: getUniqueWords(record.repeated30Words || []).slice(0, WORDS_PER_DAY),
-    archivedAt: typeof record.archivedAt === 'string' ? record.archivedAt : '',
-    title: cleanShortText(record.title || '每日热门归档', 120),
-    recommendationAudit: cleanRecommendationAuditSummary(record.recommendationAudit || {})
-  };
+  return cleanSharedHistorySnapshot(snapshot, fallbackDateKey);
 }
 
 function cleanHistorySnapshots(snapshots = {}) {
-  return Object.entries(snapshots || {}).reduce((result, [dateKeyValue, snapshot]) => {
-    const cleanSnapshot = cleanHistorySnapshot(snapshot, dateKeyValue);
-    if (cleanSnapshot.dateKey && cleanSnapshot.words.length) result[cleanSnapshot.dateKey] = cleanSnapshot;
-    return result;
-  }, {});
-}
-
-function preserveRicherSnapshotAudit(selected = {}, fallback = {}) {
-  return safeArray(fallback.recommendationAudit?.items).length > safeArray(selected.recommendationAudit?.items).length
-    ? { ...selected, recommendationAudit: fallback.recommendationAudit }
-    : selected;
+  return cleanSharedHistorySnapshots(snapshots);
 }
 
 function cleanTodaySnapshotHistory(history = []) {
-  const byDate = new Map();
-  safeArray(history).forEach(snapshot => {
-    const cleanSnapshot = cleanHistorySnapshot(snapshot, snapshot?.dateKey);
-    if (!cleanSnapshot.dateKey || !cleanSnapshot.words.length) return;
-    const current = byDate.get(cleanSnapshot.dateKey);
-    if (!current) {
-      byDate.set(cleanSnapshot.dateKey, cleanSnapshot);
-      return;
-    }
-    if (cleanSnapshot.version !== current.version) {
-      byDate.set(cleanSnapshot.dateKey, cleanSnapshot.version > current.version ? cleanSnapshot : current);
-      return;
-    }
-    const cleanTimestamp = String(cleanSnapshot.generatedAt || cleanSnapshot.archivedAt || '');
-    const currentTimestamp = String(current.generatedAt || current.archivedAt || '');
-    const selected = cleanTimestamp >= currentTimestamp ? cleanSnapshot : current;
-    const fallback = selected === cleanSnapshot ? current : cleanSnapshot;
-    byDate.set(cleanSnapshot.dateKey, cleanTimestamp === currentTimestamp ? preserveRicherSnapshotAudit(selected, fallback) : selected);
-  });
-  return [...byDate.values()]
-    .sort((left, right) => String(right.dateKey || '').localeCompare(String(left.dateKey || '')))
-    .slice(0, TODAY_SNAPSHOT_HISTORY_LIMIT);
+  return cleanSharedTodaySnapshotHistory(history);
 }
 
 function mergeHistorySnapshots(localSnapshots, remoteSnapshots) {
-  const merged = new Map();
-  [...Object.values(cleanHistorySnapshots(remoteSnapshots)), ...Object.values(cleanHistorySnapshots(localSnapshots))].forEach(snapshot => {
-    const current = merged.get(snapshot.dateKey);
-    if (!current) {
-      merged.set(snapshot.dateKey, snapshot);
-      return;
-    }
-    if (snapshot.version !== current.version) {
-      merged.set(snapshot.dateKey, snapshot.version > current.version ? snapshot : current);
-      return;
-    }
-    const snapshotTimestamp = String(snapshot.archivedAt || snapshot.generatedAt || '');
-    const currentTimestamp = String(current.archivedAt || current.generatedAt || '');
-    const selected = snapshotTimestamp >= currentTimestamp ? snapshot : current;
-    const fallback = selected === snapshot ? current : snapshot;
-    merged.set(snapshot.dateKey, snapshotTimestamp === currentTimestamp ? preserveRicherSnapshotAudit(selected, fallback) : selected);
-  });
-  return [...merged.values()].reduce((result, snapshot) => {
-    result[snapshot.dateKey] = snapshot;
-    return result;
-  }, {});
+  return mergeSharedHistorySnapshots(localSnapshots, remoteSnapshots);
 }
 
 function mergeTodaySnapshotHistory(localHistory, remoteHistory) {
-  return cleanTodaySnapshotHistory([...safeArray(remoteHistory), ...safeArray(localHistory)]);
+  return mergeSharedTodaySnapshotHistory(localHistory, remoteHistory);
 }
 
 function archiveTodaySnapshotHistory(snapshot = todaySnapshot) {
@@ -3030,17 +2951,7 @@ function archiveStaleTodaySnapshot() {
 }
 
 function mergeTodaySnapshot(localSnapshot, remoteSnapshot) {
-  const localClean = cleanTodaySnapshot(localSnapshot);
-  const remoteClean = cleanTodaySnapshot(remoteSnapshot);
-  if (!localClean.dateKey) return remoteClean;
-  if (!remoteClean.dateKey) return localClean;
-  if (localClean.dateKey !== remoteClean.dateKey) return localClean.dateKey > remoteClean.dateKey ? localClean : remoteClean;
-  if (remoteClean.version !== localClean.version) return remoteClean.version > localClean.version ? remoteClean : localClean;
-  const remoteGeneratedAt = String(remoteClean.generatedAt || '');
-  const localGeneratedAt = String(localClean.generatedAt || '');
-  const selected = remoteGeneratedAt >= localGeneratedAt ? remoteClean : localClean;
-  const fallback = selected === remoteClean ? localClean : remoteClean;
-  return remoteGeneratedAt === localGeneratedAt ? preserveRicherSnapshotAudit(selected, fallback) : selected;
+  return mergeSharedTodaySnapshot(localSnapshot, remoteSnapshot);
 }
 
 function hasTodaySnapshotForToday(snapshot = todaySnapshot) {
@@ -3143,6 +3054,47 @@ function updateAiBatchImportStats(batchId, importedDelta = 0, skippedDelta = 0) 
   aiBatches = current;
 }
 
+const workflowStore = createWorkflowStore({
+  cleanWorkflow: cleanStoredWorkflow,
+  mergeCandidatePool: (localPool, remotePool) => cleanCandidatePool({
+    ...(localPool || {}),
+    ...(remotePool || {})
+  }),
+  mergeHistorySnapshots,
+  mergeTodaySnapshotHistory
+});
+
+function getCurrentWorkflowState() {
+  return {
+    words: favorites,
+    statuses: favoriteStatuses,
+    feedback: wordFeedback,
+    publishedRecords,
+    candidatePool,
+    aiBatches,
+    aiPreview,
+    todaySnapshot,
+    todayDismissed,
+    historySnapshots,
+    todaySnapshotHistory
+  };
+}
+
+function applyWorkflowData(workflow = {}) {
+  favorites = workflow.words;
+  favoriteStatuses = workflow.statuses;
+  wordFeedback = workflow.feedback;
+  publishedRecords = workflow.publishedRecords;
+  candidatePool = workflow.candidatePool;
+  aiBatches = workflow.aiBatches;
+  aiPreview = workflow.aiPreview;
+  syncAiPreviewGlobalsFromWorkflow();
+  todaySnapshot = workflow.todaySnapshot;
+  todayDismissed = workflow.todayDismissed;
+  historySnapshots = workflow.historySnapshots;
+  todaySnapshotHistory = workflow.todaySnapshotHistory;
+}
+
 function loadLocalWorkflow(options = {}) {
   const includeLegacyLocal = Boolean(options.includeLegacyLocal);
   let workflow = { words: [], statuses: {}, feedback: {}, publishedRecords: [], candidatePool: {}, aiBatches: [], aiPreview: {}, todaySnapshot: {}, todayDismissed: {}, historySnapshots: {}, todaySnapshotHistory: [], revision: 0, auditLog: [], schemaVersion: 2 };
@@ -3176,20 +3128,8 @@ function loadLocalWorkflow(options = {}) {
     }
   }
 
-  favorites = workflow.words;
-  favoriteStatuses = workflow.statuses;
-  wordFeedback = workflow.feedback;
-  publishedRecords = workflow.publishedRecords;
-  candidatePool = workflow.candidatePool;
-  aiBatches = workflow.aiBatches;
-  aiPreview = workflow.aiPreview;
-  syncAiPreviewGlobalsFromWorkflow();
-  todaySnapshot = workflow.todaySnapshot;
-  todayDismissed = workflow.todayDismissed;
-  historySnapshots = workflow.historySnapshots;
-  todaySnapshotHistory = workflow.todaySnapshotHistory;
-  workflowRevision = workflow.revision;
-  workflowAuditLog = workflow.auditLog;
+  applyWorkflowData(workflow);
+  workflowStore.replaceMetadata(workflow);
   migrateOriginalWordsAfterAudit();
   ensureReviewedSeedWordsInCandidatePool();
   archiveStaleTodaySnapshot();
@@ -3225,68 +3165,26 @@ function saveLocalWorkflow() {
   historySnapshots = cleanHistorySnapshots(historySnapshots);
   todaySnapshotHistory = cleanTodaySnapshotHistory(todaySnapshotHistory);
 
-  const payload = {
-    words: favorites,
-    statuses: favoriteStatuses,
-    feedback: wordFeedback,
-    publishedRecords,
-    candidatePool,
-    aiBatches,
-    aiPreview,
-    todaySnapshot,
-    todayDismissed,
-    historySnapshots,
-    todaySnapshotHistory,
-    revision: workflowRevision,
-    auditLog: workflowAuditLog,
-    updated: nowIso(),
-    schemaVersion: 2
-  };
+  const payload = workflowStore.buildPayload(getCurrentWorkflowState(), nowIso());
   if (writeLocalWorkflowCache(payload)) lastLocalCacheAt = payload.updated;
 }
 
-const LOCAL_WORKFLOW_CACHE_CANDIDATE_LIMIT = 120;
-
-function buildLocalWorkflowCachePayload(payload = {}) {
-  const cleanPayload = cleanStoredWorkflow(payload);
-  const prioritizedWords = [
-    ...safeArray(cleanPayload.todaySnapshot?.words),
-    ...safeArray(cleanPayload.words)
-  ];
-  const cachedCandidateWords = [...new Set(prioritizedWords
-    .map(word => String(word || '').trim())
-    .filter(Boolean))]
-    .slice(0, LOCAL_WORKFLOW_CACHE_CANDIDATE_LIMIT);
-  const compactCandidatePool = cachedCandidateWords.reduce((result, word) => {
-    if (cleanPayload.candidatePool[word]) result[word] = cleanPayload.candidatePool[word];
-    return result;
-  }, {});
-
-  return {
-    ...cleanPayload,
-    candidatePool: compactCandidatePool,
-    aiBatches: []
-  };
-}
-
-function setLocalStorageItemSafely(key, value) {
-  try {
-    localStorage.setItem(key, value);
-    return true;
-  } catch (error) {
-    console.warn('本地缓存写入失败，已保留当前云端数据', key, error?.name || 'Error');
-    return false;
+const LOCAL_WORKFLOW_CACHE_CANDIDATE_LIMIT = DEFAULT_CANDIDATE_LIMIT;
+const workflowCache = createWorkflowCache({
+  storage: localStorage,
+  cleanWorkflow: cleanStoredWorkflow,
+  candidateLimit: LOCAL_WORKFLOW_CACHE_CANDIDATE_LIMIT,
+  keys: {
+    workflow: WORKFLOW_STORAGE_KEY,
+    favorites: FAVORITES_STORAGE_KEY,
+    statuses: FAVORITE_STATUSES_STORAGE_KEY,
+    aiPreview: AI_PREVIEW_STORAGE_KEY,
+    todayDismissed: TODAY_DISMISSED_STORAGE_KEY
   }
-}
+});
 
 function writeLocalWorkflowCache(payload = {}) {
-  const cachePayload = buildLocalWorkflowCachePayload(payload);
-  const workflowCached = setLocalStorageItemSafely(WORKFLOW_STORAGE_KEY, JSON.stringify(cachePayload));
-  setLocalStorageItemSafely(FAVORITES_STORAGE_KEY, JSON.stringify(cachePayload.words));
-  setLocalStorageItemSafely(FAVORITE_STATUSES_STORAGE_KEY, JSON.stringify(cachePayload.statuses));
-  setLocalStorageItemSafely(AI_PREVIEW_STORAGE_KEY, JSON.stringify(cachePayload.aiPreview));
-  setLocalStorageItemSafely(TODAY_DISMISSED_STORAGE_KEY, JSON.stringify(cachePayload.todayDismissed));
-  return workflowCached;
+  return workflowCache.write(payload);
 }
 
 function cacheCurrentWorkflow(updatedAt = nowIso()) {
@@ -3298,122 +3196,37 @@ function cacheCurrentWorkflow(updatedAt = nowIso()) {
   });
   syncAiPreviewGlobalsFromWorkflow();
   todayDismissed = cleanTeamDismissedState(todayDismissed);
-  const payload = cleanStoredWorkflow({
-    words: favorites,
-    statuses: favoriteStatuses,
-    feedback: wordFeedback,
-    publishedRecords,
-    candidatePool,
-    aiBatches,
-    aiPreview,
-    todaySnapshot,
-    todayDismissed,
-    historySnapshots,
-    todaySnapshotHistory,
-    revision: workflowRevision,
-    auditLog: workflowAuditLog,
-    updated: updatedAt,
-    schemaVersion: 2
-  });
+  const payload = workflowStore.buildPayload(getCurrentWorkflowState(), updatedAt);
   const workflowCached = writeLocalWorkflowCache(payload);
-  workflowRevision = payload.revision;
-  workflowAuditLog = payload.auditLog;
+  workflowStore.replaceMetadata(payload);
   if (workflowCached) lastLocalCacheAt = payload.updated || updatedAt;
   return payload;
 }
 
-const activeApiControllers = new Map();
-const uiOperationsInFlight = new Set();
 let hasUnsavedFormChanges = false;
 let cloudSaveEpoch = 0;
 let cloudSaveQueue = Promise.resolve(false);
 let pendingCloudSaveCount = 0;
 let cloudWorkflowLoadEpoch = 0;
 let backgroundSyncPromise = null;
-const loadedWorkflowScopes = new Set();
-const workflowScopeLoads = new Map();
-
-function createOperationId(prefix = 'web') {
-  const randomId = globalThis.crypto?.randomUUID?.()
-    || `${Date.now()}-${Math.random().toString(36).slice(2, 12)}`;
-  return `${prefix}-${randomId}`.slice(0, 120);
-}
-
-function getApiErrorMessage(data, status = 0) {
-  if (typeof data?.error === 'string') return data.error;
-  if (typeof data?.error?.message === 'string') return data.error.message;
-  if (status === 401) return '团队身份验证失败，请重新登录';
-  if (status === 409) return '团队数据已更新，请刷新后重试';
-  if (status === 429) return '请求过于频繁，请稍后重试';
-  return status ? `HTTP ${status}` : '网络请求失败';
-}
-
-function createApiError(data, status = 0) {
-  const error = new Error(getApiErrorMessage(data, status));
-  error.status = status;
-  error.code = data?.error?.code || '';
-  error.retryable = Boolean(data?.error?.retryable);
-  error.requestId = cleanShortText(data?.requestId, 160);
-  return error;
-}
-
-async function apiFetch(endpoint, options = {}, config = {}) {
-  const timeoutMs = clamp(toInt(config.timeoutMs, 20000), 1000, 120000);
-  const cancelKey = cleanShortText(config.cancelKey, 120);
-  if (cancelKey) activeApiControllers.get(cancelKey)?.abort();
-  const controller = new AbortController();
-  if (cancelKey) activeApiControllers.set(cancelKey, controller);
-  const externalSignal = options.signal;
-  const abortFromExternal = () => controller.abort(externalSignal?.reason);
-  externalSignal?.addEventListener('abort', abortFromExternal, { once: true });
-  let timedOut = false;
-  const timeout = setTimeout(() => {
-    timedOut = true;
-    controller.abort(new DOMException('Request timed out', 'TimeoutError'));
-  }, timeoutMs);
-  const headers = new Headers(options.headers || {});
-  if (config.workflowMutation) {
-    headers.set('X-Operation-Id', config.operationId || createOperationId(config.operationPrefix || 'workflow'));
-    headers.set('X-Workflow-Revision', String(workflowRevision));
-  }
-
-  try {
-    return await fetch(endpoint, {
-      ...options,
-      credentials: options.credentials || 'same-origin',
-      headers,
-      signal: controller.signal
-    });
-  } catch (error) {
-    if (controller.signal.aborted) {
-      const abortError = new Error(timedOut ? '请求超时' : '请求已取消');
-      abortError.code = timedOut ? 'REQUEST_TIMEOUT' : 'REQUEST_ABORTED';
-      throw abortError;
-    }
-    throw error;
-  } finally {
-    clearTimeout(timeout);
-    externalSignal?.removeEventListener('abort', abortFromExternal);
-    if (cancelKey && activeApiControllers.get(cancelKey) === controller) activeApiControllers.delete(cancelKey);
-  }
-}
+const apiClient = createApiClient({ getWorkflowRevision: () => workflowStore.getRevision() });
+const uiOperationsInFlight = apiClient.operationsInFlight;
+const createOperationId = apiClient.createOperationId;
+const getApiErrorMessage = apiClient.getApiErrorMessage;
+const createApiError = apiClient.createApiError;
+const apiFetch = apiClient.request;
+const workflowSync = createWorkflowSync({
+  request: apiFetch,
+  createError: createApiError,
+  loadRemote: () => loadCloudWorkflow({ mode: 'remote-first', showMessages: false })
+});
 
 async function runUiOperation(key, operation) {
-  const cleanKey = cleanShortText(key, 160);
-  if (uiOperationsInFlight.has(cleanKey)) {
-    showToast('操作正在处理中，请稍候');
-    return false;
-  }
-  uiOperationsInFlight.add(cleanKey);
-  try {
-    return await operation();
-  } finally {
-    uiOperationsInFlight.delete(cleanKey);
-  }
+  return apiClient.runExclusive(key, operation, () => showToast('操作正在处理中，请稍候'));
 }
 
 function normalizeWorkflowScope(scope = '') {
-  return ['today', 'favorites', 'published'].includes(scope) ? scope : 'today';
+  return workflowStore.normalizeScope(scope);
 }
 
 function getPreferredWorkflowScope() {
@@ -3430,17 +3243,15 @@ function getWorkflowScopeHistoryDate(scope = getPreferredWorkflowScope()) {
 }
 
 function getWorkflowScopeKey(scope = getPreferredWorkflowScope(), historyDate = getWorkflowScopeHistoryDate(scope)) {
-  const cleanScope = normalizeWorkflowScope(scope);
-  return cleanScope === 'today' ? `today:${historyDate || 'today'}` : cleanScope;
+  return workflowStore.getScopeKey(scope, historyDate);
 }
 
 function isWorkflowScopeLoaded(scope = getPreferredWorkflowScope(), historyDate = getWorkflowScopeHistoryDate(scope)) {
-  return loadedWorkflowScopes.has('all') || loadedWorkflowScopes.has(getWorkflowScopeKey(scope, historyDate));
+  return workflowStore.isScopeLoaded(scope, historyDate);
 }
 
 function markWorkflowScopeLoaded(scope = 'today', historyDate = '') {
-  if (scope === 'all') loadedWorkflowScopes.add('all');
-  else loadedWorkflowScopes.add(getWorkflowScopeKey(scope, historyDate));
+  workflowStore.markScopeLoaded(scope, historyDate);
 }
 
 function getSyncEndpoint(options = {}) {
@@ -3573,38 +3384,21 @@ function updateSyncStatus(message, color = 'var(--text-secondary)') {
 }
 
 function applyRemoteWorkflowState(remoteData, options = {}) {
-  const data = cleanStoredWorkflow(remoteData);
-  if (!options.allowOlderRevision && data.revision < workflowRevision) {
+  const prepared = workflowStore.prepareRemoteState(remoteData, getCurrentWorkflowState(), options);
+  if (!prepared.applied) {
     console.info('已忽略旧版云端工作流响应', {
-      remoteRevision: data.revision,
-      currentRevision: workflowRevision
+      remoteRevision: prepared.data.revision,
+      currentRevision: workflowStore.getRevision()
     });
-    return { applied: false, stale: true, data };
+    return prepared;
   }
 
-  const mergePartialState = Boolean(options.mergeCandidatePool || data.appView?.partialCandidatePool);
-  const nextCandidatePool = mergePartialState
-    ? cleanCandidatePool({ ...candidatePool, ...data.candidatePool })
-    : data.candidatePool;
-  favorites = getUniqueWords(data.words).map(normalizeKanjiSpelling).filter(Boolean);
-  favoriteStatuses = data.statuses;
-  wordFeedback = data.feedback;
-  publishedRecords = data.publishedRecords;
-  candidatePool = nextCandidatePool;
-  aiBatches = data.aiBatches;
-  aiPreview = data.aiPreview || {};
-  syncAiPreviewGlobalsFromWorkflow();
-  todaySnapshot = data.todaySnapshot;
-  todayDismissed = cleanTeamDismissedState(data.todayDismissed || {});
-  historySnapshots = mergePartialState ? mergeHistorySnapshots(historySnapshots, data.historySnapshots) : data.historySnapshots;
-  todaySnapshotHistory = mergePartialState ? mergeTodaySnapshotHistory(todaySnapshotHistory, data.todaySnapshotHistory) : data.todaySnapshotHistory;
-  workflowRevision = data.revision;
-  workflowAuditLog = data.auditLog;
+  applyWorkflowData(prepared.state);
   cloudWorkflowFailed = false;
   lastCloudSyncAt = nowIso();
   hydrateTodayWordsFromSnapshot();
-  cacheCurrentWorkflow(data.updated || lastCloudSyncAt);
-  return { applied: true, stale: false, data };
+  cacheCurrentWorkflow(prepared.data.updated || lastCloudSyncAt);
+  return prepared;
 }
 
 function applyFavoriteCommandResponse(responseData, kanji) {
@@ -3615,12 +3409,7 @@ function applyFavoriteCommandResponse(responseData, kanji) {
     words: favorites,
     statuses: responseData?.statuses
   }).statuses;
-  workflowRevision = clamp(toInt(responseData?.revision, workflowRevision), workflowRevision, Number.MAX_SAFE_INTEGER);
-  if (responseData?.auditEvent) {
-    workflowAuditLog = cleanStoredWorkflow({
-      auditLog: [responseData.auditEvent, ...workflowAuditLog]
-    }).auditLog;
-  }
+  workflowStore.applyCommandMetadata(responseData);
   cloudWorkflowFailed = false;
   lastCloudSyncAt = nowIso();
   cacheCurrentWorkflow(responseData?.updated || lastCloudSyncAt);
@@ -3634,20 +3423,6 @@ function buildFavoriteCommandPayload(kanji, action, status = '') {
     payload.candidatePool = { [kanji]: candidate };
   }
   return payload;
-}
-
-function isRetryableWorkflowReadError(error) {
-  if (error?.code === 'REQUEST_ABORTED') return false;
-  if (error?.code === 'REQUEST_TIMEOUT') return true;
-  const status = Number(error?.status) || 0;
-  return !status || status === 408 || status === 429 || status >= 500;
-}
-
-function isRetryableWorkflowMutationError(error) {
-  if (error?.code === 'REQUEST_ABORTED') return false;
-  if (error?.status === 409 || error?.code === 'REQUEST_TIMEOUT') return true;
-  const status = Number(error?.status) || 0;
-  return !status || status === 408 || status === 429 || status >= 500;
 }
 
 function isFavoriteCommandSatisfied(kanji, action, status = '') {
@@ -3664,7 +3439,7 @@ function buildReconciledFavoriteCommandResponse(kanji) {
     words: favorites,
     statuses: favoriteStatuses,
     candidate: candidatePool[kanji] || null,
-    revision: workflowRevision,
+    revision: workflowStore.getRevision(),
     auditEvent: null,
     updated: lastCloudSyncAt,
     schemaVersion: 2
@@ -3677,66 +3452,21 @@ async function requestFavoriteCommand(kanji, action, status = '') {
   ensureFavoriteWordsHaveCandidateEntries();
   const payload = buildFavoriteCommandPayload(kanji, action, status);
   const operationId = createOperationId(`favorite-${action}`);
-  let lastError = null;
-  for (let attempt = 0; attempt < 2; attempt += 1) {
-    try {
-      const response = await apiFetch(endpoint, {
-        method: 'POST',
-        headers: {
-          Accept: 'application/json',
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify(payload)
-      }, {
-        workflowMutation: true,
-        operationId,
-        operationPrefix: `favorite-${action}`,
-        timeoutMs: 30000
-      });
-      const responseData = await response.json().catch(() => ({}));
-      if (!response.ok) throw createApiError(responseData, response.status);
-      return responseData;
-    } catch (error) {
-      lastError = error;
-      if (attempt > 0 || !isRetryableWorkflowMutationError(error)) break;
-      const reconciled = await loadCloudWorkflow({ mode: 'remote-first', showMessages: false });
-      if (reconciled && isFavoriteCommandSatisfied(kanji, action, status)) {
-        return buildReconciledFavoriteCommandResponse(kanji);
-      }
-      if (error.status === 409 && !reconciled) break;
-      await new Promise(resolve => {
-        setTimeout(resolve, 250);
-      });
-    }
-  }
-  throw lastError || new Error('收藏同步失败');
+  return workflowSync.mutate({
+    endpoint,
+    payload,
+    operationId,
+    operationPrefix: `favorite-${action}`,
+    isSatisfied: () => isFavoriteCommandSatisfied(kanji, action, status),
+    buildReconciledResponse: () => buildReconciledFavoriteCommandResponse(kanji)
+  });
 }
 
 async function fetchWorkflowView(endpoint, loadEpoch) {
-  let lastError = null;
-  for (let attempt = 0; attempt < 2; attempt += 1) {
-    if (loadEpoch !== cloudWorkflowLoadEpoch) {
-      const canceledError = new Error('请求已被新的同步替代');
-      canceledError.code = 'REQUEST_ABORTED';
-      throw canceledError;
-    }
-    try {
-      const response = await apiFetch(endpoint, { headers: { Accept: 'application/json' } }, {
-        cancelKey: 'workflow-load',
-        timeoutMs: 45000
-      });
-      const data = await response.json().catch(() => ({}));
-      if (!response.ok) throw createApiError(data, response.status);
-      return data;
-    } catch (error) {
-      lastError = error;
-      if (attempt > 0 || !isRetryableWorkflowReadError(error)) throw error;
-      await new Promise(resolve => {
-        setTimeout(resolve, 300);
-      });
-    }
-  }
-  throw lastError || new Error('工作流读取失败');
+  return workflowSync.read({
+    endpoint,
+    isCurrent: () => loadEpoch === cloudWorkflowLoadEpoch
+  });
 }
 
 async function loadCloudWorkflow(options = false) {
@@ -3757,7 +3487,7 @@ async function loadCloudWorkflow(options = false) {
     const responseData = await fetchWorkflowView(endpoint, loadEpoch);
     if (loadEpoch !== cloudWorkflowLoadEpoch) return false;
     const applied = applyRemoteWorkflowState(responseData, {
-      mergeCandidatePool: Boolean(config.mergeCandidatePool || loadedWorkflowScopes.size)
+      mergeCandidatePool: Boolean(config.mergeCandidatePool || workflowStore.hasLoadedScopes())
     });
     if (!applied.applied) {
       cloudWorkflowFailed = false;
@@ -3807,23 +3537,17 @@ function buildCloudWorkflowPayload() {
     selected: aiPreviewSelected
   });
   todayDismissed = cleanTeamDismissedState(todayDismissed);
-  return {
+  return workflowStore.buildPayload({
+    ...getCurrentWorkflowState(),
     words: filterKnownFavorites(favorites, candidatePool),
-    statuses: favoriteStatuses,
     feedback: cleanWordFeedback(wordFeedback),
     publishedRecords: cleanPublishedRecords(publishedRecords),
     candidatePool: cleanCandidatePool(candidatePool),
     aiBatches: cleanAiBatches(aiBatches),
-    aiPreview,
     todaySnapshot: cleanTodaySnapshot(todaySnapshot),
-    todayDismissed,
     historySnapshots: cleanHistorySnapshots(historySnapshots),
-    todaySnapshotHistory: cleanTodaySnapshotHistory(todaySnapshotHistory),
-    revision: workflowRevision,
-    auditLog: workflowAuditLog,
-    updated: nowIso(),
-    schemaVersion: 2
-  };
+    todaySnapshotHistory: cleanTodaySnapshotHistory(todaySnapshotHistory)
+  }, nowIso());
 }
 
 async function performCloudWorkflowSave(showMessages, payload, queuedEpoch) {
@@ -3906,7 +3630,7 @@ async function refreshPublishedMetrics(recordId = '') {
     const data = await response.json().catch(() => ({}));
     if (!response.ok) throw createApiError(data, response.status);
     publishedRecords = mergePublishedRecords(publishedRecords, data.publishedRecords);
-    workflowRevision = clamp(toInt(data.revision, workflowRevision), 0, Number.MAX_SAFE_INTEGER);
+    workflowStore.acceptRevision(data.revision);
     saveLocalWorkflow();
     updateAllBadges();
     renderPublished();
@@ -9687,8 +9411,7 @@ function ensureWorkflowScopeLoaded(scope, options = {}) {
   const historyDate = cleanShortText(options.historyDate || getWorkflowScopeHistoryDate(cleanScope), 20);
   const scopeKey = getWorkflowScopeKey(cleanScope, historyDate);
   if (isWorkflowScopeLoaded(cleanScope, historyDate)) return Promise.resolve(true);
-  if (workflowScopeLoads.has(scopeKey)) return workflowScopeLoads.get(scopeKey);
-  const request = loadCloudWorkflow({
+  return workflowStore.loadScope(scopeKey, () => loadCloudWorkflow({
     mode: 'remote-first',
     showMessages: false,
     scope: cleanScope,
@@ -9699,11 +9422,7 @@ function ensureWorkflowScopeLoaded(scope, options = {}) {
       renderWorkflowScopeState(cleanScope, 'error');
     }
     return loaded;
-  }).finally(() => {
-    if (workflowScopeLoads.get(scopeKey) === request) workflowScopeLoads.delete(scopeKey);
-  });
-  workflowScopeLoads.set(scopeKey, request);
-  return request;
+  }));
 }
 
 function switchTab(tab) {
@@ -9798,22 +9517,9 @@ async function restoreWorkflowBackup(event) {
     const summary = `选题 ${restored.words.length} 个、候选 ${Object.keys(restored.candidatePool).length} 个、发布记录 ${restored.publishedRecords.length} 条、今日推荐 ${restored.todaySnapshot.words.length} 个`;
     if (!window.confirm(`备份校验通过：${summary}。\n\n确认用这份备份覆盖当前团队工作流吗？`)) return;
 
-    const currentRevision = workflowRevision;
-    const currentAuditLog = workflowAuditLog;
-    favorites = restored.words;
-    favoriteStatuses = restored.statuses;
-    wordFeedback = restored.feedback;
-    publishedRecords = restored.publishedRecords;
-    candidatePool = restored.candidatePool;
-    aiBatches = restored.aiBatches;
-    aiPreview = restored.aiPreview;
-    syncAiPreviewGlobalsFromWorkflow();
-    todaySnapshot = restored.todaySnapshot;
-    todayDismissed = restored.todayDismissed;
-    historySnapshots = restored.historySnapshots;
-    todaySnapshotHistory = restored.todaySnapshotHistory;
-    workflowRevision = currentRevision;
-    workflowAuditLog = currentAuditLog;
+    const currentMetadata = workflowStore.getMetadata();
+    applyWorkflowData(restored);
+    workflowStore.replaceMetadata(currentMetadata);
     saveLocalWorkflow();
     const saved = await saveCloudWorkflow(false);
     if (!saved) {
@@ -9844,8 +9550,8 @@ function exportWorkflowBackup() {
     todayDismissed,
     historySnapshots,
     todaySnapshotHistory,
-    revision: workflowRevision,
-    auditLog: workflowAuditLog,
+    revision: workflowStore.getRevision(),
+    auditLog: workflowStore.getAuditLog(),
     updated: nowIso(),
     schemaVersion: 2
   });
@@ -10040,8 +9746,7 @@ async function init() {
 window.addEventListener('pageshow', event => {
   if (!event.persisted) return;
   cloudWorkflowLoadEpoch += 1;
-  activeApiControllers.forEach(controller => controller.abort());
-  activeApiControllers.clear();
+  apiClient.abortAll();
   backgroundSyncPromise = null;
   resetTransientUiState();
   ensureTodayGridVisible();
@@ -10060,6 +9765,55 @@ window.addEventListener('online', () => {
     updateSyncStatus('网络已恢复，云端数据已同步。', '#4caf50');
     showToast('网络已恢复，数据已重新同步');
   });
+});
+
+// Compatibility facade for existing inline handlers while page modules are migrated incrementally.
+Object.assign(window, {
+  toggleSidebar,
+  switchTab,
+  openSettingsModal,
+  setDailyHotDate,
+  setSourceFilter,
+  refreshData,
+  toggleDailyManageMenu,
+  handleDailyManageAction,
+  generateMissingTodayAiCards,
+  exportSelected,
+  shiftHistoryDate,
+  setStatusFilter,
+  openManualWordModal,
+  openPublishedRecordModal,
+  refreshPublishedMetrics,
+  renderPublished,
+  closeModalOutside,
+  closeSettingsModal,
+  exportWorkflowBackup,
+  selectWorkflowBackupForRestore,
+  restoreWorkflowBackup,
+  toggleAiPreviewSelection,
+  generateTodayAiCard,
+  generateDeepSeekWordCard,
+  closeModal,
+  submitManualWord,
+  confirmAddExistingManualWord,
+  openDetail,
+  selectFavoriteStatus,
+  toggleStatusMenu,
+  toggleFeedbackMenu,
+  toggleFavorite,
+  dismissDailyHotRecommendation,
+  openCodexDraftPreview,
+  toggleCodexDraftFavorite,
+  applyCodexDraftFeedback,
+  handleGenerateTodaySnapshot,
+  exportTodayRecommendationAudit,
+  toggleCandidateSelection,
+  setCandidateManualState,
+  markPending,
+  copyLibraryCleanupCommand,
+  autofillPublishedRecordFromLink,
+  savePublishedRecord,
+  openPublishedDetail
 });
 
 init();

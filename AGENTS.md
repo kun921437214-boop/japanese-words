@@ -85,6 +85,15 @@ npm run deploy:worker
 - For Xiaohongshu, Douyin, Weibo, or similar platforms, prefer manual import, official APIs, or compliant third-party data providers.
 - All automatically imported trend words should enter a reviewable pool first and should not be treated as final publishing choices.
 
+## GitHub Workflow
+
+- Treat GitHub as the primary source of truth and the local working copy as a backup.
+- After each completed change passes the relevant validation, commit all intended project files and push them to GitHub automatically.
+- Use a `codex/*` branch and a pull request by default; do not push unfinished or unverified work directly to `main`.
+- Before uploading, compare the complete local branch and working tree with the latest remote state so that earlier unpushed changes are not omitted.
+- Never commit secrets, local environment files, private exports, generated credentials, or production data that is intentionally excluded by `.gitignore`.
+- A GitHub push does not authorize a production deployment; deploy only when the user explicitly requests it or the current task clearly includes deployment.
+
 ## Validation After Changes
 
 At minimum, check:
