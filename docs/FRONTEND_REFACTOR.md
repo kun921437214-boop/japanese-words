@@ -49,7 +49,7 @@ Extract one page at a time:
 
 Remove inline HTML handlers only after the corresponding page module has executable interaction tests.
 
-## In Progress: Phase 4 — Compatibility Facade Reduction
+## Completed: Phase 4 — Compatibility Facade Removal
 
 - Application shell — completed:
   - `frontend/app-shell.mjs` owns delegated mobile-sidebar, primary-navigation, settings, backup/restore, outside-overlay, and Escape-key events;
@@ -62,9 +62,20 @@ Remove inline HTML handlers only after the corresponding page module has executa
   - validation, duplicate handling, team sync, and DeepSeek generation behavior remain in the existing application services;
   - executable tests cover action routing, outside-root isolation, async failures, cleanup, and compatibility-facade removal;
   - browser checks cover empty-word validation, cancel/close actions, and reopening without creating or syncing a word.
-- Next, move remaining generated modal interactions behind delegated controllers in small groups.
-- Remove each temporary `window` export only after its last inline consumer has an executable interaction test.
-- Keep generation, Cloudflare sync, KV, and workflow mutation behavior unchanged while reducing browser-global state.
+- Shared workflow and AI-management actions — completed:
+  - `frontend/workflow-actions.mjs` owns delegated AI-preview selection, word-card generation, status/feedback, and internal candidate actions;
+  - buttons and cards use escaped data attributes rather than executable inline JavaScript;
+  - executable tests cover every route, propagation boundaries, outside-root isolation, async failures, and cleanup.
+- Generated modal actions — completed:
+  - `frontend/modal-actions.mjs` owns Codex preview, recommendation audit, word-detail, library-cleanup, and published-record modal actions;
+  - validation, clipboard/export, workflow mutations, and Cloudflare synchronization remain in the existing application services;
+  - executable tests cover parameter forwarding, close-before-favorite behavior, outside-root isolation, async failures, and cleanup.
+- Image failure handling — completed:
+  - `frontend/image-fallback.mjs` replaces static and generated image `onerror` handlers with one capture-phase controller;
+  - source fallbacks, emoji replacements, missing-asset classes, and decorative-image removal retain their existing behavior.
+- The temporary `Object.assign(window, ...)` compatibility facade and all inline HTML event attributes have been removed.
+- Desktop and 390px mobile browser checks cover primary navigation, automatic mobile-sidebar close, Favorites, Published Records, manual-word and published-record modals, empty-form validation, settings, image assets, and horizontal overflow.
+- Generation, Cloudflare sync, KV, API routes, localStorage keys, and workflow mutation behavior remain unchanged.
 
 ## Required Validation
 

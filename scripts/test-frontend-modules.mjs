@@ -17,7 +17,9 @@ import {
   transitionFavoriteStatus,
   transitionFavoriteToggle
 } from '../frontend/favorites-page.mjs';
+import { createImageFallbackController } from '../frontend/image-fallback.mjs';
 import { createManualWordModalController } from '../frontend/manual-word-modal.mjs';
+import { createModalActionsController } from '../frontend/modal-actions.mjs';
 import {
   buildPublishedPageModel,
   createPublishedPageController,
@@ -30,6 +32,7 @@ import { createWorkflowCache } from '../frontend/workflow-cache.mjs';
 import { createWorkflowStore } from '../frontend/workflow-store.mjs';
 import { createWorkflowSync } from '../frontend/workflow-sync.mjs';
 import { buildWordCardViewModel, WORD_CARD_STATUS_LABELS } from '../frontend/word-card-view.mjs';
+import { createWorkflowActionsController } from '../frontend/workflow-actions.mjs';
 
 function cleanTestWorkflow(value = {}) {
   return {
@@ -274,6 +277,216 @@ test('manual word modal controller ignores outside actions and reports async fai
   await Promise.resolve();
 
   assert.deepEqual(errors, ['submit failed']);
+});
+
+test('workflow actions controller routes shared card, feedback, candidate and preview actions', () => {
+  const listeners = new Map();
+  const root = {
+    addEventListener: (type, listener) => listeners.set(type, listener),
+    removeEventListener: type => listeners.delete(type),
+    contains: () => true
+  };
+  const calls = [];
+  let stopped = 0;
+  const controller = createWorkflowActionsController({
+    root,
+    onToggleAiPreviewSelection: kanji => calls.push(['preview', kanji]),
+    onGenerateTodayCard: kanji => calls.push(['today-card', kanji]),
+    onGenerateDeepSeekCard: (kanji, force) => calls.push(['deepseek-card', kanji, force]),
+    onToggleStatus: kanji => calls.push(['toggle-status', kanji]),
+    onSelectStatus: (kanji, status) => calls.push(['select-status', kanji, status]),
+    onToggleFeedback: kanji => calls.push(['toggle-feedback', kanji]),
+    onNegativeFeedback: (kanji, reason) => calls.push(['feedback', kanji, reason]),
+    onCodexFeedback: (kanji, reason) => calls.push(['codex-feedback', kanji, reason]),
+    onOpenDetail: id => calls.push(['detail', id]),
+    onToggleCandidate: kanji => calls.push(['candidate-toggle', kanji]),
+    onSetCandidateState: (kanji, state) => calls.push(['candidate-state', kanji, state])
+  });
+  const action = (name, dataset = {}) => {
+    const element = { dataset: { workflowAction: name, ...dataset } };
+    element.closest = selector => selector.includes('data-workflow-action') ? element : null;
+    return element;
+  };
+  const click = target => listeners.get('click')({ target, stopPropagation: () => { stopped += 1; } });
+
+  listeners.get('change')({ target: action('ai-preview-selection', { kanji: '抜け感' }) });
+  click(action('generate-today-card', { kanji: '気が楽' }));
+  click(action('generate-deepseek-card', { kanji: '沼', force: 'true' }));
+  click(action('toggle-status', { kanji: '沼' }));
+  click(action('select-status', { kanji: '沼', status: 'pending' }));
+  click(action('toggle-feedback', { kanji: '沼' }));
+  click(action('apply-feedback', { kanji: '沼', reason: 'tooBasic', context: 'default' }));
+  click(action('apply-feedback', { kanji: 'エモい', reason: 'uninterested', context: 'codex-preview' }));
+  click(action('candidate-open-detail', { wordId: 'candidate-1' }));
+  click(action('candidate-toggle', { kanji: '沼' }));
+  click(action('candidate-state', { kanji: '沼', state: 'review' }));
+
+  assert.deepEqual(calls, [
+    ['preview', '抜け感'],
+    ['today-card', '気が楽'],
+    ['deepseek-card', '沼', true],
+    ['toggle-status', '沼'],
+    ['select-status', '沼', 'pending'],
+    ['toggle-feedback', '沼'],
+    ['feedback', '沼', 'tooBasic'],
+    ['codex-feedback', 'エモい', 'uninterested'],
+    ['detail', 'candidate-1'],
+    ['candidate-toggle', '沼'],
+    ['candidate-state', '沼', 'review']
+  ]);
+  assert.equal(stopped, 10);
+  controller.destroy();
+  assert.equal(listeners.size, 0);
+});
+
+test('workflow actions controller isolates outside actions and reports async failures', async () => {
+  const listeners = new Map();
+  const root = {
+    addEventListener: (type, listener) => listeners.set(type, listener),
+    removeEventListener: type => listeners.delete(type),
+    contains: element => element.inside !== false
+  };
+  const errors = [];
+  createWorkflowActionsController({
+    root,
+    onGenerateTodayCard: async () => { throw new Error('card failed'); },
+    onToggleStatus: () => { throw new Error('outside action should be ignored'); },
+    onError: error => errors.push(error.message)
+  });
+  const outside = { dataset: { workflowAction: 'toggle-status' }, inside: false };
+  outside.closest = () => outside;
+  listeners.get('click')({ target: outside });
+  const generate = { dataset: { workflowAction: 'generate-today-card', kanji: '沼' }, inside: true };
+  generate.closest = () => generate;
+  listeners.get('click')({ target: generate, stopPropagation() {} });
+  await Promise.resolve();
+
+  assert.deepEqual(errors, ['card failed']);
+});
+
+test('modal actions controller routes all remaining generated modal actions', () => {
+  const listeners = new Map();
+  const root = {
+    addEventListener: (type, listener) => listeners.set(type, listener),
+    removeEventListener: type => listeners.delete(type),
+    contains: () => true
+  };
+  const calls = [];
+  const controller = createModalActionsController({
+    root,
+    onClose: () => calls.push(['close']),
+    onToggleCodexFavorite: kanji => calls.push(['codex-favorite', kanji]),
+    onExportRecommendationAudit: () => calls.push(['audit']),
+    onMarkPending: kanji => calls.push(['pending', kanji]),
+    onOpenPublishedRecord: (recordId, presetKanji) => calls.push(['record', recordId, presetKanji]),
+    onCopyLibraryCleanup: mode => calls.push(['cleanup', mode]),
+    onAutofillPublishedRecord: () => calls.push(['autofill']),
+    onSavePublishedRecord: () => calls.push(['save']),
+    onOpenPublishedDetail: recordId => calls.push(['published-detail', recordId]),
+    onRefreshPublishedRecord: recordId => calls.push(['refresh', recordId])
+  });
+  const action = (name, dataset = {}) => {
+    const element = { dataset: { modalAction: name, ...dataset } };
+    element.closest = selector => selector === '[data-modal-action]' ? element : null;
+    return element;
+  };
+  const click = target => listeners.get('click')({ target, stopPropagation() {} });
+
+  click(action('close'));
+  click(action('toggle-codex-favorite', { kanji: '沼' }));
+  click(action('export-recommendation-audit'));
+  click(action('mark-pending', { kanji: '抜け感' }));
+  click(action('open-published-record', { recordId: 'record-1', presetKanji: '抜け感' }));
+  click(action('copy-library-cleanup', { mode: 'dry' }));
+  click(action('autofill-published-record'));
+  click(action('save-published-record'));
+  click(action('open-published-detail', { recordId: 'record-1' }));
+  click(action('refresh-published-record', { recordId: 'record-1' }));
+
+  assert.deepEqual(calls, [
+    ['close'],
+    ['close'],
+    ['codex-favorite', '沼'],
+    ['audit'],
+    ['pending', '抜け感'],
+    ['record', 'record-1', '抜け感'],
+    ['cleanup', 'dry'],
+    ['autofill'],
+    ['save'],
+    ['published-detail', 'record-1'],
+    ['refresh', 'record-1']
+  ]);
+  controller.destroy();
+  assert.equal(listeners.size, 0);
+});
+
+test('modal actions controller isolates outside actions and reports async failures', async () => {
+  const listeners = new Map();
+  const root = {
+    addEventListener: (type, listener) => listeners.set(type, listener),
+    removeEventListener: type => listeners.delete(type),
+    contains: element => element.inside !== false
+  };
+  const errors = [];
+  createModalActionsController({
+    root,
+    onSavePublishedRecord: async () => { throw new Error('save failed'); },
+    onClose: () => { throw new Error('outside action should be ignored'); },
+    onError: error => errors.push(error.message)
+  });
+  const outside = { dataset: { modalAction: 'close' }, inside: false };
+  outside.closest = () => outside;
+  listeners.get('click')({ target: outside });
+  const save = { dataset: { modalAction: 'save-published-record' }, inside: true };
+  save.closest = () => save;
+  listeners.get('click')({ target: save, stopPropagation() {} });
+  await Promise.resolve();
+
+  assert.deepEqual(errors, ['save failed']);
+});
+
+test('image fallback controller handles source, text, class and removal fallbacks', () => {
+  let errorListener = null;
+  const root = {
+    addEventListener: (type, listener, capture) => {
+      assert.equal(type, 'error');
+      assert.equal(capture, true);
+      errorListener = listener;
+    },
+    removeEventListener: (type, listener, capture) => {
+      assert.equal(type, 'error');
+      assert.equal(listener, errorListener);
+      assert.equal(capture, true);
+      errorListener = null;
+    }
+  };
+  const controller = createImageFallbackController({ root });
+  const sourceImage = { dataset: { imageFallback: 'fallback-src', fallbackSrc: 'fallback.svg' }, src: 'broken.png', remove() { this.removed = true; } };
+  errorListener({ target: sourceImage });
+  assert.equal(sourceImage.src, 'fallback.svg');
+  assert.equal(sourceImage.dataset.fallbackApplied, 'true');
+  errorListener({ target: sourceImage });
+  assert.equal(sourceImage.removed, true);
+
+  const textParent = { textContent: '' };
+  errorListener({ target: { dataset: { imageFallback: 'parent-text', fallbackText: '🍞' }, parentElement: textParent } });
+  assert.equal(textParent.textContent, '🍞');
+
+  const addedClasses = [];
+  const classImage = {
+    dataset: { imageFallback: 'parent-class-remove', parentClass: 'asset-missing' },
+    parentElement: { classList: { add: value => addedClasses.push(value) } },
+    remove() { this.removed = true; }
+  };
+  errorListener({ target: classImage });
+  assert.deepEqual(addedClasses, ['asset-missing']);
+  assert.equal(classImage.removed, true);
+
+  const removeImage = { dataset: { imageFallback: 'remove' }, remove() { this.removed = true; } };
+  errorListener({ target: removeImage });
+  assert.equal(removeImage.removed, true);
+  controller.destroy();
+  assert.equal(errorListener, null);
 });
 
 test('favorite conflict reconciles remote state before sending a duplicate mutation', async () => {
@@ -884,60 +1097,26 @@ test('word card view centralizes fallback data and failure copy', () => {
   assert.match(view.unavailableMessage, /生成失败/);
 });
 
-test('module migration keeps only remaining generated inline handlers in the compatibility facade', () => {
+test('module migration removes inline handlers and the temporary window compatibility facade', () => {
   const indexSource = fs.readFileSync(new URL('../index.html', import.meta.url), 'utf8');
   const appSource = fs.readFileSync(new URL('../app.js', import.meta.url), 'utf8');
   const combined = `${indexSource}\n${appSource}`;
-  const handlers = new Set();
-  const attributePattern = /\bon(?:click|change|input|submit)=["']([^"']+)["']/g;
-  for (const match of combined.matchAll(attributePattern)) {
-    for (const call of match[1].matchAll(/(?<!\.)\b([A-Za-z_$][\w$]*)\s*\(/g)) {
-      if (!['if', 'encodeURIComponent'].includes(call[1])) handlers.add(call[1]);
-    }
-  }
-  const facadeStart = appSource.indexOf('Object.assign(window, {');
-  const facadeEnd = appSource.indexOf('\n});', facadeStart);
-  const facade = appSource.slice(facadeStart, facadeEnd);
   assert.ok(indexSource.includes('<script type="module" src="app.js"></script>'));
   assert.ok(appSource.includes("from './frontend/app-shell.mjs'"));
+  assert.ok(appSource.includes("from './frontend/image-fallback.mjs'"));
   assert.ok(appSource.includes("from './frontend/manual-word-modal.mjs'"));
+  assert.ok(appSource.includes("from './frontend/modal-actions.mjs'"));
   assert.ok(appSource.includes("from './frontend/word-card-view.mjs'"));
+  assert.ok(appSource.includes("from './frontend/workflow-actions.mjs'"));
   assert.ok(appSource.includes('buildWordCardViewModel'));
-  assert.ok(facadeStart > 0);
-  handlers.forEach(handler => assert.match(facade, new RegExp(`\\b${handler}\\b`), `missing window handler: ${handler}`));
-  const favoritesMarkup = indexSource.slice(indexSource.indexOf('id="page-favorites"'), indexSource.indexOf('id="page-published"'));
-  const favoriteCardSource = appSource.slice(appSource.indexOf('function renderFavoriteCard'), appSource.indexOf('function renderTodayGrid'));
-  const publishedMarkup = indexSource.slice(indexSource.indexOf('id="page-published"'), indexSource.indexOf('</main>'));
-  const publishedCardSource = appSource.slice(appSource.indexOf('function renderPublishedCard'), appSource.indexOf('function renderPublished()'));
-  const dailyHotMarkup = indexSource.slice(indexSource.indexOf('id="page-today"'), indexSource.indexOf('id="page-favorites"'));
-  const dailyHotCardSource = appSource.slice(appSource.indexOf('function renderTodayCard'), appSource.indexOf('function getCodexDraftAuditItem'));
-  const codexPreviewCardSource = appSource.slice(appSource.indexOf('function renderCodexDraftPreviewCard'), appSource.indexOf('function openCodexDraftPreview'));
-  const dailyHotGridSource = appSource.slice(appSource.indexOf('function renderTodayGrid'), appSource.indexOf('function renderHistoryGrid'));
-  const manualWordModalSource = appSource.slice(appSource.indexOf('function openManualWordModal'), appSource.indexOf('async function syncManualWordWorkflow'));
-  assert.doesNotMatch(favoritesMarkup, /on(?:click|change)=/);
-  assert.doesNotMatch(favoriteCardSource, /onclick=/);
-  assert.doesNotMatch(publishedMarkup, /onclick=/);
-  assert.doesNotMatch(publishedCardSource, /onclick=/);
-  assert.doesNotMatch(dailyHotMarkup, /on(?:click|change|keydown)=/);
-  assert.doesNotMatch(dailyHotCardSource, /onclick=/);
-  assert.doesNotMatch(codexPreviewCardSource, /on(?:click|keydown)=/);
-  assert.doesNotMatch(dailyHotGridSource, /onclick=/);
-  assert.doesNotMatch(manualWordModalSource, /onclick=/);
-  assert.ok(manualWordModalSource.includes('data-manual-word-action="submit"'));
-  assert.doesNotMatch(indexSource, /on(?:click|change|keydown)=/);
+  assert.doesNotMatch(combined, /\son[a-z]+=/i);
+  assert.doesNotMatch(appSource, /Object\.assign\(window/);
+  assert.doesNotMatch(appSource, /Compatibility facade/);
   assert.ok(indexSource.includes('data-app-shell-action="switch-tab"'));
-  [
-    'toggleSidebar',
-    'switchTab',
-    'openSettingsModal',
-    'closeSettingsModal',
-    'exportWorkflowBackup',
-    'selectWorkflowBackupForRestore',
-    'restoreWorkflowBackup'
-  ].forEach(handler => assert.doesNotMatch(facade, new RegExp(`\\b${handler}\\b`), `unexpected window handler: ${handler}`));
-  [
-    'openManualWordModal',
-    'submitManualWord',
-    'confirmAddExistingManualWord'
-  ].forEach(handler => assert.doesNotMatch(facade, new RegExp(`\\b${handler}\\b`), `unexpected window handler: ${handler}`));
+  assert.ok(indexSource.includes('data-image-fallback="parent-text"'));
+  assert.ok(appSource.includes('data-manual-word-action="submit"'));
+  assert.ok(appSource.includes('data-workflow-action="generate-deepseek-card"'));
+  assert.ok(appSource.includes('data-workflow-action="candidate-state"'));
+  assert.ok(appSource.includes('data-modal-action="save-published-record"'));
+  assert.ok(appSource.includes('data-image-fallback="fallback-src"'));
 });

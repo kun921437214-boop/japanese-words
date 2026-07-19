@@ -15,7 +15,9 @@ import {
   transitionFavoriteStatus,
   transitionFavoriteToggle
 } from './frontend/favorites-page.mjs';
+import { createImageFallbackController } from './frontend/image-fallback.mjs';
 import { createManualWordModalController } from './frontend/manual-word-modal.mjs';
+import { createModalActionsController } from './frontend/modal-actions.mjs';
 import {
   buildPublishedPageModel,
   createPublishedPageController,
@@ -23,6 +25,7 @@ import {
   ratePublishedRecord
 } from './frontend/published-page.mjs';
 import { buildWordCardViewModel } from './frontend/word-card-view.mjs';
+import { createWorkflowActionsController } from './frontend/workflow-actions.mjs';
 import { createWorkflowCache, DEFAULT_CANDIDATE_LIMIT } from './frontend/workflow-cache.mjs';
 import { createWorkflowStore } from './frontend/workflow-store.mjs';
 import { createWorkflowSync } from './frontend/workflow-sync.mjs';
@@ -6086,7 +6089,7 @@ function renderAiWorkbench() {
     const status = getAiPreviewStatus(item);
     return `
       <tr class="${item.riskLevel === 'high' || item.confidenceLevel === 'review' ? 'risk-high' : ''}">
-        <td><input type="checkbox" ${selected ? 'checked' : ''} onchange="toggleAiPreviewSelection('${escapeJSString(item.kanji)}')"></td>
+        <td><input type="checkbox" ${selected ? 'checked' : ''} data-workflow-action="ai-preview-selection" data-kanji="${escapeHTML(item.kanji)}"></td>
         <td><strong>${escapeHTML(item.kanji)}</strong><div class="ai-preview-status">${escapeHTML(status)}</div></td>
         <td>${escapeHTML(item.romaji)}</td>
         <td>${escapeHTML(item.kana)}</td>
@@ -6501,7 +6504,7 @@ function getTodayAiCardActionLabel(aiCard, inFlight = false, entry = {}) {
 
 function renderAiCardActionButton(kanji, aiCard = {}, className = 'btn btn-ghost') {
   const cleanKanji = cleanShortText(kanji, 80);
-  const safeKanji = escapeJSString(cleanKanji);
+  const safeKanji = escapeHTML(cleanKanji);
   const card = cleanAiCard(aiCard || {}) || { cardStatus: 'none' };
   const inFlight = aiCardAutoInFlight.has(cleanKanji);
   if (isTodaySnapshotWord(cleanKanji)) {
@@ -6509,15 +6512,15 @@ function renderAiCardActionButton(kanji, aiCard = {}, className = 'btn btn-ghost
     const label = getTodayAiCardActionLabel(card, inFlight, entry);
     const stalePending = isAiCardStalePending(card, entry);
     const disabled = inFlight || (card.cardStatus === 'pending' && !stalePending);
-    return `<button class="${escapeHTML(className)}" ${disabled ? 'disabled' : ''} onclick="generateTodayAiCard('${safeKanji}')">${escapeHTML(label)}</button>`;
+    return `<button class="${escapeHTML(className)}" ${disabled ? 'disabled' : ''} data-workflow-action="generate-today-card" data-kanji="${safeKanji}">${escapeHTML(label)}</button>`;
   }
   if (card.cardStatus === 'ready') {
-    return `<button class="${escapeHTML(className)}" disabled>已生成词卡</button><button class="${escapeHTML(className)}" onclick="generateDeepSeekWordCard('${safeKanji}', true)">重新生成 DeepSeek 词卡</button>`;
+    return `<button class="${escapeHTML(className)}" disabled>已生成词卡</button><button class="${escapeHTML(className)}" data-workflow-action="generate-deepseek-card" data-kanji="${safeKanji}" data-force="true">重新生成 DeepSeek 词卡</button>`;
   }
   if (card.cardStatus === 'pending') {
     return `<button class="${escapeHTML(className)}" disabled>DeepSeek 词卡生成中</button>`;
   }
-  return `<button class="${escapeHTML(className)}" onclick="generateDeepSeekWordCard('${safeKanji}', false)">${card.cardStatus === 'failed' ? '重试 DeepSeek 词卡' : '生成 DeepSeek 词卡'}</button>`;
+  return `<button class="${escapeHTML(className)}" data-workflow-action="generate-deepseek-card" data-kanji="${safeKanji}" data-force="false">${card.cardStatus === 'failed' ? '重试 DeepSeek 词卡' : '生成 DeepSeek 词卡'}</button>`;
 }
 
 async function generateTodayAiCardsOnServer(kanjis = [], options = {}) {
@@ -7283,14 +7286,13 @@ async function markPublishedStatusOnly(kanji) {
 function renderStatusControl(kanji, options = {}) {
   const status = getFavoriteStatus(kanji);
   const statusLabel = FAVORITE_STATUS_LABELS[status];
-  const safeKanjiAction = escapeJSString(kanji);
   const useFavoritesController = options.context === 'favorites';
   const isOpen = activeStatusMenuKanji === kanji;
   const optionButtons = FAVORITE_STATUS_ORDER.map(option => {
     const selected = option === status;
     const actionAttributes = useFavoritesController
       ? `data-favorites-action="select-status" data-kanji="${escapeHTML(kanji)}" data-status="${escapeHTML(option)}"`
-      : `onclick="event.stopPropagation();selectFavoriteStatus('${safeKanjiAction}','${option}')"`;
+      : `data-workflow-action="select-status" data-kanji="${escapeHTML(kanji)}" data-status="${escapeHTML(option)}"`;
     return `
       <button class="card-status-option status-${option} ${selected ? 'selected' : ''}" ${actionAttributes}>
         <span class="status-dot"></span>
@@ -7300,8 +7302,8 @@ function renderStatusControl(kanji, options = {}) {
   }).join('');
   const toggleAttributes = useFavoritesController
     ? `data-favorites-action="toggle-status" data-kanji="${escapeHTML(kanji)}"`
-    : `onclick="event.stopPropagation();toggleStatusMenu('${safeKanjiAction}')"`;
-  const menuAttributes = useFavoritesController ? '' : 'onclick="event.stopPropagation()"';
+    : `data-workflow-action="toggle-status" data-kanji="${escapeHTML(kanji)}"`;
+  const menuAttributes = useFavoritesController ? '' : 'data-workflow-stop';
 
   return `
     <div class="card-status-control" data-kanji="${escapeHTML(kanji)}" ${useFavoritesController ? 'data-favorites-stop' : ''}>
@@ -7355,19 +7357,17 @@ async function selectFavoriteStatus(kanji, status) {
 function renderFeedbackControl(kanji, options = {}) {
   const feedback = getFeedbackRecord(kanji);
   const totalCount = Object.values(feedback.reasons || {}).reduce((sum, count) => sum + toInt(count, 0), 0);
-  const safeKanjiAction = escapeJSString(kanji);
   const isOpen = activeFeedbackMenuKanji === kanji;
   const isCodexPreview = options.context === 'codex-preview';
-  const actionName = isCodexPreview ? 'applyCodexDraftFeedback' : 'applyNegativeFeedback';
   const feedbackOptions = Object.entries(NEGATIVE_FEEDBACK_TYPES).map(([key, label]) => `
-    <button class="card-status-option ${feedback.lastReason === key ? 'selected' : ''}" onclick="event.stopPropagation();${actionName}('${safeKanjiAction}','${key}')">
+    <button class="card-status-option ${feedback.lastReason === key ? 'selected' : ''}" data-workflow-action="apply-feedback" data-kanji="${escapeHTML(kanji)}" data-reason="${escapeHTML(key)}" data-context="${isCodexPreview ? 'codex-preview' : 'default'}">
       <span>${escapeHTML(label)}</span>
       <span class="status-check">${feedback.reasons[key] ? `×${feedback.reasons[key]}` : ''}</span>
     </button>`).join('');
   return `
-    <div class="card-feedback-control card-status-control" data-kanji="${escapeHTML(kanji)}" data-feedback-context="${isCodexPreview ? 'codex-preview' : 'default'}">
-      <button class="card-action-btn ghost" aria-expanded="${isOpen ? 'true' : 'false'}" onclick="event.stopPropagation();toggleFeedbackMenu('${safeKanjiAction}')">负反馈${totalCount ? ` (${totalCount})` : ''}</button>
-      <div class="card-status-menu feedback-menu ${isOpen ? 'open' : ''}" onclick="event.stopPropagation()">${feedbackOptions}</div>
+    <div class="card-feedback-control card-status-control" data-kanji="${escapeHTML(kanji)}" data-feedback-context="${isCodexPreview ? 'codex-preview' : 'default'}" data-workflow-stop>
+      <button class="card-action-btn ghost" aria-expanded="${isOpen ? 'true' : 'false'}" data-workflow-action="toggle-feedback" data-kanji="${escapeHTML(kanji)}">负反馈${totalCount ? ` (${totalCount})` : ''}</button>
+      <div class="card-status-menu feedback-menu ${isOpen ? 'open' : ''}" data-workflow-stop>${feedbackOptions}</div>
     </div>`;
 }
 
@@ -7556,7 +7556,7 @@ function renderTodayCard(word) {
   return `
     <div class="word-card recommendation-card daily-hot-card${hasReferenceImage ? ' daily-hot-reference-card' : ''}" role="button" tabindex="0" aria-label="查看 ${safeKanjiAction} 词卡" data-daily-hot-action="open-detail" data-word-id="${safeId}">
       <div class="card-image-wrapper">
-        <img class="card-image" src="${escapeHTML(cardImageUrl)}" alt="${escapeHTML(word.kanji)}" loading="lazy" onerror="this.src='${fallbackSvg}'">
+        <img class="card-image" src="${escapeHTML(cardImageUrl)}" alt="${escapeHTML(word.kanji)}" loading="lazy" data-image-fallback="fallback-src" data-fallback-src="${escapeHTML(fallbackSvg)}">
         ${hasReferenceImage ? '' : `<div class="card-image-overlay"></div>
         <div class="card-word-overlay">
           <div class="card-kanji">${escapeHTML(word.kanji)}</div>
@@ -7688,7 +7688,7 @@ function renderCodexDraftPreviewCard(item, index) {
   return `
     <article class="word-card codex-preview-card" role="button" tabindex="0" aria-label="预览 ${escapeHTML(item.kanji)} 词卡" data-daily-hot-action="open-codex-preview" data-index="${index}">
       <div class="codex-preview-image-wrapper">
-        <img class="codex-preview-image" src="${escapeHTML(imageUrl || fallbackSvg)}" alt="${escapeHTML(item.kanji)} 参考插画" loading="lazy" onerror="this.src='${fallbackSvg}'">
+        <img class="codex-preview-image" src="${escapeHTML(imageUrl || fallbackSvg)}" alt="${escapeHTML(item.kanji)} 参考插画" loading="lazy" data-image-fallback="fallback-src" data-fallback-src="${escapeHTML(fallbackSvg)}">
         <span class="codex-preview-readonly-badge">草稿内容只读</span>
         <div class="card-top-actions" data-daily-hot-stop>
           <button class="card-fav-btn ${isFav ? 'favorited' : ''}" title="${isFav ? '取消收藏' : '收藏'}" aria-label="${isFav ? '取消收藏' : '收藏'}" data-daily-hot-action="toggle-codex-favorite" data-kanji="${safeKanjiAction}">
@@ -7740,12 +7740,12 @@ function openCodexDraftPreview(index) {
   const isFav = ['favorite', 'pending', 'published'].includes(teamState.key);
   const riskStateLabel = getRiskStateLabel({ ...item, candidateMeta: item });
   const riskStateKey = getRiskStateKey(riskStateLabel);
-  const safeKanjiAction = escapeJSString(item.kanji);
+  const safeKanjiAction = escapeHTML(item.kanji);
   document.getElementById('modalContainer').innerHTML = `
     <div class="modal-shell record-shell codex-preview-modal-shell">
       <div class="codex-preview-modal-layout">
         <div class="codex-preview-modal-art">
-          <img src="${escapeHTML(imageUrl || fallbackSvg)}" alt="${escapeHTML(item.kanji)} 参考插画" onerror="this.src='${fallbackSvg}'">
+          <img src="${escapeHTML(imageUrl || fallbackSvg)}" alt="${escapeHTML(item.kanji)} 参考插画" data-image-fallback="fallback-src" data-fallback-src="${escapeHTML(fallbackSvg)}">
         </div>
         <div class="codex-preview-modal-content">
           <div class="codex-preview-modal-header">
@@ -7754,7 +7754,7 @@ function openCodexDraftPreview(index) {
               <h2 class="codex-preview-modal-word">${escapeHTML(item.kanji)}</h2>
               <div class="codex-preview-modal-reading">${escapeHTML(item.kana || item.reading || '')}${item.romaji ? ` · ${escapeHTML(item.romaji)}` : ''}</div>
             </div>
-            <button type="button" class="codex-preview-modal-close" onclick="closeModal()" aria-label="关闭">×</button>
+            <button type="button" class="codex-preview-modal-close" data-modal-action="close" aria-label="关闭">×</button>
           </div>
           <div class="daily-hot-tags codex-preview-modal-tags">
             <span class="daily-hot-tag recommendation-grade-chip grade-${escapeHTML(recommendationGrade.toLowerCase())}">推荐等级 ${escapeHTML(recommendationGrade)}</span>
@@ -7794,7 +7794,7 @@ function openCodexDraftPreview(index) {
             <section class="codex-preview-section">
               <h3>团队操作</h3>
               <div class="modal-footer-actions codex-preview-modal-actions">
-                <button class="btn ${isFav ? 'btn-ghost' : 'btn-primary'}" onclick="closeModal();toggleCodexDraftFavorite('${safeKanjiAction}')">${isFav ? '取消收藏' : '加入收藏 / 选题池'}</button>
+                <button class="btn ${isFav ? 'btn-ghost' : 'btn-primary'}" data-modal-action="toggle-codex-favorite" data-kanji="${safeKanjiAction}">${isFav ? '取消收藏' : '加入收藏 / 选题池'}</button>
                 ${renderFeedbackControl(item.kanji, { context: 'codex-preview' })}
               </div>
               <p class="modal-section-subtle">收藏和负反馈会进入现有团队工作流；明日草稿内容本身保持只读。</p>
@@ -7818,7 +7818,7 @@ function renderFavoriteCard(word) {
   return `
     <div class="word-card workflow-card" data-favorites-action="open-detail" data-word-id="${escapeHTML(word.id || word.kanji)}">
       <div class="card-image-wrapper">
-        <img class="card-image" src="${escapeHTML(word.imageUrl)}" alt="${escapeHTML(word.kanji)}" loading="lazy" onerror="this.src='${fallbackSvg}'">
+        <img class="card-image" src="${escapeHTML(word.imageUrl)}" alt="${escapeHTML(word.kanji)}" loading="lazy" data-image-fallback="fallback-src" data-fallback-src="${escapeHTML(fallbackSvg)}">
         <div class="card-image-overlay"></div>
         <div class="card-word-overlay">
           <div class="card-kanji">${escapeHTML(word.kanji)}</div>
@@ -8096,7 +8096,7 @@ function openTodayRecommendationAuditModal() {
     <div class="modal-shell audit-shell">
       <div class="modal-header settings-header">
         <h2 class="modal-title">推荐审计 · ${escapeHTML(audit.date || todayKey())}</h2>
-        <button class="modal-close" onclick="closeModal()">×</button>
+        <button class="modal-close" data-modal-action="close">×</button>
       </div>
       <div class="modal-body form-modal-body">
         <div class="modal-section compact-section">
@@ -8121,8 +8121,8 @@ function openTodayRecommendationAuditModal() {
           </div>
         </div>
         <div class="modal-footer-actions form-actions">
-          <button class="btn btn-ghost" onclick="exportTodayRecommendationAudit()">导出推荐审计</button>
-          <button class="btn btn-primary" onclick="closeModal()">知道了</button>
+          <button class="btn btn-ghost" data-modal-action="export-recommendation-audit">导出推荐审计</button>
+          <button class="btn btn-primary" data-modal-action="close">知道了</button>
         </div>
       </div>
     </div>`;
@@ -8586,7 +8586,7 @@ function getCandidatePoolStats(words = getCandidatePoolWords()) {
 
 function renderCandidateCard(word) {
   const entry = word.candidateMeta || cleanCandidatePoolEntry(word.kanji, candidatePool[word.kanji] || {}) || {};
-  const safeKanji = escapeJSString(word.kanji);
+  const safeKanji = escapeHTML(word.kanji);
   const isSelected = candidateSelection.includes(word.kanji);
   const sourceType = getCandidateSourceType(entry);
   const sourceLabel = CANDIDATE_SOURCE_FILTER_LABELS[sourceType] || word.source || '未知';
@@ -8595,7 +8595,7 @@ function renderCandidateCard(word) {
   const aiCard = wordCardView.card;
   const hasReadyAiCard = wordCardView.hasFormalCard;
   return `
-    <div class="published-card candidate-card ${isSelected ? 'selected' : ''}" onclick="openDetail('${escapeJSString(word.id || word.kanji)}')">
+    <div class="published-card candidate-card ${isSelected ? 'selected' : ''}" data-workflow-action="candidate-open-detail" data-word-id="${escapeHTML(word.id || word.kanji)}">
       <div class="published-head">
         <div>
           <div class="published-word">${escapeHTML(word.kanji)}</div>
@@ -8603,7 +8603,7 @@ function renderCandidateCard(word) {
           <div class="published-sub">${escapeHTML(word.reading || entry.kana || '')}${entry.romaji ? ` · ${escapeHTML(entry.romaji)}` : ''} · ${escapeHTML(word.meaning)}</div>
         </div>
         <div class="candidate-head-actions">
-          <button class="candidate-select-toggle ${isSelected ? 'active' : ''}" onclick="event.stopPropagation();toggleCandidateSelection('${safeKanji}')" aria-label="选择候选词">${isSelected ? '✓' : ''}</button>
+          <button class="candidate-select-toggle ${isSelected ? 'active' : ''}" data-workflow-action="candidate-toggle" data-kanji="${safeKanji}" aria-label="选择候选词">${isSelected ? '✓' : ''}</button>
           <div class="published-rating rating-${escapeHTML(word.reviewState || 'watch')}">${escapeHTML(word.reviewStateLabel || '值得继续观察')}</div>
         </div>
       </div>
@@ -8632,14 +8632,14 @@ function renderCandidateCard(word) {
         <strong>${escapeHTML(word.reviewStateLabel || '值得继续观察')}</strong>
         <span>${escapeHTML(word.reviewNote || '系统会继续跟踪这个词的综合表现和稳定性。')}</span>
       </div>
-      <div class="published-actions candidate-actions" onclick="event.stopPropagation()">
-        <button class="card-action-btn ghost" onclick="setCandidateManualState('${safeKanji}','ready')">直推首页</button>
-        <button class="card-action-btn ghost" onclick="setCandidateManualState('${safeKanji}','watch')">继续观察</button>
-        <button class="card-action-btn ghost" onclick="setCandidateManualState('${safeKanji}','review')">转复核</button>
-        <button class="card-action-btn ghost" onclick="setCandidateManualState('${safeKanji}','')">取消覆盖</button>
+      <div class="published-actions candidate-actions" data-workflow-stop>
+        <button class="card-action-btn ghost" data-workflow-action="candidate-state" data-kanji="${safeKanji}" data-state="ready">直推首页</button>
+        <button class="card-action-btn ghost" data-workflow-action="candidate-state" data-kanji="${safeKanji}" data-state="watch">继续观察</button>
+        <button class="card-action-btn ghost" data-workflow-action="candidate-state" data-kanji="${safeKanji}" data-state="review">转复核</button>
+        <button class="card-action-btn ghost" data-workflow-action="candidate-state" data-kanji="${safeKanji}" data-state="">取消覆盖</button>
         ${hasReadyAiCard
-          ? `<button class="card-action-btn ghost" disabled>已生成词卡</button><button class="card-action-btn ghost" onclick="generateDeepSeekWordCard('${safeKanji}', true)">重新生成 DeepSeek 词卡</button>`
-          : `<button class="card-action-btn ghost" onclick="generateDeepSeekWordCard('${safeKanji}', false)">生成 DeepSeek 词卡</button>`}
+          ? `<button class="card-action-btn ghost" disabled>已生成词卡</button><button class="card-action-btn ghost" data-workflow-action="generate-deepseek-card" data-kanji="${safeKanji}" data-force="true">重新生成 DeepSeek 词卡</button>`
+          : `<button class="card-action-btn ghost" data-workflow-action="generate-deepseek-card" data-kanji="${safeKanji}" data-force="false">生成 DeepSeek 词卡</button>`}
       </div>
     </div>`;
 }
@@ -8793,26 +8793,26 @@ function renderWordDetailHero(word, wordCardView, fallbackHero) {
   if (referenceImageUrl) {
     return `
       <div class="modal-hero modal-hero-recommendation modal-hero-full-reference">
-        <img class="modal-hero-img" src="${safeImageUrl}" alt="${escapeHTML(word.kanji)} 完整参考图" onerror="this.src='${fallbackHero}'">
-        <button class="modal-close" onclick="closeModal()">✕</button>
+        <img class="modal-hero-img" src="${safeImageUrl}" alt="${escapeHTML(word.kanji)} 完整参考图" data-image-fallback="fallback-src" data-fallback-src="${escapeHTML(fallbackHero)}">
+        <button class="modal-close" data-modal-action="close">✕</button>
       </div>
       <div class="modal-reference-heading">
         <div>
           <div class="modal-reference-word">${escapeHTML(word.kanji)}</div>
           <div class="modal-reference-reading">${escapeHTML(word.reading || word.kana || '')}</div>
         </div>
-        <a class="modal-reference-open" href="${escapeHTML(referenceImageUrl)}" target="_blank" rel="noopener" onclick="event.stopPropagation()">查看原图 ↗</a>
+        <a class="modal-reference-open" href="${escapeHTML(referenceImageUrl)}" target="_blank" rel="noopener">查看原图 ↗</a>
       </div>`;
   }
   return `
     <div class="modal-hero modal-hero-recommendation">
-      <img class="modal-hero-img" src="${safeImageUrl}" alt="${escapeHTML(word.kanji)}" onerror="this.src='${fallbackHero}'">
+      <img class="modal-hero-img" src="${safeImageUrl}" alt="${escapeHTML(word.kanji)}" data-image-fallback="fallback-src" data-fallback-src="${escapeHTML(fallbackHero)}">
       <div class="modal-hero-overlay"></div>
       <div class="modal-hero-content">
         <div class="modal-kanji">${escapeHTML(word.kanji)}</div>
         <div class="modal-reading-hero">${escapeHTML(word.reading || '')}</div>
       </div>
-      <button class="modal-close" onclick="closeModal()">✕</button>
+      <button class="modal-close" data-modal-action="close">✕</button>
     </div>`;
 }
 
@@ -8822,7 +8822,7 @@ function openDetail(idOrKanji) {
   currentWordForModal = word;
   const status = getFavoriteStatus(word.kanji);
   const fallbackHero = `data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 900 400%22><rect fill=%22%23fdeef0%22 width=%22900%22 height=%22400%22/><text x=%22450%22 y=%22210%22 text-anchor=%22middle%22 font-size=%22110%22 fill=%22%23f47a9a%22>${encodeURIComponent(word.kanji)}</text></svg>`;
-  const safeKanjiAction = escapeJSString(word.kanji);
+  const safeKanjiAction = escapeHTML(word.kanji);
   const entry = cleanCandidatePoolEntry(word.kanji, candidatePool[word.kanji] || word.candidateMeta || {}) || {};
   const aiCardInFlight = aiCardAutoInFlight.has(word.kanji);
   const rawAiCard = cleanAiCard(entry.aiCard || word.aiCard || {});
@@ -8951,8 +8951,8 @@ function openDetail(idOrKanji) {
         <div class="modal-meta-item">🤖 词卡：${escapeHTML(aiCard.cardSource === 'codex' ? 'Codex 生成' : 'DeepSeek 生成')}</div>
       </div>
       <div class="modal-footer-actions">
-        <button class="btn btn-primary" onclick="markPending('${safeKanjiAction}')">标记待发布</button>
-        <button class="btn btn-ghost" onclick="openPublishedRecordModal('', '${safeKanjiAction}')">添加已发布记录</button>
+        <button class="btn btn-primary" data-modal-action="mark-pending" data-kanji="${safeKanjiAction}">标记待发布</button>
+        <button class="btn btn-ghost" data-modal-action="open-published-record" data-preset-kanji="${safeKanjiAction}">添加已发布记录</button>
         ${renderAiCardActionButton(word.kanji, aiCard, 'btn btn-ghost')}
       </div>
     </div>`;
@@ -9003,7 +9003,7 @@ function openLibraryCleanupModal() {
     <div class="modal-shell record-shell">
       <div class="modal-header settings-header">
         <h2 class="modal-title">AI 清洗历史种子数据并删除不合适词</h2>
-        <button class="modal-close" onclick="closeModal()">×</button>
+        <button class="modal-close" data-modal-action="close">×</button>
       </div>
       <div class="modal-body form-modal-body">
         <div class="modal-section compact-section">
@@ -9029,8 +9029,8 @@ function openLibraryCleanupModal() {
           <div class="modal-section-content">脚本会自动运行 npm run build:words，更新 words-data.js 和 shared/words-data.mjs。删除后首页补位只会使用 DeepSeek 审核词。</div>
         </div>
         <div class="modal-footer-actions form-actions">
-          <button class="btn btn-ghost" onclick="copyLibraryCleanupCommand('dry')">复制预览命令</button>
-          <button class="btn btn-primary" onclick="copyLibraryCleanupCommand('run')">复制真实删除命令</button>
+          <button class="btn btn-ghost" data-modal-action="copy-library-cleanup" data-mode="dry">复制预览命令</button>
+          <button class="btn btn-primary" data-modal-action="copy-library-cleanup" data-mode="run">复制真实删除命令</button>
         </div>
       </div>
     </div>`;
@@ -9065,13 +9065,13 @@ function openPublishedRecordModal(recordId = '', presetKanji = '') {
     <div class="modal-shell record-shell">
       <div class="modal-header settings-header">
         <h2 class="modal-title">${record ? '编辑已发布记录' : '添加已发布记录'}</h2>
-        <button class="modal-close" onclick="closeModal()">×</button>
+        <button class="modal-close" data-modal-action="close">×</button>
       </div>
       <div class="modal-body form-modal-body">
         <div class="form-grid two-col">
           <label class="form-field"><span>关联词</span><input class="form-input" id="recordWord" value="${escapeHTML(initialWord)}" placeholder="例如：尊い"></label>
           <label class="form-field"><span>内容类型</span><select class="form-input" id="recordContentType">${CONTENT_TYPE_OPTIONS.map(option => `<option value="${escapeHTML(option)}" ${(record?.contentType || '图文') === option ? 'selected' : ''}>${escapeHTML(option)}</option>`).join('')}</select></label>
-          <label class="form-field"><span>小红书链接 / 分享文案</span><div class="form-inline-actions"><input class="form-input" id="recordLink" value="${escapeHTML(record?.link || '')}" placeholder="粘贴分享链接或整段分享文案"><button class="card-action-btn ghost" type="button" onclick="autofillPublishedRecordFromLink()">自动识别</button></div></label>
+          <label class="form-field"><span>小红书链接 / 分享文案</span><div class="form-inline-actions"><input class="form-input" id="recordLink" value="${escapeHTML(record?.link || '')}" placeholder="粘贴分享链接或整段分享文案"><button class="card-action-btn ghost" type="button" data-modal-action="autofill-published-record">自动识别</button></div></label>
           <label class="form-field"><span>发布时间</span><input class="form-input" id="recordPublishedAt" type="datetime-local" value="${record?.publishedAt ? record.publishedAt.slice(0, 16) : ''}"></label>
           <label class="form-field full"><span>笔记标题</span><input class="form-input" id="recordTitle" value="${escapeHTML(record?.title || '')}" placeholder="小红书标题"></label>
           <label class="form-field full"><span>笔记描述</span><textarea class="form-input form-textarea" id="recordDescription" placeholder="笔记描述 / 备注文案">${escapeHTML(record?.description || '')}</textarea></label>
@@ -9106,8 +9106,8 @@ function openPublishedRecordModal(recordId = '', presetKanji = '') {
         </div>
 
         <div class="modal-footer-actions form-actions">
-          <button class="btn btn-primary" onclick="savePublishedRecord()">保存记录</button>
-          ${record ? `<button class="btn btn-ghost" onclick="openPublishedDetail('${escapeJSString(record.id)}')">返回详情</button>` : ''}
+          <button class="btn btn-primary" data-modal-action="save-published-record">保存记录</button>
+          ${record ? `<button class="btn btn-ghost" data-modal-action="open-published-detail" data-record-id="${escapeHTML(record.id)}">返回详情</button>` : ''}
         </div>
       </div>
     </div>`;
@@ -9329,7 +9329,7 @@ function openPublishedDetail(recordId) {
     <div class="modal-shell record-shell">
       <div class="modal-header settings-header">
         <h2 class="modal-title">已发布详情</h2>
-        <button class="modal-close" onclick="closeModal()">×</button>
+        <button class="modal-close" data-modal-action="close">×</button>
       </div>
       <div class="modal-body form-modal-body">
         <div class="published-detail-head">
@@ -9368,7 +9368,7 @@ function openPublishedDetail(recordId) {
         <div class="modal-section compact-section"><div class="modal-section-title">📝 笔记描述</div><div class="modal-section-content">${escapeHTML(record.description || '待填写')}</div></div>
         <div class="modal-section compact-section"><div class="modal-section-title">📒 备注</div><div class="modal-section-content">${escapeHTML(record.remarks || '暂无')}</div></div>
         <div class="modal-section compact-section"><div class="modal-section-title">⏱ 分时数据节点</div><div class="timeline-grid">${snapshotRows}</div></div>
-        <div class="modal-footer-actions form-actions"><button class="btn btn-ghost" onclick="refreshPublishedMetrics('${escapeJSString(record.id)}')">尝试自动更新</button><button class="btn btn-primary" onclick="openPublishedRecordModal('${escapeJSString(record.id)}')">编辑这条记录</button></div>
+        <div class="modal-footer-actions form-actions"><button class="btn btn-ghost" data-modal-action="refresh-published-record" data-record-id="${escapeHTML(record.id)}">尝试自动更新</button><button class="btn btn-primary" data-modal-action="open-published-record" data-record-id="${escapeHTML(record.id)}">编辑这条记录</button></div>
       </div>
     </div>`;
   document.getElementById('modalOverlay').classList.add('open');
@@ -9774,44 +9774,6 @@ window.addEventListener('online', () => {
   });
 });
 
-// Compatibility facade for existing inline handlers while page modules are migrated incrementally.
-Object.assign(window, {
-  setDailyHotDate,
-  setSourceFilter,
-  refreshData,
-  toggleDailyManageMenu,
-  handleDailyManageAction,
-  generateMissingTodayAiCards,
-  exportSelected,
-  shiftHistoryDate,
-  setStatusFilter,
-  openPublishedRecordModal,
-  refreshPublishedMetrics,
-  renderPublished,
-  toggleAiPreviewSelection,
-  generateTodayAiCard,
-  generateDeepSeekWordCard,
-  closeModal,
-  openDetail,
-  selectFavoriteStatus,
-  toggleStatusMenu,
-  toggleFeedbackMenu,
-  toggleFavorite,
-  dismissDailyHotRecommendation,
-  openCodexDraftPreview,
-  toggleCodexDraftFavorite,
-  applyCodexDraftFeedback,
-  handleGenerateTodaySnapshot,
-  exportTodayRecommendationAudit,
-  toggleCandidateSelection,
-  setCandidateManualState,
-  markPending,
-  copyLibraryCleanupCommand,
-  autofillPublishedRecordFromLink,
-  savePublishedRecord,
-  openPublishedDetail
-});
-
 createAppShellController({
   root: document,
   onToggleSidebar: toggleSidebar,
@@ -9845,6 +9807,45 @@ createManualWordModalController({
     showToast('手动词操作失败，请稍后重试');
   }
 });
+
+createWorkflowActionsController({
+  root: document,
+  onToggleAiPreviewSelection: toggleAiPreviewSelection,
+  onGenerateTodayCard: generateTodayAiCard,
+  onGenerateDeepSeekCard: generateDeepSeekWordCard,
+  onToggleStatus: toggleStatusMenu,
+  onSelectStatus: selectFavoriteStatus,
+  onToggleFeedback: toggleFeedbackMenu,
+  onNegativeFeedback: applyNegativeFeedback,
+  onCodexFeedback: applyCodexDraftFeedback,
+  onOpenDetail: openDetail,
+  onToggleCandidate: toggleCandidateSelection,
+  onSetCandidateState: setCandidateManualState,
+  onError: error => {
+    console.warn('工作流卡片操作失败', error);
+    showToast('卡片操作失败，请稍后重试');
+  }
+});
+
+createModalActionsController({
+  root: document.getElementById('modalContainer'),
+  onClose: closeModal,
+  onToggleCodexFavorite: toggleCodexDraftFavorite,
+  onExportRecommendationAudit: exportTodayRecommendationAudit,
+  onMarkPending: markPending,
+  onOpenPublishedRecord: openPublishedRecordModal,
+  onCopyLibraryCleanup: copyLibraryCleanupCommand,
+  onAutofillPublishedRecord: autofillPublishedRecordFromLink,
+  onSavePublishedRecord: savePublishedRecord,
+  onOpenPublishedDetail: openPublishedDetail,
+  onRefreshPublishedRecord: refreshPublishedMetrics,
+  onError: error => {
+    console.warn('弹窗操作失败', error);
+    showToast('弹窗操作失败，请稍后重试');
+  }
+});
+
+createImageFallbackController({ root: document });
 
 createDailyHotPageController({
   root: document.getElementById('mainContent'),
