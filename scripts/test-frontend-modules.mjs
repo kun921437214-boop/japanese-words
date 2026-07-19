@@ -27,6 +27,7 @@ import {
 import { createWorkflowCache } from '../frontend/workflow-cache.mjs';
 import { createWorkflowStore } from '../frontend/workflow-store.mjs';
 import { createWorkflowSync } from '../frontend/workflow-sync.mjs';
+import { buildWordCardViewModel, WORD_CARD_STATUS_LABELS } from '../frontend/word-card-view.mjs';
 
 function cleanTestWorkflow(value = {}) {
   return {
@@ -635,6 +636,93 @@ test('published page controller routes cards, placeholders and actions without o
   assert.equal(listeners.size, 0);
 });
 
+test('word card view hides every formal field and reference image until the card is ready', () => {
+  const view = buildWordCardViewModel({
+    word: { kanji: 'しみじみ', reading: 'しみじみ', meaning: '深切地感受' },
+    aiCard: {
+      cardStatus: 'pending',
+      summary: '不应提前展示',
+      explanation: '不应提前展示',
+      examples: [{ jp: 'しみじみ思う。', cn: '深有感触。' }],
+      suggestedTitles: ['不应提前展示'],
+      referenceImage: { status: 'ready', url: 'https://example.com/pending.png' }
+    }
+  });
+
+  assert.equal(view.hasFormalCard, false);
+  assert.equal(view.statusLabel, '生成中');
+  assert.equal(view.summary, '');
+  assert.equal(view.explanation, '');
+  assert.deepEqual(view.examples, []);
+  assert.deepEqual(view.suggestedTitles, []);
+  assert.equal(view.hasReferenceImage, false);
+  assert.equal(view.referenceImageUrl, '');
+  assert.equal(view.listTitle, '生成中');
+  assert.match(view.unavailableMessage, /生成中/);
+});
+
+test('word card view exposes sanitized formal content and image for ready cards', () => {
+  const view = buildWordCardViewModel({
+    word: { kanji: '思い切って', reading: 'おもいきって', meaning: '下定决心' },
+    aiCard: {
+      cardStatus: 'ready',
+      cardSource: 'codex',
+      summary: '跨过犹豫，鼓起勇气行动。',
+      explanation: '用于终于下定决心采取行动的语境。',
+      examples: [{ jp: '思い切って聞いてみた。', cn: '鼓起勇气问了。' }],
+      suggestedTitles: ['日本人说「思い切って」是什么感觉？'],
+      contentAngles: ['行动前的犹豫'],
+      interactionPrompts: ['你最近鼓起勇气做了什么？'],
+      coverSuggestion: { coverText: '思い切って', mainVisual: '跨过小河' },
+      referenceImage: { status: 'ready', url: 'https://example.com/ready.png' }
+    }
+  });
+
+  assert.equal(view.hasFormalCard, true);
+  assert.equal(view.statusLabel, '已生成词卡');
+  assert.equal(view.title, '日本人说「思い切って」是什么感觉？');
+  assert.equal(view.summary, '跨过犹豫，鼓起勇气行动。');
+  assert.equal(view.examples.length, 1);
+  assert.equal(view.hasCoverSuggestion, true);
+  assert.equal(view.referenceImageUrl, 'https://example.com/ready.png');
+  assert.equal(view.listTitle, view.title);
+});
+
+test('word card view keeps ready content visible while an explicit regeneration is in flight', () => {
+  const view = buildWordCardViewModel({
+    aiCard: {
+      cardStatus: 'ready',
+      summary: '已经生成的正式内容',
+      suggestedTitles: ['已有标题']
+    },
+    inFlight: true
+  });
+
+  assert.equal(view.storedStatus, 'ready');
+  assert.equal(view.status, 'pending');
+  assert.equal(view.statusLabel, '生成中');
+  assert.equal(view.hasFormalCard, true);
+  assert.equal(view.summary, '已经生成的正式内容');
+});
+
+test('word card view centralizes fallback data and failure copy', () => {
+  const view = buildWordCardViewModel({
+    word: { kanji: '気が楽', reading: 'きがらく', romaji: 'word-romaji', meaning: '轻松' },
+    entry: { kana: 'きがらく', romaji: 'kigarak', meaning: 'entry meaning' },
+    aiCard: { cardStatus: 'failed', summary: '失败内容不展示' }
+  });
+
+  assert.deepEqual(view.basic, {
+    kanji: '気が楽',
+    kana: 'きがらく',
+    romaji: 'kigarak',
+    meaning: '轻松'
+  });
+  assert.equal(view.statusLabel, WORD_CARD_STATUS_LABELS.failed);
+  assert.equal(view.summary, '');
+  assert.match(view.unavailableMessage, /生成失败/);
+});
+
 test('module migration exposes every inline handler through the compatibility facade', () => {
   const indexSource = fs.readFileSync(new URL('../index.html', import.meta.url), 'utf8');
   const appSource = fs.readFileSync(new URL('../app.js', import.meta.url), 'utf8');
@@ -650,6 +738,8 @@ test('module migration exposes every inline handler through the compatibility fa
   const facadeEnd = appSource.indexOf('\n});', facadeStart);
   const facade = appSource.slice(facadeStart, facadeEnd);
   assert.ok(indexSource.includes('<script type="module" src="app.js"></script>'));
+  assert.ok(appSource.includes("from './frontend/word-card-view.mjs'"));
+  assert.ok(appSource.includes('buildWordCardViewModel'));
   assert.ok(facadeStart > 0);
   handlers.forEach(handler => assert.match(facade, new RegExp(`\\b${handler}\\b`), `missing window handler: ${handler}`));
   const favoritesMarkup = indexSource.slice(indexSource.indexOf('id="page-favorites"'), indexSource.indexOf('id="page-published"'));

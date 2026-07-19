@@ -317,10 +317,14 @@ test('Codex 当日快照通过共享版本门并保留来源元数据', () => {
 
 test('Codex 参考图在列表卡和详情卡中完整展示', () => {
   const appSource = fs.readFileSync(new URL('../app.js', import.meta.url), 'utf8');
+  const wordCardViewSource = fs.readFileSync(new URL('../frontend/word-card-view.mjs', import.meta.url), 'utf8');
   const styleSource = fs.readFileSync(new URL('../styles.css', import.meta.url), 'utf8');
-  assert.ok(appSource.includes("aiCard?.referenceImage?.status === 'ready'"));
+  assert.ok(appSource.includes("from './frontend/word-card-view.mjs'"));
+  assert.ok(wordCardViewSource.includes("storedStatus === 'ready'"));
+  assert.ok(wordCardViewSource.includes("card.referenceImage?.status === 'ready'"));
+  assert.ok(appSource.includes('wordCardView.hasReferenceImage'));
   assert.ok(appSource.includes('daily-hot-reference-card'));
-  assert.ok(appSource.includes('function renderWordDetailHero(word, aiCard, fallbackHero)'));
+  assert.ok(appSource.includes('function renderWordDetailHero(word, wordCardView, fallbackHero)'));
   assert.ok(appSource.includes('modal-hero-full-reference'));
   assert.ok(appSource.includes('查看原图 ↗'));
   assert.match(styleSource, /\.daily-hot-reference-card \.card-image\s*\{[^}]*object-fit:contain;/);

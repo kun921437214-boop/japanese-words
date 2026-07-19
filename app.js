@@ -20,6 +20,7 @@ import {
   getPublishedAutoRefreshSummary,
   ratePublishedRecord
 } from './frontend/published-page.mjs';
+import { buildWordCardViewModel } from './frontend/word-card-view.mjs';
 import { createWorkflowCache, DEFAULT_CANDIDATE_LIMIT } from './frontend/workflow-cache.mjs';
 import { createWorkflowStore } from './frontend/workflow-store.mjs';
 import { createWorkflowSync } from './frontend/workflow-sync.mjs';
@@ -976,7 +977,7 @@ function canExportFormalWordCard(kanji) {
   const entry = cleanCandidatePoolEntry(cleanKanji, candidatePool[cleanKanji] || {});
   if (!entry) return false;
   if (isLibraryAuditRemoved(entry)) return false;
-  return cleanAiCard(entry.aiCard || {})?.cardStatus === 'ready';
+  return buildWordCardViewModel({ entry, aiCard: entry.aiCard || {} }).hasFormalCard;
 }
 
 function getFormalWordCardBlockReason(kanji) {
@@ -984,7 +985,8 @@ function getFormalWordCardBlockReason(kanji) {
   const entry = cleanCandidatePoolEntry(cleanKanji, candidatePool[cleanKanji] || {});
   if (!entry) return '缺少候选池记录';
   if (isLibraryAuditRemoved(entry)) return '该词已被历史种子审核标记为删除或归档';
-  if (cleanAiCard(entry.aiCard || {})?.cardStatus !== 'ready') return 'DeepSeek 词卡未生成';
+  const wordCardView = buildWordCardViewModel({ entry, aiCard: entry.aiCard || {} });
+  if (!wordCardView.hasFormalCard) return wordCardView.statusLabel;
   return '';
 }
 
@@ -5248,9 +5250,14 @@ function buildRecommendedWord(word, origin = 'global', candidateMeta = null) {
   const dataFeedbackScore = getDataFeedbackScore(word, publishedWordMap, candidateMeta);
   const referenceQualityScore = getReferenceQualityScore(word);
   const confidenceLevel = candidateMeta?.confidenceLevel || getConfidenceLevel(word);
-  const aiCard = cleanAiCard(candidateMeta?.aiCard || word.aiCard || {});
-  const hasReadyAiCard = aiCard?.cardStatus === 'ready';
-  const aiCardStatus = aiCard?.cardStatus || 'none';
+  const wordCardView = buildWordCardViewModel({
+    word,
+    entry: candidateMeta || {},
+    aiCard: candidateMeta?.aiCard || word.aiCard || {}
+  });
+  const aiCard = wordCardView.card;
+  const hasReadyAiCard = wordCardView.hasFormalCard;
+  const aiCardStatus = wordCardView.status;
   const confidenceWeightScore = getConfidenceWeightScore(confidenceLevel);
   const feedbackPenalty = getFeedbackPenalty(word.kanji);
   const extensionBoost = getExtensionBoost(word, publishedWordMap, candidateMeta);
@@ -5331,9 +5338,7 @@ function buildRecommendedWord(word, origin = 'global', candidateMeta = null) {
   };
   return {
     ...word,
-    imageUrl: aiCard?.referenceImage?.status === 'ready' && aiCard.referenceImage.url
-      ? aiCard.referenceImage.url
-      : word.imageUrl,
+    imageUrl: wordCardView.referenceImageUrl || word.imageUrl,
     origin,
     dataScore,
     platformHeatScore,
@@ -5356,16 +5361,16 @@ function buildRecommendedWord(word, origin = 'global', candidateMeta = null) {
     scoreBreakdown: cleanCandidateScoreBreakdown(scores),
     rankingSignals: buildRankingSignals(word, scores, candidateMeta),
     aiCard,
-    suggestedTitle: hasReadyAiCard ? (safeArray(aiCard?.suggestedTitles)[0] || '') : (aiCardStatus === 'pending' ? 'DeepSeek 词卡生成中' : ''),
-    contentHook: hasReadyAiCard ? (safeArray(aiCard?.contentAngles)[0] || '') : '',
-    targetAudience: hasReadyAiCard ? (aiCard?.targetAudience || '') : '',
-    referenceDirection: hasReadyAiCard ? (aiCard?.referenceDirection || '') : '',
-    recommendationReason: hasReadyAiCard ? (aiCard?.summary || '') : (aiCardStatus === 'pending' ? 'DeepSeek 词卡生成中' : 'DeepSeek 词卡未生成'),
-    detail: hasReadyAiCard ? (aiCard?.explanation || '') : '',
-    examples: hasReadyAiCard ? safeArray(aiCard?.examples) : [],
-    interactions: hasReadyAiCard ? safeArray(aiCard?.interactionPrompts) : [],
-    wrongUsage: hasReadyAiCard ? (aiCard?.wrongUsage || '') : '',
-    riskWarning: hasReadyAiCard ? (aiCard?.riskWarning || '') : (candidateMeta?.riskWarning || '')
+    suggestedTitle: hasReadyAiCard ? wordCardView.title : (aiCardStatus === 'pending' ? 'DeepSeek 词卡生成中' : ''),
+    contentHook: hasReadyAiCard ? (wordCardView.contentAngles[0] || '') : '',
+    targetAudience: wordCardView.targetAudience,
+    referenceDirection: wordCardView.referenceDirection,
+    recommendationReason: hasReadyAiCard ? wordCardView.summary : (aiCardStatus === 'pending' ? 'DeepSeek 词卡生成中' : 'DeepSeek 词卡未生成'),
+    detail: wordCardView.explanation,
+    examples: wordCardView.examples,
+    interactions: wordCardView.interactionPrompts,
+    wrongUsage: wordCardView.wrongUsage,
+    riskWarning: hasReadyAiCard ? wordCardView.riskWarning : (candidateMeta?.riskWarning || '')
   };
 }
 
@@ -6464,15 +6469,10 @@ async function runDailyAutoRefreshIfNeeded(options = {}) {
 }
 
 function getAiCardStatusLabel(aiCard) {
-  const status = cleanAiCard(aiCard || {})?.cardStatus || 'none';
-  if (status === 'pending' && isAiCardStalePending(aiCard)) return '生成超时';
-  return {
-    none: '未生成词卡',
-    pending: '生成中',
-    ready: '已生成词卡',
-    failed: '生成失败',
-    stale: '需重新生成'
-  }[status] || '未生成词卡';
+  return buildWordCardViewModel({
+    aiCard,
+    stalePending: isAiCardStalePending(aiCard)
+  }).statusLabel;
 }
 
 function isAiCardStalePending(aiCard, entry = {}) {
@@ -7532,11 +7532,19 @@ function renderTodayCard(word) {
   const riskStateLabel = getRiskStateLabel(word);
   const riskStateKey = getRiskStateKey(riskStateLabel);
   const entry = cleanCandidatePoolEntry(word.kanji, candidatePool[word.kanji] || word.candidateMeta || {}) || {};
-  const aiCard = cleanAiCard(entry.aiCard || word.aiCard || {});
-  const hasReferenceImage = aiCard?.referenceImage?.status === 'ready' && Boolean(aiCard.referenceImage.url);
-  const cardImageUrl = hasReferenceImage ? aiCard.referenceImage.url : word.imageUrl;
   const aiCardInFlight = aiCardAutoInFlight.has(word.kanji);
-  const aiCardStatus = aiCardInFlight ? 'pending' : (aiCard?.cardStatus || 'none');
+  const rawAiCard = cleanAiCard(entry.aiCard || word.aiCard || {});
+  const wordCardView = buildWordCardViewModel({
+    word,
+    entry,
+    aiCard: rawAiCard,
+    inFlight: aiCardInFlight,
+    stalePending: isAiCardStalePending(rawAiCard, entry)
+  });
+  const aiCard = wordCardView.card;
+  const hasReferenceImage = wordCardView.hasReferenceImage;
+  const cardImageUrl = wordCardView.referenceImageUrl || word.imageUrl;
+  const aiCardStatus = wordCardView.status;
   const aiCardActionLabel = getTodayAiCardActionLabel(aiCard, aiCardInFlight, entry);
   const aiCardStalePending = isAiCardStalePending(aiCard, entry);
   const aiCardActionDisabled = aiCardInFlight || (aiCardStatus === 'pending' && !aiCardStalePending);
@@ -7581,7 +7589,7 @@ function renderTodayCard(word) {
           <span class="daily-hot-tag state-tag-${escapeHTML(teamState.key)}">${escapeHTML(teamState.note)}</span>
           <span class="daily-hot-tag recommendation-grade-chip grade-${escapeHTML(recommendationGrade.toLowerCase())}">推荐等级 ${escapeHTML(recommendationGrade)}</span>
           <span class="daily-hot-tag risk-state-chip risk-${escapeHTML(riskStateKey)}">${escapeHTML(riskStateLabel)}</span>
-          <span class="daily-hot-tag ai-card-state-${escapeHTML(aiCardStatus)}">${escapeHTML(getAiCardStatusLabel(aiCardInFlight ? { cardStatus: 'pending' } : aiCard))}</span>
+          <span class="daily-hot-tag ai-card-state-${escapeHTML(aiCardStatus)}">${escapeHTML(wordCardView.statusLabel)}</span>
         </div>
         <div class="daily-hot-actions" data-daily-hot-stop>
           <button class="card-action-btn ghost" ${aiCardActionDisabled ? 'disabled' : ''} data-daily-hot-action="generate-card" data-kanji="${safeKanjiAction}">${escapeHTML(aiCardActionLabel)}</button>
@@ -7664,8 +7672,8 @@ function getDailyQualityCategoryLabel(category = '') {
 }
 
 function renderCodexDraftPreviewCard(item, index) {
-  const aiCard = cleanAiCard(item.aiCard || {}) || {};
-  const imageUrl = aiCard.referenceImage?.url || '';
+  const wordCardView = buildWordCardViewModel({ word: item, entry: item, aiCard: item.aiCard || {} });
+  const imageUrl = wordCardView.referenceImageUrl;
   const audit = getCodexDraftAuditItem(item);
   const recommendationGrade = audit.recommendationLevel || 'A';
   const categoryLabel = getDailyQualityCategoryLabel(audit.qualityCategory);
@@ -7696,7 +7704,7 @@ function renderCodexDraftPreviewCard(item, index) {
           <span class="daily-hot-tag recommendation-grade-chip grade-${escapeHTML(recommendationGrade.toLowerCase())}">${escapeHTML(recommendationGrade)}</span>
         </div>
         <div class="card-meaning">${escapeHTML(item.meaning || '—')}</div>
-        <div class="daily-hot-reason line-2">${escapeHTML(aiCard.summary || aiCard.explanation || '点击查看完整词卡')}</div>
+        <div class="daily-hot-reason line-2">${escapeHTML(wordCardView.summary || wordCardView.explanation || wordCardView.statusLabel)}</div>
         <div class="daily-hot-tags">
           <span class="daily-hot-tag">${escapeHTML(categoryLabel)}</span>
           <span class="daily-hot-tag state-tag-${escapeHTML(teamState.key)}">${escapeHTML(teamState.note)}</span>
@@ -7710,21 +7718,22 @@ function renderCodexDraftPreviewCard(item, index) {
 function openCodexDraftPreview(index) {
   const item = safeArray(codexTomorrowDraft?.items)[index];
   if (!item) return;
-  const aiCard = cleanAiCard(item.aiCard || {}) || {};
+  const wordCardView = buildWordCardViewModel({ word: item, entry: item, aiCard: item.aiCard || {} });
+  const aiCard = wordCardView.hasFormalCard ? wordCardView.card : {};
   const audit = getCodexDraftAuditItem(item);
   const recommendationGrade = audit.recommendationLevel || 'A';
   const categoryLabel = getDailyQualityCategoryLabel(audit.qualityCategory);
   const qualitySummary = codexTomorrowDraft?.validation?.qualitySummary || {};
-  const imageUrl = aiCard.referenceImage?.url || '';
+  const imageUrl = wordCardView.referenceImageUrl;
   const fallbackSvg = `data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 900 1200%22><rect fill=%22%23fffdf9%22 width=%22900%22 height=%221200%22/><text x=%22450%22 y=%22220%22 text-anchor=%22middle%22 font-size=%22110%22 font-weight=%22700%22 fill=%22%23222222%22>${encodeURIComponent(item.kanji)}</text></svg>`;
-  const examples = safeArray(aiCard.examples);
-  const suggestedTitles = safeArray(aiCard.suggestedTitles);
-  const contentAngles = safeArray(aiCard.contentAngles);
-  const usageScenes = safeArray(aiCard.usageScenes);
-  const similarWords = safeArray(aiCard.similarWords);
-  const interactionPrompts = safeArray(aiCard.interactionPrompts);
-  const coverSuggestion = aiCard.coverSuggestion || {};
-  const hasCoverSuggestion = Boolean(coverSuggestion.coverText || coverSuggestion.mainVisual || coverSuggestion.style || coverSuggestion.avoid);
+  const examples = wordCardView.examples;
+  const suggestedTitles = wordCardView.suggestedTitles;
+  const contentAngles = wordCardView.contentAngles;
+  const usageScenes = wordCardView.usageScenes;
+  const similarWords = wordCardView.similarWords;
+  const interactionPrompts = wordCardView.interactionPrompts;
+  const coverSuggestion = wordCardView.coverSuggestion;
+  const hasCoverSuggestion = wordCardView.hasCoverSuggestion;
   const teamState = getDailyHotTeamState({ kanji: item.kanji, candidateMeta: item });
   const isFav = ['favorite', 'pending', 'published'].includes(teamState.key);
   const riskStateLabel = getRiskStateLabel({ ...item, candidateMeta: item });
@@ -7800,8 +7809,10 @@ function renderFavoriteCard(word) {
   const fallbackSvg = `data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 520 390%22><rect fill=%22%23fdeef0%22 width=%22520%22 height=%22390%22/><text x=%22260%22 y=%22195%22 text-anchor=%22middle%22 font-size=%2272%22 fill=%22%23f47a9a%22>${encodeURIComponent(word.kanji)}</text></svg>`;
   const isFav = favorites.includes(word.kanji);
   const entry = cleanCandidatePoolEntry(word.kanji, candidatePool[word.kanji] || word.candidateMeta || {}) || {};
-  const aiCard = cleanAiCard(entry.aiCard || word.aiCard || {});
-  const aiCardText = word.suggestedTitle || getAiCardStatusLabel(aiCard);
+  const wordCardView = buildWordCardViewModel({ word, entry, aiCard: entry.aiCard || word.aiCard || {} });
+  const aiCardText = wordCardView.hasFormalCard
+    ? (word.suggestedTitle || wordCardView.listTitle)
+    : wordCardView.statusLabel;
   return `
     <div class="word-card workflow-card" data-favorites-action="open-detail" data-word-id="${escapeHTML(word.id || word.kanji)}">
       <div class="card-image-wrapper">
@@ -8578,14 +8589,15 @@ function renderCandidateCard(word) {
   const sourceType = getCandidateSourceType(entry);
   const sourceLabel = CANDIDATE_SOURCE_FILTER_LABELS[sourceType] || word.source || '未知';
   const section = getCandidateSection(entry);
-  const aiCard = cleanAiCard(entry.aiCard || {});
-  const hasReadyAiCard = aiCard?.cardStatus === 'ready';
+  const wordCardView = buildWordCardViewModel({ word, entry, aiCard: entry.aiCard || {} });
+  const aiCard = wordCardView.card;
+  const hasReadyAiCard = wordCardView.hasFormalCard;
   return `
     <div class="published-card candidate-card ${isSelected ? 'selected' : ''}" onclick="openDetail('${escapeJSString(word.id || word.kanji)}')">
       <div class="published-head">
         <div>
           <div class="published-word">${escapeHTML(word.kanji)}</div>
-          <div class="published-title line-2">${escapeHTML(hasReadyAiCard ? (word.suggestedTitle || 'DeepSeek 词卡已生成') : 'DeepSeek 词卡未生成')}</div>
+          <div class="published-title line-2">${escapeHTML(hasReadyAiCard ? (word.suggestedTitle || wordCardView.listTitle) : wordCardView.statusLabel)}</div>
           <div class="published-sub">${escapeHTML(word.reading || entry.kana || '')}${entry.romaji ? ` · ${escapeHTML(entry.romaji)}` : ''} · ${escapeHTML(word.meaning)}</div>
         </div>
         <div class="candidate-head-actions">
@@ -8599,7 +8611,7 @@ function renderCandidateCard(word) {
         <span class="published-mini-chip">最终推荐分 ${word.finalScore}</span>
         <span class="published-mini-chip">内部状态 ${escapeHTML(word.reviewStateLabel || '值得继续观察')}</span>
         <span class="published-mini-chip">分桶 ${escapeHTML(CANDIDATE_SECTION_LABELS[section] || section || '长期候选')}</span>
-        <span class="published-mini-chip">${escapeHTML(getAiCardStatusLabel(aiCard))}</span>
+        <span class="published-mini-chip">${escapeHTML(wordCardView.statusLabel)}</span>
       </div>
       <div class="published-info-grid">
         <div><span>来源</span><strong>${escapeHTML(sourceLabel)}</strong></div>
@@ -8771,9 +8783,9 @@ function findWord(idOrKanji) {
   return null;
 }
 
-function renderWordDetailHero(word, aiCard, fallbackHero) {
-  const referenceImageUrl = aiCard?.referenceImage?.status === 'ready'
-    ? cleanShortText(aiCard.referenceImage.url, 1000)
+function renderWordDetailHero(word, wordCardView, fallbackHero) {
+  const referenceImageUrl = wordCardView?.hasReferenceImage
+    ? wordCardView.referenceImageUrl
     : '';
   const safeImageUrl = escapeHTML(referenceImageUrl || word.imageUrl || getHeroImageUrl(word.kanji));
   if (referenceImageUrl) {
@@ -8810,15 +8822,21 @@ function openDetail(idOrKanji) {
   const fallbackHero = `data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 900 400%22><rect fill=%22%23fdeef0%22 width=%22900%22 height=%22400%22/><text x=%22450%22 y=%22210%22 text-anchor=%22middle%22 font-size=%22110%22 fill=%22%23f47a9a%22>${encodeURIComponent(word.kanji)}</text></svg>`;
   const safeKanjiAction = escapeJSString(word.kanji);
   const entry = cleanCandidatePoolEntry(word.kanji, candidatePool[word.kanji] || word.candidateMeta || {}) || {};
-  const aiCard = cleanAiCard(entry.aiCard || word.aiCard || {});
-  const hasReadyAiCard = aiCard?.cardStatus === 'ready';
   const aiCardInFlight = aiCardAutoInFlight.has(word.kanji);
+  const rawAiCard = cleanAiCard(entry.aiCard || word.aiCard || {});
+  const wordCardView = buildWordCardViewModel({
+    word,
+    entry,
+    aiCard: rawAiCard,
+    inFlight: aiCardInFlight,
+    stalePending: isAiCardStalePending(rawAiCard, entry)
+  });
+  const aiCard = wordCardView.card;
+  const hasReadyAiCard = wordCardView.hasFormalCard;
   const displayAiCard = aiCardInFlight ? { ...(aiCard || {}), cardStatus: 'pending' } : aiCard;
   if (!hasReadyAiCard) {
-    const basicRomaji = entry.romaji || word.romaji || '';
-    const basicKana = entry.kana || word.kana || word.reading || '';
     document.getElementById('modalContainer').innerHTML = `
-      ${renderWordDetailHero(word, aiCard, fallbackHero)}
+      ${renderWordDetailHero(word, wordCardView, fallbackHero)}
       <div class="modal-body">
         <div class="modal-section compact-section">
           <div class="modal-section-title">核心判断</div>
@@ -8826,14 +8844,14 @@ function openDetail(idOrKanji) {
           ${renderRankingSignals(word.rankingSignals)}
         </div>
         <div class="detail-grid">
-          <div class="detail-item"><span>罗马音</span><strong>${escapeHTML(basicRomaji || '—')}</strong></div>
-          <div class="detail-item"><span>假名</span><strong>${escapeHTML(basicKana || '—')}</strong></div>
-          <div class="detail-item"><span>中文意思</span><strong>${escapeHTML(word.meaning || entry.meaning || '—')}</strong></div>
-          <div class="detail-item"><span>DeepSeek 词卡</span><strong>${escapeHTML(getAiCardStatusLabel(displayAiCard))}</strong></div>
+          <div class="detail-item"><span>罗马音</span><strong>${escapeHTML(wordCardView.basic.romaji || '—')}</strong></div>
+          <div class="detail-item"><span>假名</span><strong>${escapeHTML(wordCardView.basic.kana || '—')}</strong></div>
+          <div class="detail-item"><span>中文意思</span><strong>${escapeHTML(wordCardView.basic.meaning || '—')}</strong></div>
+          <div class="detail-item"><span>DeepSeek 词卡</span><strong>${escapeHTML(wordCardView.statusLabel)}</strong></div>
         </div>
         <div class="modal-section compact-section">
           <div class="modal-section-title">DeepSeek 词卡</div>
-          <div class="wrong-usage-box">${displayAiCard?.cardStatus === 'pending' ? 'DeepSeek 词卡生成中。生成完成后会刷新为正式词卡内容。' : '该词还没有生成 DeepSeek 词卡。未生成前不展示推荐标题、例句、详细解释、错误用法或互动引导。'}</div>
+          <div class="wrong-usage-box">${escapeHTML(wordCardView.unavailableMessage)}</div>
         </div>
         <div class="modal-section compact-section">
           <div class="modal-section-title">准入状态</div>
@@ -8847,26 +8865,26 @@ function openDetail(idOrKanji) {
     document.getElementById('modalOverlay').classList.add('open');
     return;
   }
-  const displayTitle = safeArray(aiCard?.suggestedTitles)[0] || '';
-  const displayHook = safeArray(aiCard?.contentAngles)[0] || '';
-  const displayAudience = aiCard?.targetAudience || '';
-  const displayReference = aiCard?.referenceDirection || '';
-  const displayReason = aiCard?.summary || '';
-  const displayDetail = aiCard?.explanation || '';
-  const displayRisk = aiCard?.riskWarning || '';
-  const displayWrongUsage = aiCard?.wrongUsage || '';
-  const displayExamples = safeArray(aiCard?.examples);
-  const displayInteractions = safeArray(aiCard?.interactionPrompts);
-  const displaySimilarWords = safeArray(aiCard?.similarWords);
-  const displayUsageScenes = safeArray(aiCard?.usageScenes);
-  const displayContentAngles = safeArray(aiCard?.contentAngles);
-  const displayCover = aiCard?.coverSuggestion || {};
-  const hasCoverSuggestion = Boolean(displayCover.coverText || displayCover.mainVisual || displayCover.style || displayCover.avoid);
+  const displayTitle = wordCardView.title;
+  const displayHook = wordCardView.contentAngles[0] || '';
+  const displayAudience = wordCardView.targetAudience;
+  const displayReference = wordCardView.referenceDirection;
+  const displayReason = wordCardView.summary;
+  const displayDetail = wordCardView.explanation;
+  const displayRisk = wordCardView.riskWarning;
+  const displayWrongUsage = wordCardView.wrongUsage;
+  const displayExamples = wordCardView.examples;
+  const displayInteractions = wordCardView.interactionPrompts;
+  const displaySimilarWords = wordCardView.similarWords;
+  const displayUsageScenes = wordCardView.usageScenes;
+  const displayContentAngles = wordCardView.contentAngles;
+  const displayCover = wordCardView.coverSuggestion;
+  const hasCoverSuggestion = wordCardView.hasCoverSuggestion;
   const scoreBreakdown = word.scoreBreakdown || {};
   const reviewCheckText = entry.reviewReason || (entry.confidenceLevel === 'review' || entry.evidenceType === 'unknown' ? '证据或用法不够稳定，发布前建议人工查证。' : '');
   const avoidScenarioText = displayCover.avoid || entry.riskWarning || '';
   document.getElementById('modalContainer').innerHTML = `
-    ${renderWordDetailHero(word, aiCard, fallbackHero)}
+    ${renderWordDetailHero(word, wordCardView, fallbackHero)}
     <div class="modal-body">
       <div class="modal-section compact-section">
         <div class="modal-section-title">核心判断</div>
@@ -9469,21 +9487,21 @@ function exportSelected() {
   text += `📅 ${new Date().toLocaleDateString('zh-CN')}\n\n`;
   favWords.forEach((word, index) => {
     const entry = cleanCandidatePoolEntry(word.kanji, candidatePool[word.kanji] || word.candidateMeta || {}) || {};
-    const card = cleanAiCard(entry.aiCard || {});
+    const wordCardView = buildWordCardViewModel({ word, entry, aiCard: entry.aiCard || {} });
     text += `${index + 1}. 【${word.kanji}】${word.reading}\n`;
     text += `   中文：${word.meaning}\n`;
     text += `   状态：${FAVORITE_STATUS_LABELS[getFavoriteStatus(word.kanji)]}\n`;
-    if (card?.cardStatus !== 'ready') {
-      text += '   该词尚未生成 DeepSeek 词卡，请先生成词卡。\n\n';
+    if (!wordCardView.hasFormalCard) {
+      text += `   ${wordCardView.unavailableMessage}\n\n`;
       return;
     }
-    text += `   推荐标题：${safeArray(card.suggestedTitles).join(' / ') || '—'}\n`;
-    text += `   摘要：${card.summary || '—'}\n`;
-    text += `   详细解释：${card.explanation || '—'}\n`;
-    text += `   内容角度：${safeArray(card.contentAngles).join(' / ') || '—'}\n`;
-    text += `   例句：${safeArray(card.examples).map(example => `${example.jp}${example.cn ? `（${example.cn}）` : ''}`).join('；') || '—'}\n`;
-    text += `   封面建议：${card.coverSuggestion?.coverText || ''} ${card.coverSuggestion?.mainVisual || ''} ${card.coverSuggestion?.style || ''}`.trim() + '\n';
-    text += `   互动引导：${safeArray(card.interactionPrompts).join(' / ') || '—'}\n\n`;
+    text += `   推荐标题：${wordCardView.suggestedTitles.join(' / ') || '—'}\n`;
+    text += `   摘要：${wordCardView.summary || '—'}\n`;
+    text += `   详细解释：${wordCardView.explanation || '—'}\n`;
+    text += `   内容角度：${wordCardView.contentAngles.join(' / ') || '—'}\n`;
+    text += `   例句：${wordCardView.examples.map(example => `${example.jp}${example.cn ? `（${example.cn}）` : ''}`).join('；') || '—'}\n`;
+    text += `   封面建议：${wordCardView.coverSuggestion.coverText || ''} ${wordCardView.coverSuggestion.mainVisual || ''} ${wordCardView.coverSuggestion.style || ''}`.trim() + '\n';
+    text += `   互动引导：${wordCardView.interactionPrompts.join(' / ') || '—'}\n\n`;
   });
   navigator.clipboard.writeText(text).then(() => showToast('✅ 已复制到剪贴板')).catch(() => {
     const textarea = document.createElement('textarea');

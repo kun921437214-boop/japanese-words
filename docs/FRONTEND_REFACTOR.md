@@ -21,7 +21,7 @@ Reduce `app.js` risk through small, behavior-preserving extractions. Keep the st
 - Local-cache and cloud-save payloads are built through one stable field allowlist.
 - Favorite command responses update revision and audit metadata through the store.
 
-## In Progress: Phase 3 — Page Modules
+## Completed: Phase 3 — Page Modules and Word-Card Views
 
 Extract one page at a time:
 
@@ -40,9 +40,20 @@ Extract one page at a time:
    - Today, tomorrow-preview, and historical date controls now share one tested date-selection model without changing snapshot or candidate ranking data;
    - Daily Hot page controls, recommendation cards, Codex preview cards, and empty-state generation actions no longer depend on inline click/change/keydown handlers;
    - executable tests cover date ordering, source filtering, history boundaries, stopped card controls, and keyboard preview routing.
-4. shared word-card rendering — next.
+4. Shared word-card rendering — completed:
+   - `frontend/word-card-view.mjs` owns the read-only word-card view model used by Daily Recommendations, Favorites, internal Candidate Pool views, Codex draft previews, detail modals, and text export;
+   - only `aiCard.cardStatus === "ready"` exposes formal titles, summaries, explanations, examples, interaction prompts, cover suggestions, or reference images;
+   - pending, failed, stale, and timed-out cards share one status label and unavailable-message model while basic kana, romaji, and meaning remain visible;
+   - regenerating an already-ready card keeps its last formal content visible while presenting the operation as in progress;
+   - executable tests cover the formal-content gate, ready-card projection, in-flight regeneration, fallback fields, and failure copy.
 
 Remove inline HTML handlers only after the corresponding page module has executable interaction tests.
+
+## Next: Phase 4 — Compatibility Facade Reduction
+
+- Move remaining modal and settings interactions behind delegated controllers in small groups.
+- Remove each temporary `window` export only after its last inline consumer has an executable interaction test.
+- Keep generation, Cloudflare sync, KV, and workflow mutation behavior unchanged while reducing browser-global state.
 
 ## Required Validation
 
