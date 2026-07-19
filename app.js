@@ -3378,6 +3378,10 @@ function getSyncEndpoint() {
   if (!SYNC_API_URL) return '';
   const url = new URL(`${SYNC_API_URL}/favorites`, window.location.origin);
   url.searchParams.set('view', 'app');
+  const tomorrow = addDaysToDateKey(todayKey(), 1);
+  if (/^\d{4}-\d{2}-\d{2}$/.test(currentDailyHotDateKey) && currentDailyHotDateKey !== tomorrow) {
+    url.searchParams.set('historyDate', currentDailyHotDateKey);
+  }
   return url.toString();
 }
 
@@ -3529,8 +3533,13 @@ async function loadCloudWorkflow(options = false) {
     verifyDeepSeekLibraryAuditCoverage();
     hydrateTodayWordsFromSnapshot();
     cacheCurrentWorkflow(remoteData.updated || lastCloudSyncAt);
-    updateAllBadges();
-    refreshCurrentGrid();
+    try {
+      updateAllBadges();
+      refreshCurrentGrid();
+    } catch (renderError) {
+      console.error('工作流已同步，但页面渲染失败', renderError);
+      if (showMessages) showToast('数据已同步，但页面显示失败，请刷新后重试');
+    }
 
     if (showMessages) {
       updateSyncStatus(`团队工作流已同步：选题池 ${getFavoriteWords().length} 个词，已发布 ${getPublishedDisplayItems().length} 条`, '#4caf50');
@@ -4354,6 +4363,15 @@ function setDailyHotDate(dateKeyValue) {
   localStorage.setItem(DAILY_HOT_DATE_STORAGE_KEY, currentDailyHotDateKey);
   closeDailyManageMenu();
   if (isViewingTomorrowDailyHot()) void loadCodexTomorrowDraft({ notifyOnError: true });
+  const selectedHistoryDate = currentDailyHotDateKey;
+  if (/^\d{4}-\d{2}-\d{2}$/.test(selectedHistoryDate) && !isViewingTomorrowDailyHot()) {
+    const grid = document.getElementById('todayGrid');
+    if (grid) grid.innerHTML = '<div class="empty-state inline-empty"><div class="empty-title">正在读取历史推荐</div><div class="empty-desc">正在加载这一天的词卡内容…</div></div>';
+    void loadCloudWorkflow({ mode: 'remote-first', showMessages: false }).then(loaded => {
+      if (!loaded && currentDailyHotDateKey === selectedHistoryDate) renderDailyHot();
+    });
+    return;
+  }
   renderDailyHot();
 }
 
@@ -6547,7 +6565,7 @@ function getAiCardStatusLabel(aiCard) {
 
 function isAiCardStalePending(aiCard, entry = {}) {
   const card = cleanAiCard(aiCard || {});
-  if (card.cardStatus !== 'pending') return false;
+  if (!card || card.cardStatus !== 'pending') return false;
   const startedAt = Date.parse(card.generatedAt || entry.updatedAt || '');
   return Boolean(Number.isFinite(startedAt) && Date.now() - startedAt > AI_CARD_PENDING_TTL_MS);
 }
@@ -6570,7 +6588,7 @@ function getTodayAiCardActionLabel(aiCard, inFlight = false, entry = {}) {
 function renderAiCardActionButton(kanji, aiCard = {}, className = 'btn btn-ghost') {
   const cleanKanji = cleanShortText(kanji, 80);
   const safeKanji = escapeJSString(cleanKanji);
-  const card = cleanAiCard(aiCard || {});
+  const card = cleanAiCard(aiCard || {}) || { cardStatus: 'none' };
   const inFlight = aiCardAutoInFlight.has(cleanKanji);
   if (isTodaySnapshotWord(cleanKanji)) {
     const entry = candidatePool?.[cleanKanji] || {};
