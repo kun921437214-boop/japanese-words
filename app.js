@@ -1,3 +1,45 @@
+import { createApiClient } from './frontend/api-client.mjs';
+import { createAppShellController } from './frontend/app-shell.mjs';
+import {
+  buildDailyHotDateOptions,
+  buildDailyHotSourceFilterModel,
+  buildHistoryNavigationModel,
+  createDailyHotPageController,
+  normalizeDailyHotDateSelection
+} from './frontend/daily-hot-page.mjs';
+import {
+  buildFavoritesPageModel,
+  createFavoritesPageController,
+  normalizeFavoriteStatus,
+  normalizeFavoriteStatusFilter,
+  transitionFavoriteStatus,
+  transitionFavoriteToggle
+} from './frontend/favorites-page.mjs';
+import { createImageFallbackController } from './frontend/image-fallback.mjs';
+import { createManualWordModalController } from './frontend/manual-word-modal.mjs';
+import { createModalActionsController } from './frontend/modal-actions.mjs';
+import { parseXiaohongshuSharePayload } from './frontend/published-record-parser.mjs';
+import {
+  buildPublishedPageModel,
+  createPublishedPageController,
+  getPublishedAutoRefreshSummary,
+  ratePublishedRecord
+} from './frontend/published-page.mjs';
+import { buildWordCardViewModel } from './frontend/word-card-view.mjs';
+import { createWorkflowActionsController } from './frontend/workflow-actions.mjs';
+import { createWorkflowCache, DEFAULT_CANDIDATE_LIMIT } from './frontend/workflow-cache.mjs';
+import { createWorkflowStore } from './frontend/workflow-store.mjs';
+import { createWorkflowSync } from './frontend/workflow-sync.mjs';
+import {
+  cleanHistorySnapshot as cleanSharedHistorySnapshot,
+  cleanHistorySnapshots as cleanSharedHistorySnapshots,
+  cleanTodaySnapshot as cleanSharedTodaySnapshot,
+  cleanTodaySnapshotHistory as cleanSharedTodaySnapshotHistory,
+  mergeHistorySnapshots as mergeSharedHistorySnapshots,
+  mergeTodaySnapshot as mergeSharedTodaySnapshot,
+  mergeTodaySnapshotHistory as mergeSharedTodaySnapshotHistory
+} from './shared/workflow-schema.mjs';
+
 /* ═══════════════════════════════════════════
    记忆面包 — 小红书日语选题推荐系统（Phase 1）
    保持旧收藏 / 状态 / Cloudflare KV 兼容
@@ -17,8 +59,6 @@ let aiBatches = [];
 let todaySnapshot = {};
 let historySnapshots = {};
 let todaySnapshotHistory = [];
-let workflowRevision = 0;
-let workflowAuditLog = [];
 let libraryReviewRecords = {};
 let libraryAuditCoverage = {
   total: 0,
@@ -64,7 +104,6 @@ const CANDIDATE_POOL_DAILY_INTAKE = 50;
 const CANDIDATE_POOL_MIN_SCORE = 60;
 const TODAY_HISTORY_DEDUP_DAYS = 30;
 const TODAY_HISTORY_DEDUP_RELAX_STEPS = [TODAY_HISTORY_DEDUP_DAYS];
-const TODAY_SNAPSHOT_HISTORY_LIMIT = 45;
 const ACTIVE_TAB_STORAGE_KEY = 'kotoba_active_tab';
 const SOURCE_FILTER_STORAGE_PREFIX = 'kotoba_source_filter_';
 const STATUS_FILTER_STORAGE_KEY = 'kotoba_status_filter';
@@ -944,7 +983,7 @@ function canExportFormalWordCard(kanji) {
   const entry = cleanCandidatePoolEntry(cleanKanji, candidatePool[cleanKanji] || {});
   if (!entry) return false;
   if (isLibraryAuditRemoved(entry)) return false;
-  return cleanAiCard(entry.aiCard || {})?.cardStatus === 'ready';
+  return buildWordCardViewModel({ entry, aiCard: entry.aiCard || {} }).hasFormalCard;
 }
 
 function getFormalWordCardBlockReason(kanji) {
@@ -952,7 +991,8 @@ function getFormalWordCardBlockReason(kanji) {
   const entry = cleanCandidatePoolEntry(cleanKanji, candidatePool[cleanKanji] || {});
   if (!entry) return '缺少候选池记录';
   if (isLibraryAuditRemoved(entry)) return '该词已被历史种子审核标记为删除或归档';
-  if (cleanAiCard(entry.aiCard || {})?.cardStatus !== 'ready') return 'DeepSeek 词卡未生成';
+  const wordCardView = buildWordCardViewModel({ entry, aiCard: entry.aiCard || {} });
+  if (!wordCardView.hasFormalCard) return wordCardView.statusLabel;
   return '';
 }
 
@@ -2000,11 +2040,11 @@ function filterKnownFavorites(words, pool = candidatePool) {
 }
 
 function cleanFavoriteStatus(status) {
-  return FAVORITE_STATUS_ORDER.includes(status) ? status : 'none';
+  return normalizeFavoriteStatus(status);
 }
 
 function cleanStatusFilter(status) {
-  return ['all', 'none', 'pending'].includes(status) ? status : 'all';
+  return normalizeFavoriteStatusFilter(status);
 }
 
 function cleanConfidenceLevel(level) {
@@ -2850,117 +2890,27 @@ function isCompatibleTodaySnapshotGeneratorVersion(value = '') {
 }
 
 function cleanTodaySnapshot(snapshot = {}) {
-  const snapshotDateKey = /^\d{4}-\d{2}-\d{2}$/.test(String(snapshot.dateKey || ''))
-    ? String(snapshot.dateKey)
-    : '';
-  return {
-    dateKey: snapshotDateKey,
-    words: getUniqueWords(snapshot.words || []).slice(0, WORDS_PER_DAY),
-    generatedAt: typeof snapshot.generatedAt === 'string' ? snapshot.generatedAt : '',
-    source: cleanShortText(snapshot.source || 'candidatePool', 80) || 'candidatePool',
-    batchIds: getUniqueWords(snapshot.batchIds || []).slice(0, 30),
-    version: clamp(toInt(snapshot.version, 0), 0, 999),
-    generatorVersion: cleanShortText(snapshot.generatorVersion, 80),
-    createdBy: ['server', 'frontend', 'worker', 'manual', 'codex'].includes(snapshot.createdBy) ? snapshot.createdBy : '',
-    dedupDaysUsed: clamp(toInt(snapshot.dedupDaysUsed, 0), 0, 365),
-    relaxedDedup: Boolean(snapshot.relaxedDedup),
-    shortage: Boolean(snapshot.shortage),
-    repeated30Count: clamp(toInt(snapshot.repeated30Count, 0), 0, WORDS_PER_DAY),
-    repeated30Words: getUniqueWords(snapshot.repeated30Words || []).slice(0, WORDS_PER_DAY),
-    recommendationAudit: cleanRecommendationAuditSummary(snapshot.recommendationAudit || {})
-  };
+  return cleanSharedTodaySnapshot(snapshot);
 }
 
 function cleanHistorySnapshot(snapshot = {}, fallbackDateKey = '') {
-  const record = snapshot || {};
-  const snapshotDateKey = /^\d{4}-\d{2}-\d{2}$/.test(String(record.dateKey || ''))
-    ? String(record.dateKey)
-    : (/^\d{4}-\d{2}-\d{2}$/.test(String(fallbackDateKey || '')) ? String(fallbackDateKey) : '');
-  return {
-    dateKey: snapshotDateKey,
-    words: getUniqueWords(record.words || []).slice(0, WORDS_PER_DAY),
-    generatedAt: typeof record.generatedAt === 'string' ? record.generatedAt : '',
-    source: record.source === 'todaySnapshot' ? 'todaySnapshot' : 'todaySnapshot',
-    batchIds: getUniqueWords(record.batchIds || []).slice(0, 30),
-    version: clamp(toInt(record.version, 1), 1, 999),
-    generatorVersion: cleanShortText(record.generatorVersion, 80),
-    createdBy: ['server', 'frontend', 'worker', 'manual', 'codex'].includes(record.createdBy) ? record.createdBy : '',
-    dedupDaysUsed: clamp(toInt(record.dedupDaysUsed, 0), 0, 365),
-    relaxedDedup: Boolean(record.relaxedDedup),
-    shortage: Boolean(record.shortage),
-    repeated30Count: clamp(toInt(record.repeated30Count, 0), 0, WORDS_PER_DAY),
-    repeated30Words: getUniqueWords(record.repeated30Words || []).slice(0, WORDS_PER_DAY),
-    archivedAt: typeof record.archivedAt === 'string' ? record.archivedAt : '',
-    title: cleanShortText(record.title || '每日热门归档', 120),
-    recommendationAudit: cleanRecommendationAuditSummary(record.recommendationAudit || {})
-  };
+  return cleanSharedHistorySnapshot(snapshot, fallbackDateKey);
 }
 
 function cleanHistorySnapshots(snapshots = {}) {
-  return Object.entries(snapshots || {}).reduce((result, [dateKeyValue, snapshot]) => {
-    const cleanSnapshot = cleanHistorySnapshot(snapshot, dateKeyValue);
-    if (cleanSnapshot.dateKey && cleanSnapshot.words.length) result[cleanSnapshot.dateKey] = cleanSnapshot;
-    return result;
-  }, {});
-}
-
-function preserveRicherSnapshotAudit(selected = {}, fallback = {}) {
-  return safeArray(fallback.recommendationAudit?.items).length > safeArray(selected.recommendationAudit?.items).length
-    ? { ...selected, recommendationAudit: fallback.recommendationAudit }
-    : selected;
+  return cleanSharedHistorySnapshots(snapshots);
 }
 
 function cleanTodaySnapshotHistory(history = []) {
-  const byDate = new Map();
-  safeArray(history).forEach(snapshot => {
-    const cleanSnapshot = cleanHistorySnapshot(snapshot, snapshot?.dateKey);
-    if (!cleanSnapshot.dateKey || !cleanSnapshot.words.length) return;
-    const current = byDate.get(cleanSnapshot.dateKey);
-    if (!current) {
-      byDate.set(cleanSnapshot.dateKey, cleanSnapshot);
-      return;
-    }
-    if (cleanSnapshot.version !== current.version) {
-      byDate.set(cleanSnapshot.dateKey, cleanSnapshot.version > current.version ? cleanSnapshot : current);
-      return;
-    }
-    const cleanTimestamp = String(cleanSnapshot.generatedAt || cleanSnapshot.archivedAt || '');
-    const currentTimestamp = String(current.generatedAt || current.archivedAt || '');
-    const selected = cleanTimestamp >= currentTimestamp ? cleanSnapshot : current;
-    const fallback = selected === cleanSnapshot ? current : cleanSnapshot;
-    byDate.set(cleanSnapshot.dateKey, cleanTimestamp === currentTimestamp ? preserveRicherSnapshotAudit(selected, fallback) : selected);
-  });
-  return [...byDate.values()]
-    .sort((left, right) => String(right.dateKey || '').localeCompare(String(left.dateKey || '')))
-    .slice(0, TODAY_SNAPSHOT_HISTORY_LIMIT);
+  return cleanSharedTodaySnapshotHistory(history);
 }
 
 function mergeHistorySnapshots(localSnapshots, remoteSnapshots) {
-  const merged = new Map();
-  [...Object.values(cleanHistorySnapshots(remoteSnapshots)), ...Object.values(cleanHistorySnapshots(localSnapshots))].forEach(snapshot => {
-    const current = merged.get(snapshot.dateKey);
-    if (!current) {
-      merged.set(snapshot.dateKey, snapshot);
-      return;
-    }
-    if (snapshot.version !== current.version) {
-      merged.set(snapshot.dateKey, snapshot.version > current.version ? snapshot : current);
-      return;
-    }
-    const snapshotTimestamp = String(snapshot.archivedAt || snapshot.generatedAt || '');
-    const currentTimestamp = String(current.archivedAt || current.generatedAt || '');
-    const selected = snapshotTimestamp >= currentTimestamp ? snapshot : current;
-    const fallback = selected === snapshot ? current : snapshot;
-    merged.set(snapshot.dateKey, snapshotTimestamp === currentTimestamp ? preserveRicherSnapshotAudit(selected, fallback) : selected);
-  });
-  return [...merged.values()].reduce((result, snapshot) => {
-    result[snapshot.dateKey] = snapshot;
-    return result;
-  }, {});
+  return mergeSharedHistorySnapshots(localSnapshots, remoteSnapshots);
 }
 
 function mergeTodaySnapshotHistory(localHistory, remoteHistory) {
-  return cleanTodaySnapshotHistory([...safeArray(remoteHistory), ...safeArray(localHistory)]);
+  return mergeSharedTodaySnapshotHistory(localHistory, remoteHistory);
 }
 
 function archiveTodaySnapshotHistory(snapshot = todaySnapshot) {
@@ -3030,17 +2980,7 @@ function archiveStaleTodaySnapshot() {
 }
 
 function mergeTodaySnapshot(localSnapshot, remoteSnapshot) {
-  const localClean = cleanTodaySnapshot(localSnapshot);
-  const remoteClean = cleanTodaySnapshot(remoteSnapshot);
-  if (!localClean.dateKey) return remoteClean;
-  if (!remoteClean.dateKey) return localClean;
-  if (localClean.dateKey !== remoteClean.dateKey) return localClean.dateKey > remoteClean.dateKey ? localClean : remoteClean;
-  if (remoteClean.version !== localClean.version) return remoteClean.version > localClean.version ? remoteClean : localClean;
-  const remoteGeneratedAt = String(remoteClean.generatedAt || '');
-  const localGeneratedAt = String(localClean.generatedAt || '');
-  const selected = remoteGeneratedAt >= localGeneratedAt ? remoteClean : localClean;
-  const fallback = selected === remoteClean ? localClean : remoteClean;
-  return remoteGeneratedAt === localGeneratedAt ? preserveRicherSnapshotAudit(selected, fallback) : selected;
+  return mergeSharedTodaySnapshot(localSnapshot, remoteSnapshot);
 }
 
 function hasTodaySnapshotForToday(snapshot = todaySnapshot) {
@@ -3143,6 +3083,47 @@ function updateAiBatchImportStats(batchId, importedDelta = 0, skippedDelta = 0) 
   aiBatches = current;
 }
 
+const workflowStore = createWorkflowStore({
+  cleanWorkflow: cleanStoredWorkflow,
+  mergeCandidatePool: (localPool, remotePool) => cleanCandidatePool({
+    ...(localPool || {}),
+    ...(remotePool || {})
+  }),
+  mergeHistorySnapshots,
+  mergeTodaySnapshotHistory
+});
+
+function getCurrentWorkflowState() {
+  return {
+    words: favorites,
+    statuses: favoriteStatuses,
+    feedback: wordFeedback,
+    publishedRecords,
+    candidatePool,
+    aiBatches,
+    aiPreview,
+    todaySnapshot,
+    todayDismissed,
+    historySnapshots,
+    todaySnapshotHistory
+  };
+}
+
+function applyWorkflowData(workflow = {}) {
+  favorites = workflow.words;
+  favoriteStatuses = workflow.statuses;
+  wordFeedback = workflow.feedback;
+  publishedRecords = workflow.publishedRecords;
+  candidatePool = workflow.candidatePool;
+  aiBatches = workflow.aiBatches;
+  aiPreview = workflow.aiPreview;
+  syncAiPreviewGlobalsFromWorkflow();
+  todaySnapshot = workflow.todaySnapshot;
+  todayDismissed = workflow.todayDismissed;
+  historySnapshots = workflow.historySnapshots;
+  todaySnapshotHistory = workflow.todaySnapshotHistory;
+}
+
 function loadLocalWorkflow(options = {}) {
   const includeLegacyLocal = Boolean(options.includeLegacyLocal);
   let workflow = { words: [], statuses: {}, feedback: {}, publishedRecords: [], candidatePool: {}, aiBatches: [], aiPreview: {}, todaySnapshot: {}, todayDismissed: {}, historySnapshots: {}, todaySnapshotHistory: [], revision: 0, auditLog: [], schemaVersion: 2 };
@@ -3176,20 +3157,8 @@ function loadLocalWorkflow(options = {}) {
     }
   }
 
-  favorites = workflow.words;
-  favoriteStatuses = workflow.statuses;
-  wordFeedback = workflow.feedback;
-  publishedRecords = workflow.publishedRecords;
-  candidatePool = workflow.candidatePool;
-  aiBatches = workflow.aiBatches;
-  aiPreview = workflow.aiPreview;
-  syncAiPreviewGlobalsFromWorkflow();
-  todaySnapshot = workflow.todaySnapshot;
-  todayDismissed = workflow.todayDismissed;
-  historySnapshots = workflow.historySnapshots;
-  todaySnapshotHistory = workflow.todaySnapshotHistory;
-  workflowRevision = workflow.revision;
-  workflowAuditLog = workflow.auditLog;
+  applyWorkflowData(workflow);
+  workflowStore.replaceMetadata(workflow);
   migrateOriginalWordsAfterAudit();
   ensureReviewedSeedWordsInCandidatePool();
   archiveStaleTodaySnapshot();
@@ -3225,68 +3194,26 @@ function saveLocalWorkflow() {
   historySnapshots = cleanHistorySnapshots(historySnapshots);
   todaySnapshotHistory = cleanTodaySnapshotHistory(todaySnapshotHistory);
 
-  const payload = {
-    words: favorites,
-    statuses: favoriteStatuses,
-    feedback: wordFeedback,
-    publishedRecords,
-    candidatePool,
-    aiBatches,
-    aiPreview,
-    todaySnapshot,
-    todayDismissed,
-    historySnapshots,
-    todaySnapshotHistory,
-    revision: workflowRevision,
-    auditLog: workflowAuditLog,
-    updated: nowIso(),
-    schemaVersion: 2
-  };
+  const payload = workflowStore.buildPayload(getCurrentWorkflowState(), nowIso());
   if (writeLocalWorkflowCache(payload)) lastLocalCacheAt = payload.updated;
 }
 
-const LOCAL_WORKFLOW_CACHE_CANDIDATE_LIMIT = 120;
-
-function buildLocalWorkflowCachePayload(payload = {}) {
-  const cleanPayload = cleanStoredWorkflow(payload);
-  const prioritizedWords = [
-    ...safeArray(cleanPayload.todaySnapshot?.words),
-    ...safeArray(cleanPayload.words)
-  ];
-  const cachedCandidateWords = [...new Set(prioritizedWords
-    .map(word => String(word || '').trim())
-    .filter(Boolean))]
-    .slice(0, LOCAL_WORKFLOW_CACHE_CANDIDATE_LIMIT);
-  const compactCandidatePool = cachedCandidateWords.reduce((result, word) => {
-    if (cleanPayload.candidatePool[word]) result[word] = cleanPayload.candidatePool[word];
-    return result;
-  }, {});
-
-  return {
-    ...cleanPayload,
-    candidatePool: compactCandidatePool,
-    aiBatches: []
-  };
-}
-
-function setLocalStorageItemSafely(key, value) {
-  try {
-    localStorage.setItem(key, value);
-    return true;
-  } catch (error) {
-    console.warn('本地缓存写入失败，已保留当前云端数据', key, error?.name || 'Error');
-    return false;
+const LOCAL_WORKFLOW_CACHE_CANDIDATE_LIMIT = DEFAULT_CANDIDATE_LIMIT;
+const workflowCache = createWorkflowCache({
+  storage: localStorage,
+  cleanWorkflow: cleanStoredWorkflow,
+  candidateLimit: LOCAL_WORKFLOW_CACHE_CANDIDATE_LIMIT,
+  keys: {
+    workflow: WORKFLOW_STORAGE_KEY,
+    favorites: FAVORITES_STORAGE_KEY,
+    statuses: FAVORITE_STATUSES_STORAGE_KEY,
+    aiPreview: AI_PREVIEW_STORAGE_KEY,
+    todayDismissed: TODAY_DISMISSED_STORAGE_KEY
   }
-}
+});
 
 function writeLocalWorkflowCache(payload = {}) {
-  const cachePayload = buildLocalWorkflowCachePayload(payload);
-  const workflowCached = setLocalStorageItemSafely(WORKFLOW_STORAGE_KEY, JSON.stringify(cachePayload));
-  setLocalStorageItemSafely(FAVORITES_STORAGE_KEY, JSON.stringify(cachePayload.words));
-  setLocalStorageItemSafely(FAVORITE_STATUSES_STORAGE_KEY, JSON.stringify(cachePayload.statuses));
-  setLocalStorageItemSafely(AI_PREVIEW_STORAGE_KEY, JSON.stringify(cachePayload.aiPreview));
-  setLocalStorageItemSafely(TODAY_DISMISSED_STORAGE_KEY, JSON.stringify(cachePayload.todayDismissed));
-  return workflowCached;
+  return workflowCache.write(payload);
 }
 
 function cacheCurrentWorkflow(updatedAt = nowIso()) {
@@ -3298,122 +3225,37 @@ function cacheCurrentWorkflow(updatedAt = nowIso()) {
   });
   syncAiPreviewGlobalsFromWorkflow();
   todayDismissed = cleanTeamDismissedState(todayDismissed);
-  const payload = cleanStoredWorkflow({
-    words: favorites,
-    statuses: favoriteStatuses,
-    feedback: wordFeedback,
-    publishedRecords,
-    candidatePool,
-    aiBatches,
-    aiPreview,
-    todaySnapshot,
-    todayDismissed,
-    historySnapshots,
-    todaySnapshotHistory,
-    revision: workflowRevision,
-    auditLog: workflowAuditLog,
-    updated: updatedAt,
-    schemaVersion: 2
-  });
+  const payload = workflowStore.buildPayload(getCurrentWorkflowState(), updatedAt);
   const workflowCached = writeLocalWorkflowCache(payload);
-  workflowRevision = payload.revision;
-  workflowAuditLog = payload.auditLog;
+  workflowStore.replaceMetadata(payload);
   if (workflowCached) lastLocalCacheAt = payload.updated || updatedAt;
   return payload;
 }
 
-const activeApiControllers = new Map();
-const uiOperationsInFlight = new Set();
 let hasUnsavedFormChanges = false;
 let cloudSaveEpoch = 0;
 let cloudSaveQueue = Promise.resolve(false);
 let pendingCloudSaveCount = 0;
 let cloudWorkflowLoadEpoch = 0;
 let backgroundSyncPromise = null;
-const loadedWorkflowScopes = new Set();
-const workflowScopeLoads = new Map();
-
-function createOperationId(prefix = 'web') {
-  const randomId = globalThis.crypto?.randomUUID?.()
-    || `${Date.now()}-${Math.random().toString(36).slice(2, 12)}`;
-  return `${prefix}-${randomId}`.slice(0, 120);
-}
-
-function getApiErrorMessage(data, status = 0) {
-  if (typeof data?.error === 'string') return data.error;
-  if (typeof data?.error?.message === 'string') return data.error.message;
-  if (status === 401) return '团队身份验证失败，请重新登录';
-  if (status === 409) return '团队数据已更新，请刷新后重试';
-  if (status === 429) return '请求过于频繁，请稍后重试';
-  return status ? `HTTP ${status}` : '网络请求失败';
-}
-
-function createApiError(data, status = 0) {
-  const error = new Error(getApiErrorMessage(data, status));
-  error.status = status;
-  error.code = data?.error?.code || '';
-  error.retryable = Boolean(data?.error?.retryable);
-  error.requestId = cleanShortText(data?.requestId, 160);
-  return error;
-}
-
-async function apiFetch(endpoint, options = {}, config = {}) {
-  const timeoutMs = clamp(toInt(config.timeoutMs, 20000), 1000, 120000);
-  const cancelKey = cleanShortText(config.cancelKey, 120);
-  if (cancelKey) activeApiControllers.get(cancelKey)?.abort();
-  const controller = new AbortController();
-  if (cancelKey) activeApiControllers.set(cancelKey, controller);
-  const externalSignal = options.signal;
-  const abortFromExternal = () => controller.abort(externalSignal?.reason);
-  externalSignal?.addEventListener('abort', abortFromExternal, { once: true });
-  let timedOut = false;
-  const timeout = setTimeout(() => {
-    timedOut = true;
-    controller.abort(new DOMException('Request timed out', 'TimeoutError'));
-  }, timeoutMs);
-  const headers = new Headers(options.headers || {});
-  if (config.workflowMutation) {
-    headers.set('X-Operation-Id', config.operationId || createOperationId(config.operationPrefix || 'workflow'));
-    headers.set('X-Workflow-Revision', String(workflowRevision));
-  }
-
-  try {
-    return await fetch(endpoint, {
-      ...options,
-      credentials: options.credentials || 'same-origin',
-      headers,
-      signal: controller.signal
-    });
-  } catch (error) {
-    if (controller.signal.aborted) {
-      const abortError = new Error(timedOut ? '请求超时' : '请求已取消');
-      abortError.code = timedOut ? 'REQUEST_TIMEOUT' : 'REQUEST_ABORTED';
-      throw abortError;
-    }
-    throw error;
-  } finally {
-    clearTimeout(timeout);
-    externalSignal?.removeEventListener('abort', abortFromExternal);
-    if (cancelKey && activeApiControllers.get(cancelKey) === controller) activeApiControllers.delete(cancelKey);
-  }
-}
+const apiClient = createApiClient({ getWorkflowRevision: () => workflowStore.getRevision() });
+const uiOperationsInFlight = apiClient.operationsInFlight;
+const createOperationId = apiClient.createOperationId;
+const getApiErrorMessage = apiClient.getApiErrorMessage;
+const createApiError = apiClient.createApiError;
+const apiFetch = apiClient.request;
+const workflowSync = createWorkflowSync({
+  request: apiFetch,
+  createError: createApiError,
+  loadRemote: () => loadCloudWorkflow({ mode: 'remote-first', showMessages: false })
+});
 
 async function runUiOperation(key, operation) {
-  const cleanKey = cleanShortText(key, 160);
-  if (uiOperationsInFlight.has(cleanKey)) {
-    showToast('操作正在处理中，请稍候');
-    return false;
-  }
-  uiOperationsInFlight.add(cleanKey);
-  try {
-    return await operation();
-  } finally {
-    uiOperationsInFlight.delete(cleanKey);
-  }
+  return apiClient.runExclusive(key, operation, () => showToast('操作正在处理中，请稍候'));
 }
 
 function normalizeWorkflowScope(scope = '') {
-  return ['today', 'favorites', 'published'].includes(scope) ? scope : 'today';
+  return workflowStore.normalizeScope(scope);
 }
 
 function getPreferredWorkflowScope() {
@@ -3430,17 +3272,15 @@ function getWorkflowScopeHistoryDate(scope = getPreferredWorkflowScope()) {
 }
 
 function getWorkflowScopeKey(scope = getPreferredWorkflowScope(), historyDate = getWorkflowScopeHistoryDate(scope)) {
-  const cleanScope = normalizeWorkflowScope(scope);
-  return cleanScope === 'today' ? `today:${historyDate || 'today'}` : cleanScope;
+  return workflowStore.getScopeKey(scope, historyDate);
 }
 
 function isWorkflowScopeLoaded(scope = getPreferredWorkflowScope(), historyDate = getWorkflowScopeHistoryDate(scope)) {
-  return loadedWorkflowScopes.has('all') || loadedWorkflowScopes.has(getWorkflowScopeKey(scope, historyDate));
+  return workflowStore.isScopeLoaded(scope, historyDate);
 }
 
 function markWorkflowScopeLoaded(scope = 'today', historyDate = '') {
-  if (scope === 'all') loadedWorkflowScopes.add('all');
-  else loadedWorkflowScopes.add(getWorkflowScopeKey(scope, historyDate));
+  workflowStore.markScopeLoaded(scope, historyDate);
 }
 
 function getSyncEndpoint(options = {}) {
@@ -3573,38 +3413,21 @@ function updateSyncStatus(message, color = 'var(--text-secondary)') {
 }
 
 function applyRemoteWorkflowState(remoteData, options = {}) {
-  const data = cleanStoredWorkflow(remoteData);
-  if (!options.allowOlderRevision && data.revision < workflowRevision) {
+  const prepared = workflowStore.prepareRemoteState(remoteData, getCurrentWorkflowState(), options);
+  if (!prepared.applied) {
     console.info('已忽略旧版云端工作流响应', {
-      remoteRevision: data.revision,
-      currentRevision: workflowRevision
+      remoteRevision: prepared.data.revision,
+      currentRevision: workflowStore.getRevision()
     });
-    return { applied: false, stale: true, data };
+    return prepared;
   }
 
-  const mergePartialState = Boolean(options.mergeCandidatePool || data.appView?.partialCandidatePool);
-  const nextCandidatePool = mergePartialState
-    ? cleanCandidatePool({ ...candidatePool, ...data.candidatePool })
-    : data.candidatePool;
-  favorites = getUniqueWords(data.words).map(normalizeKanjiSpelling).filter(Boolean);
-  favoriteStatuses = data.statuses;
-  wordFeedback = data.feedback;
-  publishedRecords = data.publishedRecords;
-  candidatePool = nextCandidatePool;
-  aiBatches = data.aiBatches;
-  aiPreview = data.aiPreview || {};
-  syncAiPreviewGlobalsFromWorkflow();
-  todaySnapshot = data.todaySnapshot;
-  todayDismissed = cleanTeamDismissedState(data.todayDismissed || {});
-  historySnapshots = mergePartialState ? mergeHistorySnapshots(historySnapshots, data.historySnapshots) : data.historySnapshots;
-  todaySnapshotHistory = mergePartialState ? mergeTodaySnapshotHistory(todaySnapshotHistory, data.todaySnapshotHistory) : data.todaySnapshotHistory;
-  workflowRevision = data.revision;
-  workflowAuditLog = data.auditLog;
+  applyWorkflowData(prepared.state);
   cloudWorkflowFailed = false;
   lastCloudSyncAt = nowIso();
   hydrateTodayWordsFromSnapshot();
-  cacheCurrentWorkflow(data.updated || lastCloudSyncAt);
-  return { applied: true, stale: false, data };
+  cacheCurrentWorkflow(prepared.data.updated || lastCloudSyncAt);
+  return prepared;
 }
 
 function applyFavoriteCommandResponse(responseData, kanji) {
@@ -3615,12 +3438,7 @@ function applyFavoriteCommandResponse(responseData, kanji) {
     words: favorites,
     statuses: responseData?.statuses
   }).statuses;
-  workflowRevision = clamp(toInt(responseData?.revision, workflowRevision), workflowRevision, Number.MAX_SAFE_INTEGER);
-  if (responseData?.auditEvent) {
-    workflowAuditLog = cleanStoredWorkflow({
-      auditLog: [responseData.auditEvent, ...workflowAuditLog]
-    }).auditLog;
-  }
+  workflowStore.applyCommandMetadata(responseData);
   cloudWorkflowFailed = false;
   lastCloudSyncAt = nowIso();
   cacheCurrentWorkflow(responseData?.updated || lastCloudSyncAt);
@@ -3634,20 +3452,6 @@ function buildFavoriteCommandPayload(kanji, action, status = '') {
     payload.candidatePool = { [kanji]: candidate };
   }
   return payload;
-}
-
-function isRetryableWorkflowReadError(error) {
-  if (error?.code === 'REQUEST_ABORTED') return false;
-  if (error?.code === 'REQUEST_TIMEOUT') return true;
-  const status = Number(error?.status) || 0;
-  return !status || status === 408 || status === 429 || status >= 500;
-}
-
-function isRetryableWorkflowMutationError(error) {
-  if (error?.code === 'REQUEST_ABORTED') return false;
-  if (error?.status === 409 || error?.code === 'REQUEST_TIMEOUT') return true;
-  const status = Number(error?.status) || 0;
-  return !status || status === 408 || status === 429 || status >= 500;
 }
 
 function isFavoriteCommandSatisfied(kanji, action, status = '') {
@@ -3664,7 +3468,7 @@ function buildReconciledFavoriteCommandResponse(kanji) {
     words: favorites,
     statuses: favoriteStatuses,
     candidate: candidatePool[kanji] || null,
-    revision: workflowRevision,
+    revision: workflowStore.getRevision(),
     auditEvent: null,
     updated: lastCloudSyncAt,
     schemaVersion: 2
@@ -3677,66 +3481,21 @@ async function requestFavoriteCommand(kanji, action, status = '') {
   ensureFavoriteWordsHaveCandidateEntries();
   const payload = buildFavoriteCommandPayload(kanji, action, status);
   const operationId = createOperationId(`favorite-${action}`);
-  let lastError = null;
-  for (let attempt = 0; attempt < 2; attempt += 1) {
-    try {
-      const response = await apiFetch(endpoint, {
-        method: 'POST',
-        headers: {
-          Accept: 'application/json',
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify(payload)
-      }, {
-        workflowMutation: true,
-        operationId,
-        operationPrefix: `favorite-${action}`,
-        timeoutMs: 30000
-      });
-      const responseData = await response.json().catch(() => ({}));
-      if (!response.ok) throw createApiError(responseData, response.status);
-      return responseData;
-    } catch (error) {
-      lastError = error;
-      if (attempt > 0 || !isRetryableWorkflowMutationError(error)) break;
-      const reconciled = await loadCloudWorkflow({ mode: 'remote-first', showMessages: false });
-      if (reconciled && isFavoriteCommandSatisfied(kanji, action, status)) {
-        return buildReconciledFavoriteCommandResponse(kanji);
-      }
-      if (error.status === 409 && !reconciled) break;
-      await new Promise(resolve => {
-        setTimeout(resolve, 250);
-      });
-    }
-  }
-  throw lastError || new Error('收藏同步失败');
+  return workflowSync.mutate({
+    endpoint,
+    payload,
+    operationId,
+    operationPrefix: `favorite-${action}`,
+    isSatisfied: () => isFavoriteCommandSatisfied(kanji, action, status),
+    buildReconciledResponse: () => buildReconciledFavoriteCommandResponse(kanji)
+  });
 }
 
 async function fetchWorkflowView(endpoint, loadEpoch) {
-  let lastError = null;
-  for (let attempt = 0; attempt < 2; attempt += 1) {
-    if (loadEpoch !== cloudWorkflowLoadEpoch) {
-      const canceledError = new Error('请求已被新的同步替代');
-      canceledError.code = 'REQUEST_ABORTED';
-      throw canceledError;
-    }
-    try {
-      const response = await apiFetch(endpoint, { headers: { Accept: 'application/json' } }, {
-        cancelKey: 'workflow-load',
-        timeoutMs: 45000
-      });
-      const data = await response.json().catch(() => ({}));
-      if (!response.ok) throw createApiError(data, response.status);
-      return data;
-    } catch (error) {
-      lastError = error;
-      if (attempt > 0 || !isRetryableWorkflowReadError(error)) throw error;
-      await new Promise(resolve => {
-        setTimeout(resolve, 300);
-      });
-    }
-  }
-  throw lastError || new Error('工作流读取失败');
+  return workflowSync.read({
+    endpoint,
+    isCurrent: () => loadEpoch === cloudWorkflowLoadEpoch
+  });
 }
 
 async function loadCloudWorkflow(options = false) {
@@ -3757,7 +3516,7 @@ async function loadCloudWorkflow(options = false) {
     const responseData = await fetchWorkflowView(endpoint, loadEpoch);
     if (loadEpoch !== cloudWorkflowLoadEpoch) return false;
     const applied = applyRemoteWorkflowState(responseData, {
-      mergeCandidatePool: Boolean(config.mergeCandidatePool || loadedWorkflowScopes.size)
+      mergeCandidatePool: Boolean(config.mergeCandidatePool || workflowStore.hasLoadedScopes())
     });
     if (!applied.applied) {
       cloudWorkflowFailed = false;
@@ -3807,23 +3566,17 @@ function buildCloudWorkflowPayload() {
     selected: aiPreviewSelected
   });
   todayDismissed = cleanTeamDismissedState(todayDismissed);
-  return {
+  return workflowStore.buildPayload({
+    ...getCurrentWorkflowState(),
     words: filterKnownFavorites(favorites, candidatePool),
-    statuses: favoriteStatuses,
     feedback: cleanWordFeedback(wordFeedback),
     publishedRecords: cleanPublishedRecords(publishedRecords),
     candidatePool: cleanCandidatePool(candidatePool),
     aiBatches: cleanAiBatches(aiBatches),
-    aiPreview,
     todaySnapshot: cleanTodaySnapshot(todaySnapshot),
-    todayDismissed,
     historySnapshots: cleanHistorySnapshots(historySnapshots),
-    todaySnapshotHistory: cleanTodaySnapshotHistory(todaySnapshotHistory),
-    revision: workflowRevision,
-    auditLog: workflowAuditLog,
-    updated: nowIso(),
-    schemaVersion: 2
-  };
+    todaySnapshotHistory: cleanTodaySnapshotHistory(todaySnapshotHistory)
+  }, nowIso());
 }
 
 async function performCloudWorkflowSave(showMessages, payload, queuedEpoch) {
@@ -3906,7 +3659,7 @@ async function refreshPublishedMetrics(recordId = '') {
     const data = await response.json().catch(() => ({}));
     if (!response.ok) throw createApiError(data, response.status);
     publishedRecords = mergePublishedRecords(publishedRecords, data.publishedRecords);
-    workflowRevision = clamp(toInt(data.revision, workflowRevision), 0, Number.MAX_SAFE_INTEGER);
+    workflowStore.acceptRevision(data.revision);
     saveLocalWorkflow();
     updateAllBadges();
     renderPublished();
@@ -4475,24 +4228,19 @@ function getDailyHotDateOptions() {
   refreshHistoryDates();
   const today = todayKey();
   const tomorrow = addDaysToDateKey(today, 1);
-  const historyDates = getUniqueWords(rankingHistoryDates)
-    .filter(dateKeyValue => dateKeyValue && dateKeyValue !== today && dateKeyValue !== tomorrow)
-    .sort((left, right) => String(right).localeCompare(String(left)));
-  return [
-    { value: 'today', label: `今天 · ${today}` },
-    { value: tomorrow, label: `明天 · ${tomorrow} · ${formatWeekdayShort(tomorrow)}` },
-    ...historyDates.map(dateKeyValue => ({
-      value: dateKeyValue,
-      label: `${dateKeyValue} · ${formatWeekdayShort(dateKeyValue)}`
-    }))
-  ];
+  return buildDailyHotDateOptions({
+    todayDateKey: today,
+    tomorrowDateKey: tomorrow,
+    historyDates: rankingHistoryDates,
+    formatWeekday: formatWeekdayShort
+  });
 }
 
 function populateDailyHotDateSelect() {
   const select = document.getElementById('dailyHotDateSelect');
   if (!select) return;
   const options = getDailyHotDateOptions();
-  const current = options.some(option => option.value === currentDailyHotDateKey) ? currentDailyHotDateKey : 'today';
+  const current = normalizeDailyHotDateSelection(currentDailyHotDateKey, options);
   currentDailyHotDateKey = current;
   localStorage.setItem(DAILY_HOT_DATE_STORAGE_KEY, currentDailyHotDateKey);
   select.innerHTML = options.map(option => `<option value="${escapeHTML(option.value)}">${escapeHTML(option.label)}</option>`).join('');
@@ -5508,9 +5256,14 @@ function buildRecommendedWord(word, origin = 'global', candidateMeta = null) {
   const dataFeedbackScore = getDataFeedbackScore(word, publishedWordMap, candidateMeta);
   const referenceQualityScore = getReferenceQualityScore(word);
   const confidenceLevel = candidateMeta?.confidenceLevel || getConfidenceLevel(word);
-  const aiCard = cleanAiCard(candidateMeta?.aiCard || word.aiCard || {});
-  const hasReadyAiCard = aiCard?.cardStatus === 'ready';
-  const aiCardStatus = aiCard?.cardStatus || 'none';
+  const wordCardView = buildWordCardViewModel({
+    word,
+    entry: candidateMeta || {},
+    aiCard: candidateMeta?.aiCard || word.aiCard || {}
+  });
+  const aiCard = wordCardView.card;
+  const hasReadyAiCard = wordCardView.hasFormalCard;
+  const aiCardStatus = wordCardView.status;
   const confidenceWeightScore = getConfidenceWeightScore(confidenceLevel);
   const feedbackPenalty = getFeedbackPenalty(word.kanji);
   const extensionBoost = getExtensionBoost(word, publishedWordMap, candidateMeta);
@@ -5591,9 +5344,7 @@ function buildRecommendedWord(word, origin = 'global', candidateMeta = null) {
   };
   return {
     ...word,
-    imageUrl: aiCard?.referenceImage?.status === 'ready' && aiCard.referenceImage.url
-      ? aiCard.referenceImage.url
-      : word.imageUrl,
+    imageUrl: wordCardView.referenceImageUrl || word.imageUrl,
     origin,
     dataScore,
     platformHeatScore,
@@ -5616,16 +5367,16 @@ function buildRecommendedWord(word, origin = 'global', candidateMeta = null) {
     scoreBreakdown: cleanCandidateScoreBreakdown(scores),
     rankingSignals: buildRankingSignals(word, scores, candidateMeta),
     aiCard,
-    suggestedTitle: hasReadyAiCard ? (safeArray(aiCard?.suggestedTitles)[0] || '') : (aiCardStatus === 'pending' ? 'DeepSeek 词卡生成中' : ''),
-    contentHook: hasReadyAiCard ? (safeArray(aiCard?.contentAngles)[0] || '') : '',
-    targetAudience: hasReadyAiCard ? (aiCard?.targetAudience || '') : '',
-    referenceDirection: hasReadyAiCard ? (aiCard?.referenceDirection || '') : '',
-    recommendationReason: hasReadyAiCard ? (aiCard?.summary || '') : (aiCardStatus === 'pending' ? 'DeepSeek 词卡生成中' : 'DeepSeek 词卡未生成'),
-    detail: hasReadyAiCard ? (aiCard?.explanation || '') : '',
-    examples: hasReadyAiCard ? safeArray(aiCard?.examples) : [],
-    interactions: hasReadyAiCard ? safeArray(aiCard?.interactionPrompts) : [],
-    wrongUsage: hasReadyAiCard ? (aiCard?.wrongUsage || '') : '',
-    riskWarning: hasReadyAiCard ? (aiCard?.riskWarning || '') : (candidateMeta?.riskWarning || '')
+    suggestedTitle: hasReadyAiCard ? wordCardView.title : (aiCardStatus === 'pending' ? 'DeepSeek 词卡生成中' : ''),
+    contentHook: hasReadyAiCard ? (wordCardView.contentAngles[0] || '') : '',
+    targetAudience: wordCardView.targetAudience,
+    referenceDirection: wordCardView.referenceDirection,
+    recommendationReason: hasReadyAiCard ? wordCardView.summary : (aiCardStatus === 'pending' ? 'DeepSeek 词卡生成中' : 'DeepSeek 词卡未生成'),
+    detail: wordCardView.explanation,
+    examples: wordCardView.examples,
+    interactions: wordCardView.interactionPrompts,
+    wrongUsage: wordCardView.wrongUsage,
+    riskWarning: hasReadyAiCard ? wordCardView.riskWarning : (candidateMeta?.riskWarning || '')
   };
 }
 
@@ -6052,6 +5803,22 @@ function populateSourceFilter(tab, words) {
   select.value = current;
 }
 
+function populateDailyHotSourceFilter(tab, words) {
+  const model = buildDailyHotSourceFilterModel({
+    words,
+    sourceFilter: sourceFilters[tab]
+  });
+  sourceFilters[tab] = model.sourceFilter;
+  const select = document.getElementById(`${tab}SourceFilter`);
+  if (select) {
+    select.innerHTML = model.options
+      .map(option => `<option value="${escapeHTML(option.value)}">${escapeHTML(option.label)}</option>`)
+      .join('');
+    select.value = model.sourceFilter;
+  }
+  return model;
+}
+
 function applySourceFilter(words, tab) {
   const source = sourceFilters[tab] || 'all';
   return source === 'all' ? words : words.filter(word => word.source === source);
@@ -6094,6 +5861,10 @@ function setSourceFilter(tab, value) {
   if (!Object.prototype.hasOwnProperty.call(sourceFilters, tab)) return;
   sourceFilters[tab] = value || 'all';
   localStorage.setItem(`${SOURCE_FILTER_STORAGE_PREFIX}${tab}`, sourceFilters[tab]);
+  if (tab === 'history') {
+    renderHistory();
+    return;
+  }
   refreshCurrentGrid();
 }
 
@@ -6319,7 +6090,7 @@ function renderAiWorkbench() {
     const status = getAiPreviewStatus(item);
     return `
       <tr class="${item.riskLevel === 'high' || item.confidenceLevel === 'review' ? 'risk-high' : ''}">
-        <td><input type="checkbox" ${selected ? 'checked' : ''} onchange="toggleAiPreviewSelection('${escapeJSString(item.kanji)}')"></td>
+        <td><input type="checkbox" ${selected ? 'checked' : ''} data-workflow-action="ai-preview-selection" data-kanji="${escapeHTML(item.kanji)}"></td>
         <td><strong>${escapeHTML(item.kanji)}</strong><div class="ai-preview-status">${escapeHTML(status)}</div></td>
         <td>${escapeHTML(item.romaji)}</td>
         <td>${escapeHTML(item.kana)}</td>
@@ -6704,15 +6475,10 @@ async function runDailyAutoRefreshIfNeeded(options = {}) {
 }
 
 function getAiCardStatusLabel(aiCard) {
-  const status = cleanAiCard(aiCard || {})?.cardStatus || 'none';
-  if (status === 'pending' && isAiCardStalePending(aiCard)) return '生成超时';
-  return {
-    none: '未生成词卡',
-    pending: '生成中',
-    ready: '已生成词卡',
-    failed: '生成失败',
-    stale: '需重新生成'
-  }[status] || '未生成词卡';
+  return buildWordCardViewModel({
+    aiCard,
+    stalePending: isAiCardStalePending(aiCard)
+  }).statusLabel;
 }
 
 function isAiCardStalePending(aiCard, entry = {}) {
@@ -6739,7 +6505,7 @@ function getTodayAiCardActionLabel(aiCard, inFlight = false, entry = {}) {
 
 function renderAiCardActionButton(kanji, aiCard = {}, className = 'btn btn-ghost') {
   const cleanKanji = cleanShortText(kanji, 80);
-  const safeKanji = escapeJSString(cleanKanji);
+  const safeKanji = escapeHTML(cleanKanji);
   const card = cleanAiCard(aiCard || {}) || { cardStatus: 'none' };
   const inFlight = aiCardAutoInFlight.has(cleanKanji);
   if (isTodaySnapshotWord(cleanKanji)) {
@@ -6747,15 +6513,15 @@ function renderAiCardActionButton(kanji, aiCard = {}, className = 'btn btn-ghost
     const label = getTodayAiCardActionLabel(card, inFlight, entry);
     const stalePending = isAiCardStalePending(card, entry);
     const disabled = inFlight || (card.cardStatus === 'pending' && !stalePending);
-    return `<button class="${escapeHTML(className)}" ${disabled ? 'disabled' : ''} onclick="generateTodayAiCard('${safeKanji}')">${escapeHTML(label)}</button>`;
+    return `<button class="${escapeHTML(className)}" ${disabled ? 'disabled' : ''} data-workflow-action="generate-today-card" data-kanji="${safeKanji}">${escapeHTML(label)}</button>`;
   }
   if (card.cardStatus === 'ready') {
-    return `<button class="${escapeHTML(className)}" disabled>已生成词卡</button><button class="${escapeHTML(className)}" onclick="generateDeepSeekWordCard('${safeKanji}', true)">重新生成 DeepSeek 词卡</button>`;
+    return `<button class="${escapeHTML(className)}" disabled>已生成词卡</button><button class="${escapeHTML(className)}" data-workflow-action="generate-deepseek-card" data-kanji="${safeKanji}" data-force="true">重新生成 DeepSeek 词卡</button>`;
   }
   if (card.cardStatus === 'pending') {
     return `<button class="${escapeHTML(className)}" disabled>DeepSeek 词卡生成中</button>`;
   }
-  return `<button class="${escapeHTML(className)}" onclick="generateDeepSeekWordCard('${safeKanji}', false)">${card.cardStatus === 'failed' ? '重试 DeepSeek 词卡' : '生成 DeepSeek 词卡'}</button>`;
+  return `<button class="${escapeHTML(className)}" data-workflow-action="generate-deepseek-card" data-kanji="${safeKanji}" data-force="false">${card.cardStatus === 'failed' ? '重试 DeepSeek 词卡' : '生成 DeepSeek 词卡'}</button>`;
 }
 
 async function generateTodayAiCardsOnServer(kanjis = [], options = {}) {
@@ -7167,68 +6933,23 @@ function getFavoriteWords() {
 }
 
 function getVisibleFavoriteWords() {
-  const sourceFilteredWords = applySourceFilter(getFavoriteWords(), 'favorites');
-  return statusFilter === 'all' ? sourceFilteredWords : sourceFilteredWords.filter(word => getFavoriteStatus(word.kanji) === statusFilter);
+  return getFavoritesPageModel().visibleWords;
 }
 
-function getPerformanceScore(record) {
-  const stats = cleanPublishedStats(record.latestStats || record);
-  return stats.likes * 1 + stats.favorites * 2 + stats.comments * 3 + stats.shares * 3;
-}
-
-function getRecordAgeHours(record) {
-  if (!record.publishedAt) return 0;
-  const publishedTime = new Date(record.publishedAt).getTime();
-  if (!Number.isFinite(publishedTime)) return 0;
-  return Math.max(0, (Date.now() - publishedTime) / 3600000);
-}
-
-function getRecentTwentyAveragePerformance() {
-  const records = cleanPublishedRecords(publishedRecords)
-    .filter(record => record.sourceStatus !== 'placeholder')
-    .sort((left, right) => String(right.publishedAt || right.updatedAt).localeCompare(String(left.publishedAt || left.updatedAt)))
-    .slice(0, 20);
-  if (!records.length) return 0;
-  return records.reduce((sum, record) => sum + getPerformanceScore(record), 0) / records.length;
+function getFavoritesPageModel(words = getFavoriteWords()) {
+  return buildFavoritesPageModel({
+    words,
+    sourceFilter: sourceFilters.favorites,
+    statusFilter,
+    getStatus: word => getFavoriteStatus(word.kanji)
+  });
 }
 
 function getRecordRating(record) {
-  const performanceScore = getPerformanceScore(record);
-  const average = getRecentTwentyAveragePerformance() || performanceScore;
-  const ratio = average > 0 ? performanceScore / average : 1;
-  const ageHours = getRecordAgeHours(record);
-  const stats = cleanPublishedStats(record.latestStats || record);
-  const exposure = stats.views;
-  const saveRate = exposure > 0 ? stats.favorites / exposure : 0;
-
-  let level = '待评估';
-  let reason = '还没满 72 小时，先继续观察。';
-
-  if (ageHours >= 72) {
-    if (exposure > 0 && saveRate >= 0.04 && performanceScore < average * 0.7) {
-      level = '正常';
-      reason = '曝光不算高，但收藏率不错，更像流量不足，不一定是词方向问题。';
-    } else if (ratio >= 1.5) {
-      level = '优秀';
-      reason = '综合互动明显高于最近已发布内容的平均水平。';
-    } else if (ratio >= 0.7) {
-      level = '正常';
-      reason = '综合表现处于近期内容的正常区间。';
-    } else if (ratio >= 0.3) {
-      level = '偏弱';
-      reason = '综合互动低于近期平均，需要结合标题、封面和发布时间判断。';
-    } else {
-      level = '异常差';
-      reason = '综合互动显著低于近期平均，建议重点复盘词方向和内容包装。';
-    }
-
-    if (exposure > 0 && exposure >= 1000 && stats.likes + stats.favorites + stats.comments <= 10) {
-      level = '偏弱';
-      reason = '有一定曝光但互动偏低，说明这个词或选题包装当前不够适配。';
-    }
-  }
-
-  return { level, reason, performanceScore };
+  return ratePublishedRecord(record, {
+    records: cleanPublishedRecords(publishedRecords),
+    now: Date.now()
+  });
 }
 
 function ensureFavoriteWord(kanji) {
@@ -7332,7 +7053,7 @@ function openManualWordModal() {
     <div class="modal-shell record-shell">
       <div class="modal-header settings-header">
         <h2 class="modal-title">添加单词</h2>
-        <button class="modal-close" onclick="closeModal()">×</button>
+        <button class="modal-close" data-manual-word-action="close">×</button>
       </div>
       <div class="modal-body form-modal-body">
         <div class="form-grid two-col">
@@ -7342,8 +7063,8 @@ function openManualWordModal() {
         </div>
         <div class="published-score-note">添加后会先进入团队选题池；DeepSeek 词卡会随后生成。生成失败不会删除这个词。</div>
         <div class="modal-footer-actions form-actions">
-          <button class="btn btn-ghost" onclick="closeModal()">取消</button>
-          <button class="btn btn-primary" onclick="submitManualWord()">添加并生成词卡</button>
+          <button class="btn btn-ghost" data-manual-word-action="close">取消</button>
+          <button class="btn btn-primary" data-manual-word-action="submit">添加并生成词卡</button>
         </div>
       </div>
     </div>`;
@@ -7379,7 +7100,7 @@ function openManualWordDuplicateModal(kanji, state, options = {}) {
     <div class="modal-shell record-shell">
       <div class="modal-header settings-header">
         <h2 class="modal-title">${escapeHTML(copy.title)}</h2>
-        <button class="modal-close" onclick="closeModal()">×</button>
+        <button class="modal-close" data-manual-word-action="close">×</button>
       </div>
       <div class="modal-body form-modal-body">
         <div class="modal-section compact-section">
@@ -7387,9 +7108,9 @@ function openManualWordDuplicateModal(kanji, state, options = {}) {
           <div class="modal-section-content">${escapeHTML(copy.body)}</div>
         </div>
         <div class="modal-footer-actions form-actions">
-          ${state === 'favorite' ? '' : `<button class="btn btn-primary" data-manual-options="${optionsJson}" onclick="confirmAddExistingManualWord('${escapeJSString(cleanKanji)}', this.dataset.manualOptions)">加入选题池</button>`}
-          <button class="btn btn-ghost" onclick="openDetail('${escapeJSString(cleanKanji)}')">打开详情</button>
-          <button class="btn btn-ghost" onclick="closeModal()">取消</button>
+          ${state === 'favorite' ? '' : `<button class="btn btn-primary" data-manual-word-action="confirm-existing" data-kanji="${escapeHTML(cleanKanji)}" data-manual-options="${optionsJson}">加入选题池</button>`}
+          <button class="btn btn-ghost" data-manual-word-action="open-detail" data-kanji="${escapeHTML(cleanKanji)}">打开详情</button>
+          <button class="btn btn-ghost" data-manual-word-action="close">取消</button>
         </div>
       </div>
     </div>`;
@@ -7486,23 +7207,24 @@ async function toggleFavorite(kanji, forceState = null) {
     const previousCandidate = candidatePool[kanji]
       ? cleanCandidatePoolEntry(kanji, candidatePool[kanji])
       : null;
-    const exists = favorites.includes(kanji);
-    const shouldFavorite = forceState === null ? !exists : Boolean(forceState);
-    let action = '';
+    const transition = transitionFavoriteToggle({
+      kanji,
+      favorites,
+      statuses: favoriteStatuses,
+      forceState
+    });
+    const action = transition.action;
     let entry = null;
-    if (!shouldFavorite && exists) {
-      favorites = favorites.filter(item => item !== kanji);
-      delete favoriteStatuses[kanji];
-      action = 'remove';
+    if (action === 'remove') {
       showToast('正在从选题池移除');
-    } else if (shouldFavorite && !exists) {
-      favorites.unshift(kanji);
+    } else if (action === 'add') {
       entry = ensureManualKeepEntry(kanji);
       removeWordFromTodaySnapshot(kanji);
-      action = 'add';
       showToast('正在加入选题池');
     }
     if (!action) return true;
+    favorites = transition.favorites;
+    favoriteStatuses = transition.statuses;
     saveLocalWorkflow();
     updateAllBadges();
     refreshCurrentGrid();
@@ -7536,9 +7258,10 @@ async function toggleFavorite(kanji, forceState = null) {
 
 async function markPending(kanji) {
   if (uiOperationsInFlight.has(`status:${kanji}`)) return;
-  ensureFavoriteWord(kanji);
+  const transition = transitionFavoriteStatus({ kanji, status: 'pending', favorites, statuses: favoriteStatuses });
+  favorites = transition.favorites;
+  favoriteStatuses = transition.statuses;
   ensureManualKeepEntry(kanji);
-  favoriteStatuses[kanji] = 'pending';
   removeWordFromTodaySnapshot(kanji);
   activeStatusMenuKanji = null;
   saveLocalWorkflow();
@@ -7550,9 +7273,10 @@ async function markPending(kanji) {
 
 async function markPublishedStatusOnly(kanji) {
   if (uiOperationsInFlight.has(`status:${kanji}`)) return;
-  ensureFavoriteWord(kanji);
+  const transition = transitionFavoriteStatus({ kanji, status: 'published', favorites, statuses: favoriteStatuses });
+  favorites = transition.favorites;
+  favoriteStatuses = transition.statuses;
   ensureManualKeepEntry(kanji);
-  favoriteStatuses[kanji] = 'published';
   removeWordFromTodaySnapshot(kanji);
   saveLocalWorkflow();
   updateAllBadges();
@@ -7560,28 +7284,35 @@ async function markPublishedStatusOnly(kanji) {
   await runUiOperation(`status:${kanji}`, () => syncFavoriteStatus(kanji, 'published'));
 }
 
-function renderStatusControl(kanji) {
+function renderStatusControl(kanji, options = {}) {
   const status = getFavoriteStatus(kanji);
   const statusLabel = FAVORITE_STATUS_LABELS[status];
-  const safeKanjiAction = escapeJSString(kanji);
+  const useFavoritesController = options.context === 'favorites';
   const isOpen = activeStatusMenuKanji === kanji;
-  const options = FAVORITE_STATUS_ORDER.map(option => {
+  const optionButtons = FAVORITE_STATUS_ORDER.map(option => {
     const selected = option === status;
+    const actionAttributes = useFavoritesController
+      ? `data-favorites-action="select-status" data-kanji="${escapeHTML(kanji)}" data-status="${escapeHTML(option)}"`
+      : `data-workflow-action="select-status" data-kanji="${escapeHTML(kanji)}" data-status="${escapeHTML(option)}"`;
     return `
-      <button class="card-status-option status-${option} ${selected ? 'selected' : ''}" onclick="event.stopPropagation();selectFavoriteStatus('${safeKanjiAction}','${option}')">
+      <button class="card-status-option status-${option} ${selected ? 'selected' : ''}" ${actionAttributes}>
         <span class="status-dot"></span>
         <span>${FAVORITE_STATUS_LABELS[option]}</span>
         <span class="status-check">${selected ? '✓' : ''}</span>
       </button>`;
   }).join('');
+  const toggleAttributes = useFavoritesController
+    ? `data-favorites-action="toggle-status" data-kanji="${escapeHTML(kanji)}"`
+    : `data-workflow-action="toggle-status" data-kanji="${escapeHTML(kanji)}"`;
+  const menuAttributes = useFavoritesController ? '' : 'data-workflow-stop';
 
   return `
-    <div class="card-status-control" data-kanji="${escapeHTML(kanji)}">
-      <button class="card-status-btn status-${status}" aria-expanded="${isOpen ? 'true' : 'false'}" onclick="event.stopPropagation();toggleStatusMenu('${safeKanjiAction}')" title="选择选题状态">
+    <div class="card-status-control" data-kanji="${escapeHTML(kanji)}" ${useFavoritesController ? 'data-favorites-stop' : ''}>
+      <button class="card-status-btn status-${status}" aria-expanded="${isOpen ? 'true' : 'false'}" ${toggleAttributes} title="选择选题状态">
         <span class="status-dot"></span>${statusLabel}<span class="status-chevron">⌄</span>
       </button>
-      <div class="card-status-menu ${isOpen ? 'open' : ''}" onclick="event.stopPropagation()">
-        ${options}
+      <div class="card-status-menu ${isOpen ? 'open' : ''}" ${menuAttributes}>
+        ${optionButtons}
       </div>
     </div>`;
 }
@@ -7601,7 +7332,7 @@ function closeStatusMenu() {
 function refreshStatusControls() {
   document.querySelectorAll('.card-status-control:not(.card-feedback-control)').forEach(control => {
     const kanji = control.dataset.kanji;
-    if (kanji) control.outerHTML = renderStatusControl(kanji);
+    if (kanji) control.outerHTML = renderStatusControl(kanji, { context: control.closest('#page-favorites') ? 'favorites' : '' });
   });
   document.querySelectorAll('.card-feedback-control').forEach(control => {
     const kanji = control.dataset.kanji;
@@ -7611,11 +7342,11 @@ function refreshStatusControls() {
 
 async function selectFavoriteStatus(kanji, status) {
   if (uiOperationsInFlight.has(`status:${kanji}`)) return;
-  ensureFavoriteWord(kanji);
-  const nextStatus = cleanFavoriteStatus(status);
+  const transition = transitionFavoriteStatus({ kanji, status, favorites, statuses: favoriteStatuses });
+  const nextStatus = transition.status;
+  favorites = transition.favorites;
+  favoriteStatuses = transition.statuses;
   activeStatusMenuKanji = null;
-  if (nextStatus === 'none') delete favoriteStatuses[kanji];
-  else favoriteStatuses[kanji] = nextStatus;
   if (['pending', 'published'].includes(nextStatus)) removeWordFromTodaySnapshot(kanji);
   saveLocalWorkflow();
   updateAllBadges();
@@ -7627,19 +7358,17 @@ async function selectFavoriteStatus(kanji, status) {
 function renderFeedbackControl(kanji, options = {}) {
   const feedback = getFeedbackRecord(kanji);
   const totalCount = Object.values(feedback.reasons || {}).reduce((sum, count) => sum + toInt(count, 0), 0);
-  const safeKanjiAction = escapeJSString(kanji);
   const isOpen = activeFeedbackMenuKanji === kanji;
   const isCodexPreview = options.context === 'codex-preview';
-  const actionName = isCodexPreview ? 'applyCodexDraftFeedback' : 'applyNegativeFeedback';
   const feedbackOptions = Object.entries(NEGATIVE_FEEDBACK_TYPES).map(([key, label]) => `
-    <button class="card-status-option ${feedback.lastReason === key ? 'selected' : ''}" onclick="event.stopPropagation();${actionName}('${safeKanjiAction}','${key}')">
+    <button class="card-status-option ${feedback.lastReason === key ? 'selected' : ''}" data-workflow-action="apply-feedback" data-kanji="${escapeHTML(kanji)}" data-reason="${escapeHTML(key)}" data-context="${isCodexPreview ? 'codex-preview' : 'default'}">
       <span>${escapeHTML(label)}</span>
       <span class="status-check">${feedback.reasons[key] ? `×${feedback.reasons[key]}` : ''}</span>
     </button>`).join('');
   return `
-    <div class="card-feedback-control card-status-control" data-kanji="${escapeHTML(kanji)}" data-feedback-context="${isCodexPreview ? 'codex-preview' : 'default'}">
-      <button class="card-action-btn ghost" aria-expanded="${isOpen ? 'true' : 'false'}" onclick="event.stopPropagation();toggleFeedbackMenu('${safeKanjiAction}')">负反馈${totalCount ? ` (${totalCount})` : ''}</button>
-      <div class="card-status-menu feedback-menu ${isOpen ? 'open' : ''}" onclick="event.stopPropagation()">${feedbackOptions}</div>
+    <div class="card-feedback-control card-status-control" data-kanji="${escapeHTML(kanji)}" data-feedback-context="${isCodexPreview ? 'codex-preview' : 'default'}" data-workflow-stop>
+      <button class="card-action-btn ghost" aria-expanded="${isOpen ? 'true' : 'false'}" data-workflow-action="toggle-feedback" data-kanji="${escapeHTML(kanji)}">负反馈${totalCount ? ` (${totalCount})` : ''}</button>
+      <div class="card-status-menu feedback-menu ${isOpen ? 'open' : ''}" data-workflow-stop>${feedbackOptions}</div>
     </div>`;
 }
 
@@ -7806,31 +7535,39 @@ function renderTodayCard(word) {
   const riskStateLabel = getRiskStateLabel(word);
   const riskStateKey = getRiskStateKey(riskStateLabel);
   const entry = cleanCandidatePoolEntry(word.kanji, candidatePool[word.kanji] || word.candidateMeta || {}) || {};
-  const aiCard = cleanAiCard(entry.aiCard || word.aiCard || {});
-  const hasReferenceImage = aiCard?.referenceImage?.status === 'ready' && Boolean(aiCard.referenceImage.url);
-  const cardImageUrl = hasReferenceImage ? aiCard.referenceImage.url : word.imageUrl;
   const aiCardInFlight = aiCardAutoInFlight.has(word.kanji);
-  const aiCardStatus = aiCardInFlight ? 'pending' : (aiCard?.cardStatus || 'none');
+  const rawAiCard = cleanAiCard(entry.aiCard || word.aiCard || {});
+  const wordCardView = buildWordCardViewModel({
+    word,
+    entry,
+    aiCard: rawAiCard,
+    inFlight: aiCardInFlight,
+    stalePending: isAiCardStalePending(rawAiCard, entry)
+  });
+  const aiCard = wordCardView.card;
+  const hasReferenceImage = wordCardView.hasReferenceImage;
+  const cardImageUrl = wordCardView.referenceImageUrl || word.imageUrl;
+  const aiCardStatus = wordCardView.status;
   const aiCardActionLabel = getTodayAiCardActionLabel(aiCard, aiCardInFlight, entry);
   const aiCardStalePending = isAiCardStalePending(aiCard, entry);
   const aiCardActionDisabled = aiCardInFlight || (aiCardStatus === 'pending' && !aiCardStalePending);
   const fallbackSvg = `data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 520 390%22><rect fill=%22%23fdeef0%22 width=%22520%22 height=%22390%22/><text x=%22260%22 y=%22195%22 text-anchor=%22middle%22 font-size=%2272%22 fill=%22%23f47a9a%22>${encodeURIComponent(word.kanji)}</text></svg>`;
-  const safeId = escapeJSString(word.id);
-  const safeKanjiAction = escapeJSString(word.kanji);
+  const safeId = escapeHTML(word.id || word.kanji);
+  const safeKanjiAction = escapeHTML(word.kanji);
   return `
-    <div class="word-card recommendation-card daily-hot-card${hasReferenceImage ? ' daily-hot-reference-card' : ''}" onclick="openDetail('${safeId}')">
+    <div class="word-card recommendation-card daily-hot-card${hasReferenceImage ? ' daily-hot-reference-card' : ''}" role="button" tabindex="0" aria-label="查看 ${safeKanjiAction} 词卡" data-daily-hot-action="open-detail" data-word-id="${safeId}">
       <div class="card-image-wrapper">
-        <img class="card-image" src="${escapeHTML(cardImageUrl)}" alt="${escapeHTML(word.kanji)}" loading="lazy" onerror="this.src='${fallbackSvg}'">
+        <img class="card-image" src="${escapeHTML(cardImageUrl)}" alt="${escapeHTML(word.kanji)}" loading="lazy" data-image-fallback="fallback-src" data-fallback-src="${escapeHTML(fallbackSvg)}">
         ${hasReferenceImage ? '' : `<div class="card-image-overlay"></div>
         <div class="card-word-overlay">
           <div class="card-kanji">${escapeHTML(word.kanji)}</div>
           <div class="card-reading">${escapeHTML(word.reading)}</div>
         </div>
-        <div class="card-top-actions" onclick="event.stopPropagation()">
-          <button class="card-fav-btn ${isFav ? 'favorited' : ''}" onclick="toggleFavorite('${safeKanjiAction}')">
+        <div class="card-top-actions" data-daily-hot-stop>
+          <button class="card-fav-btn ${isFav ? 'favorited' : ''}" data-daily-hot-action="toggle-favorite" data-kanji="${safeKanjiAction}">
             <img class="fav-icon" src="assets/illustrations/dorayaki.png" alt="收藏">
           </button>
-          <button class="card-dismiss-btn" title="不感兴趣" aria-label="不感兴趣" onclick="dismissDailyHotRecommendation('${safeKanjiAction}')">×</button>
+          <button class="card-dismiss-btn" title="不感兴趣" aria-label="不感兴趣" data-daily-hot-action="dismiss" data-kanji="${safeKanjiAction}">×</button>
         </div>`}
       </div>
       <div class="card-body">
@@ -7839,11 +7576,11 @@ function renderTodayCard(word) {
             <div class="daily-hot-reference-word">${escapeHTML(word.kanji)}</div>
             <div class="daily-hot-reference-reading">${escapeHTML(word.reading)}</div>
           </div>
-          <div class="daily-hot-reference-controls" onclick="event.stopPropagation()">
-            <button class="card-fav-btn ${isFav ? 'favorited' : ''}" title="收藏" aria-label="收藏" onclick="toggleFavorite('${safeKanjiAction}')">
+          <div class="daily-hot-reference-controls" data-daily-hot-stop>
+            <button class="card-fav-btn ${isFav ? 'favorited' : ''}" title="收藏" aria-label="收藏" data-daily-hot-action="toggle-favorite" data-kanji="${safeKanjiAction}">
               <img class="fav-icon" src="assets/illustrations/dorayaki.png" alt="收藏">
             </button>
-            <button class="card-dismiss-btn" title="不感兴趣" aria-label="不感兴趣" onclick="dismissDailyHotRecommendation('${safeKanjiAction}')">×</button>
+            <button class="card-dismiss-btn" title="不感兴趣" aria-label="不感兴趣" data-daily-hot-action="dismiss" data-kanji="${safeKanjiAction}">×</button>
           </div>
         </div>` : ''}
         <div class="card-title-row">
@@ -7855,10 +7592,10 @@ function renderTodayCard(word) {
           <span class="daily-hot-tag state-tag-${escapeHTML(teamState.key)}">${escapeHTML(teamState.note)}</span>
           <span class="daily-hot-tag recommendation-grade-chip grade-${escapeHTML(recommendationGrade.toLowerCase())}">推荐等级 ${escapeHTML(recommendationGrade)}</span>
           <span class="daily-hot-tag risk-state-chip risk-${escapeHTML(riskStateKey)}">${escapeHTML(riskStateLabel)}</span>
-          <span class="daily-hot-tag ai-card-state-${escapeHTML(aiCardStatus)}">${escapeHTML(getAiCardStatusLabel(aiCardInFlight ? { cardStatus: 'pending' } : aiCard))}</span>
+          <span class="daily-hot-tag ai-card-state-${escapeHTML(aiCardStatus)}">${escapeHTML(wordCardView.statusLabel)}</span>
         </div>
-        <div class="daily-hot-actions" onclick="event.stopPropagation()">
-          <button class="card-action-btn ghost" ${aiCardActionDisabled ? 'disabled' : ''} onclick="generateTodayAiCard('${safeKanjiAction}')">${escapeHTML(aiCardActionLabel)}</button>
+        <div class="daily-hot-actions" data-daily-hot-stop>
+          <button class="card-action-btn ghost" ${aiCardActionDisabled ? 'disabled' : ''} data-daily-hot-action="generate-card" data-kanji="${safeKanjiAction}">${escapeHTML(aiCardActionLabel)}</button>
         </div>
       </div>
     </div>`;
@@ -7938,8 +7675,8 @@ function getDailyQualityCategoryLabel(category = '') {
 }
 
 function renderCodexDraftPreviewCard(item, index) {
-  const aiCard = cleanAiCard(item.aiCard || {}) || {};
-  const imageUrl = aiCard.referenceImage?.url || '';
+  const wordCardView = buildWordCardViewModel({ word: item, entry: item, aiCard: item.aiCard || {} });
+  const imageUrl = wordCardView.referenceImageUrl;
   const audit = getCodexDraftAuditItem(item);
   const recommendationGrade = audit.recommendationLevel || 'A';
   const categoryLabel = getDailyQualityCategoryLabel(audit.qualityCategory);
@@ -7947,18 +7684,18 @@ function renderCodexDraftPreviewCard(item, index) {
   const isFav = ['favorite', 'pending', 'published'].includes(teamState.key);
   const riskStateLabel = getRiskStateLabel({ ...item, candidateMeta: item });
   const riskStateKey = getRiskStateKey(riskStateLabel);
-  const safeKanjiAction = escapeJSString(item.kanji);
+  const safeKanjiAction = escapeHTML(item.kanji);
   const fallbackSvg = `data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 900 1200%22><rect fill=%22%23fffdf9%22 width=%22900%22 height=%221200%22/><text x=%22450%22 y=%22220%22 text-anchor=%22middle%22 font-size=%22110%22 font-weight=%22700%22 fill=%22%23222222%22>${encodeURIComponent(item.kanji)}</text></svg>`;
   return `
-    <article class="word-card codex-preview-card" role="button" tabindex="0" aria-label="预览 ${escapeHTML(item.kanji)} 词卡" onclick="openCodexDraftPreview(${index})" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();openCodexDraftPreview(${index})}">
+    <article class="word-card codex-preview-card" role="button" tabindex="0" aria-label="预览 ${escapeHTML(item.kanji)} 词卡" data-daily-hot-action="open-codex-preview" data-index="${index}">
       <div class="codex-preview-image-wrapper">
-        <img class="codex-preview-image" src="${escapeHTML(imageUrl || fallbackSvg)}" alt="${escapeHTML(item.kanji)} 参考插画" loading="lazy" onerror="this.src='${fallbackSvg}'">
+        <img class="codex-preview-image" src="${escapeHTML(imageUrl || fallbackSvg)}" alt="${escapeHTML(item.kanji)} 参考插画" loading="lazy" data-image-fallback="fallback-src" data-fallback-src="${escapeHTML(fallbackSvg)}">
         <span class="codex-preview-readonly-badge">草稿内容只读</span>
-        <div class="card-top-actions" onclick="event.stopPropagation()">
-          <button class="card-fav-btn ${isFav ? 'favorited' : ''}" title="${isFav ? '取消收藏' : '收藏'}" aria-label="${isFav ? '取消收藏' : '收藏'}" onclick="toggleCodexDraftFavorite('${safeKanjiAction}')">
+        <div class="card-top-actions" data-daily-hot-stop>
+          <button class="card-fav-btn ${isFav ? 'favorited' : ''}" title="${isFav ? '取消收藏' : '收藏'}" aria-label="${isFav ? '取消收藏' : '收藏'}" data-daily-hot-action="toggle-codex-favorite" data-kanji="${safeKanjiAction}">
             <img class="fav-icon" src="assets/illustrations/dorayaki.png" alt="收藏">
           </button>
-          <button class="card-dismiss-btn" title="不感兴趣（记录负反馈）" aria-label="不感兴趣" onclick="applyCodexDraftFeedback('${safeKanjiAction}','uninterested')">×</button>
+          <button class="card-dismiss-btn" title="不感兴趣（记录负反馈）" aria-label="不感兴趣" data-daily-hot-action="codex-feedback" data-kanji="${safeKanjiAction}" data-reason="uninterested">×</button>
         </div>
       </div>
       <div class="card-body codex-preview-card-body">
@@ -7970,7 +7707,7 @@ function renderCodexDraftPreviewCard(item, index) {
           <span class="daily-hot-tag recommendation-grade-chip grade-${escapeHTML(recommendationGrade.toLowerCase())}">${escapeHTML(recommendationGrade)}</span>
         </div>
         <div class="card-meaning">${escapeHTML(item.meaning || '—')}</div>
-        <div class="daily-hot-reason line-2">${escapeHTML(aiCard.summary || aiCard.explanation || '点击查看完整词卡')}</div>
+        <div class="daily-hot-reason line-2">${escapeHTML(wordCardView.summary || wordCardView.explanation || wordCardView.statusLabel)}</div>
         <div class="daily-hot-tags">
           <span class="daily-hot-tag">${escapeHTML(categoryLabel)}</span>
           <span class="daily-hot-tag state-tag-${escapeHTML(teamState.key)}">${escapeHTML(teamState.note)}</span>
@@ -7984,31 +7721,32 @@ function renderCodexDraftPreviewCard(item, index) {
 function openCodexDraftPreview(index) {
   const item = safeArray(codexTomorrowDraft?.items)[index];
   if (!item) return;
-  const aiCard = cleanAiCard(item.aiCard || {}) || {};
+  const wordCardView = buildWordCardViewModel({ word: item, entry: item, aiCard: item.aiCard || {} });
+  const aiCard = wordCardView.hasFormalCard ? wordCardView.card : {};
   const audit = getCodexDraftAuditItem(item);
   const recommendationGrade = audit.recommendationLevel || 'A';
   const categoryLabel = getDailyQualityCategoryLabel(audit.qualityCategory);
   const qualitySummary = codexTomorrowDraft?.validation?.qualitySummary || {};
-  const imageUrl = aiCard.referenceImage?.url || '';
+  const imageUrl = wordCardView.referenceImageUrl;
   const fallbackSvg = `data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 900 1200%22><rect fill=%22%23fffdf9%22 width=%22900%22 height=%221200%22/><text x=%22450%22 y=%22220%22 text-anchor=%22middle%22 font-size=%22110%22 font-weight=%22700%22 fill=%22%23222222%22>${encodeURIComponent(item.kanji)}</text></svg>`;
-  const examples = safeArray(aiCard.examples);
-  const suggestedTitles = safeArray(aiCard.suggestedTitles);
-  const contentAngles = safeArray(aiCard.contentAngles);
-  const usageScenes = safeArray(aiCard.usageScenes);
-  const similarWords = safeArray(aiCard.similarWords);
-  const interactionPrompts = safeArray(aiCard.interactionPrompts);
-  const coverSuggestion = aiCard.coverSuggestion || {};
-  const hasCoverSuggestion = Boolean(coverSuggestion.coverText || coverSuggestion.mainVisual || coverSuggestion.style || coverSuggestion.avoid);
+  const examples = wordCardView.examples;
+  const suggestedTitles = wordCardView.suggestedTitles;
+  const contentAngles = wordCardView.contentAngles;
+  const usageScenes = wordCardView.usageScenes;
+  const similarWords = wordCardView.similarWords;
+  const interactionPrompts = wordCardView.interactionPrompts;
+  const coverSuggestion = wordCardView.coverSuggestion;
+  const hasCoverSuggestion = wordCardView.hasCoverSuggestion;
   const teamState = getDailyHotTeamState({ kanji: item.kanji, candidateMeta: item });
   const isFav = ['favorite', 'pending', 'published'].includes(teamState.key);
   const riskStateLabel = getRiskStateLabel({ ...item, candidateMeta: item });
   const riskStateKey = getRiskStateKey(riskStateLabel);
-  const safeKanjiAction = escapeJSString(item.kanji);
+  const safeKanjiAction = escapeHTML(item.kanji);
   document.getElementById('modalContainer').innerHTML = `
     <div class="modal-shell record-shell codex-preview-modal-shell">
       <div class="codex-preview-modal-layout">
         <div class="codex-preview-modal-art">
-          <img src="${escapeHTML(imageUrl || fallbackSvg)}" alt="${escapeHTML(item.kanji)} 参考插画" onerror="this.src='${fallbackSvg}'">
+          <img src="${escapeHTML(imageUrl || fallbackSvg)}" alt="${escapeHTML(item.kanji)} 参考插画" data-image-fallback="fallback-src" data-fallback-src="${escapeHTML(fallbackSvg)}">
         </div>
         <div class="codex-preview-modal-content">
           <div class="codex-preview-modal-header">
@@ -8017,7 +7755,7 @@ function openCodexDraftPreview(index) {
               <h2 class="codex-preview-modal-word">${escapeHTML(item.kanji)}</h2>
               <div class="codex-preview-modal-reading">${escapeHTML(item.kana || item.reading || '')}${item.romaji ? ` · ${escapeHTML(item.romaji)}` : ''}</div>
             </div>
-            <button type="button" class="codex-preview-modal-close" onclick="closeModal()" aria-label="关闭">×</button>
+            <button type="button" class="codex-preview-modal-close" data-modal-action="close" aria-label="关闭">×</button>
           </div>
           <div class="daily-hot-tags codex-preview-modal-tags">
             <span class="daily-hot-tag recommendation-grade-chip grade-${escapeHTML(recommendationGrade.toLowerCase())}">推荐等级 ${escapeHTML(recommendationGrade)}</span>
@@ -8057,7 +7795,7 @@ function openCodexDraftPreview(index) {
             <section class="codex-preview-section">
               <h3>团队操作</h3>
               <div class="modal-footer-actions codex-preview-modal-actions">
-                <button class="btn ${isFav ? 'btn-ghost' : 'btn-primary'}" onclick="closeModal();toggleCodexDraftFavorite('${safeKanjiAction}')">${isFav ? '取消收藏' : '加入收藏 / 选题池'}</button>
+                <button class="btn ${isFav ? 'btn-ghost' : 'btn-primary'}" data-modal-action="toggle-codex-favorite" data-kanji="${safeKanjiAction}">${isFav ? '取消收藏' : '加入收藏 / 选题池'}</button>
                 ${renderFeedbackControl(item.kanji, { context: 'codex-preview' })}
               </div>
               <p class="modal-section-subtle">收藏和负反馈会进入现有团队工作流；明日草稿内容本身保持只读。</p>
@@ -8072,23 +7810,23 @@ function openCodexDraftPreview(index) {
 
 function renderFavoriteCard(word) {
   const fallbackSvg = `data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 520 390%22><rect fill=%22%23fdeef0%22 width=%22520%22 height=%22390%22/><text x=%22260%22 y=%22195%22 text-anchor=%22middle%22 font-size=%2272%22 fill=%22%23f47a9a%22>${encodeURIComponent(word.kanji)}</text></svg>`;
-  const safeId = escapeJSString(word.id || word.kanji);
-  const safeKanjiAction = escapeJSString(word.kanji);
   const isFav = favorites.includes(word.kanji);
   const entry = cleanCandidatePoolEntry(word.kanji, candidatePool[word.kanji] || word.candidateMeta || {}) || {};
-  const aiCard = cleanAiCard(entry.aiCard || word.aiCard || {});
-  const aiCardText = word.suggestedTitle || getAiCardStatusLabel(aiCard);
+  const wordCardView = buildWordCardViewModel({ word, entry, aiCard: entry.aiCard || word.aiCard || {} });
+  const aiCardText = wordCardView.hasFormalCard
+    ? (word.suggestedTitle || wordCardView.listTitle)
+    : wordCardView.statusLabel;
   return `
-    <div class="word-card workflow-card" onclick="openDetail('${safeId}')">
+    <div class="word-card workflow-card" data-favorites-action="open-detail" data-word-id="${escapeHTML(word.id || word.kanji)}">
       <div class="card-image-wrapper">
-        <img class="card-image" src="${escapeHTML(word.imageUrl)}" alt="${escapeHTML(word.kanji)}" loading="lazy" onerror="this.src='${fallbackSvg}'">
+        <img class="card-image" src="${escapeHTML(word.imageUrl)}" alt="${escapeHTML(word.kanji)}" loading="lazy" data-image-fallback="fallback-src" data-fallback-src="${escapeHTML(fallbackSvg)}">
         <div class="card-image-overlay"></div>
         <div class="card-word-overlay">
           <div class="card-kanji">${escapeHTML(word.kanji)}</div>
           <div class="card-reading">${escapeHTML(word.reading)}</div>
         </div>
-        <div class="card-top-actions" onclick="event.stopPropagation()">
-          <button class="card-fav-btn ${isFav ? 'favorited' : ''}" title="取消收藏" aria-label="取消收藏" onclick="event.stopPropagation();toggleFavorite('${safeKanjiAction}', false)">
+        <div class="card-top-actions" data-favorites-stop>
+          <button class="card-fav-btn ${isFav ? 'favorited' : ''}" title="取消收藏" aria-label="取消收藏" data-favorites-action="toggle-favorite" data-kanji="${escapeHTML(word.kanji)}" data-force-state="false">
             <img class="fav-icon" src="assets/illustrations/dorayaki.png" alt="取消收藏">
           </button>
         </div>
@@ -8103,7 +7841,7 @@ function renderFavoriteCard(word) {
         </div>
         <div class="card-meta workflow-meta">
           ${renderFavoriteSourceChip(entry)}
-          ${renderStatusControl(word.kanji)}
+          ${renderStatusControl(word.kanji, { context: 'favorites' })}
         </div>
       </div>
     </div>`;
@@ -8136,10 +7874,10 @@ function renderTodayGrid(words, options = {}) {
   }
   const state = getRenderableAutoDailyRefreshState();
   if (state.dateKey === todayKey() && state.status === 'failed') {
-    grid.innerHTML = `<div class="empty-state inline-empty"><div class="empty-title">今天暂无固定推荐</div><div class="empty-desc">${escapeHTML(state.error || '可等待每日定时任务生成，或点击“管理今日推荐”手动生成。')}</div><button class="btn btn-primary" data-today-action onclick="handleGenerateTodaySnapshot()">手动生成今日 20 个</button></div>`;
+    grid.innerHTML = `<div class="empty-state inline-empty"><div class="empty-title">今天暂无固定推荐</div><div class="empty-desc">${escapeHTML(state.error || '可等待每日定时任务生成，或点击“管理今日推荐”手动生成。')}</div><button class="btn btn-primary" data-today-action data-daily-hot-action="generate-today">手动生成今日 20 个</button></div>`;
     return;
   }
-  grid.innerHTML = '<div class="empty-state inline-empty"><div class="empty-title">今天暂无固定推荐</div><div class="empty-desc">可等待每日定时任务生成，或点击“管理今日推荐”手动生成。</div><button class="btn btn-primary" data-today-action onclick="handleGenerateTodaySnapshot()">手动生成今日 20 个</button></div>';
+  grid.innerHTML = '<div class="empty-state inline-empty"><div class="empty-title">今天暂无固定推荐</div><div class="empty-desc">可等待每日定时任务生成，或点击“管理今日推荐”手动生成。</div><button class="btn btn-primary" data-today-action data-daily-hot-action="generate-today">手动生成今日 20 个</button></div>';
 }
 
 function renderHistoryGrid(words) {
@@ -8154,13 +7892,10 @@ function renderFavoritesGrid(words) {
 }
 
 function getAutoRefreshSummary(record) {
-  const state = cleanAutoRefreshState(record?.autoRefresh);
-  return {
-    label: AUTO_REFRESH_STATUS_LABELS[state.status] || AUTO_REFRESH_STATUS_LABELS.idle,
-    message: state.lastMessage || '系统会在每天 09:00（北京时间）尝试更新一次，失败时保留上次数据。',
-    sourceLabel: AUTO_REFRESH_SOURCE_LABELS[state.source] || '',
-    timeLabel: state.lastAttemptAt ? state.lastAttemptAt.slice(0, 16).replace('T', ' ') : '尚未自动更新'
-  };
+  return getPublishedAutoRefreshSummary(cleanAutoRefreshState(record?.autoRefresh), {
+    statusLabels: AUTO_REFRESH_STATUS_LABELS,
+    sourceLabels: AUTO_REFRESH_SOURCE_LABELS
+  });
 }
 
 function renderPublishedCard(item) {
@@ -8169,13 +7904,11 @@ function renderPublishedCard(item) {
   const latestStats = cleanPublishedStats(record.latestStats);
   const rating = getRecordRating(record);
   const refreshMeta = getAutoRefreshSummary(record);
-  const safeRecordId = escapeJSString(record.id);
-  const safeKanji = escapeJSString(word.kanji || record.word || '');
-  const openAction = item.type === 'placeholder'
-    ? `openPublishedRecordModal('', '${safeKanji}')`
-    : `openPublishedDetail('${safeRecordId}')`;
+  const safeRecordId = escapeHTML(record.id);
+  const safeKanji = escapeHTML(word.kanji || record.word || '');
+  const openAction = item.type === 'placeholder' ? 'edit-record' : 'open-detail';
   return `
-    <div class="published-card" onclick="${openAction}">
+    <div class="published-card" data-published-action="${openAction}" data-record-id="${item.type === 'placeholder' ? '' : safeRecordId}" data-preset-kanji="${item.type === 'placeholder' ? safeKanji : ''}">
       <div class="published-head">
         <div>
           <div class="published-word">${escapeHTML(word.kanji || '未关联词')}</div>
@@ -8184,7 +7917,7 @@ function renderPublishedCard(item) {
         </div>
         <div class="published-rating rating-${escapeHTML(rating.level)}">${escapeHTML(rating.level)}</div>
       </div>
-      <div class="published-meta">${record.link ? `<a class="published-link" href="${escapeHTML(record.link)}" target="_blank" rel="noopener" onclick="event.stopPropagation()">查看链接 ↗</a>` : '<span class="published-link muted">待补充链接</span>'}</div>
+      <div class="published-meta">${record.link ? `<a class="published-link" href="${escapeHTML(record.link)}" target="_blank" rel="noopener" data-published-stop>查看链接 ↗</a>` : '<span class="published-link muted">待补充链接</span>'}</div>
       <div class="published-mini-stats">
         <span class="published-mini-chip">👍 ${latestStats.likes}</span>
         <span class="published-mini-chip">⭐ ${latestStats.favorites}</span>
@@ -8209,9 +7942,9 @@ function renderPublishedCard(item) {
         <span>${escapeHTML(refreshMeta.message)}</span>
       </div>
       <div class="published-reason line-2">${escapeHTML(record.performanceNote || rating.reason)}</div>
-      <div class="published-actions" onclick="event.stopPropagation()">
-        ${item.type === 'placeholder' ? '' : `<button class="card-action-btn ghost" onclick="refreshPublishedMetrics('${safeRecordId}')">尝试更新</button>`}
-        <button class="card-action-btn ghost" onclick="openPublishedRecordModal('${safeRecordId}')">编辑记录</button>
+      <div class="published-actions" data-published-stop>
+        ${item.type === 'placeholder' ? '' : `<button class="card-action-btn ghost" data-published-action="refresh" data-record-id="${safeRecordId}">尝试更新</button>`}
+        <button class="card-action-btn ghost" data-published-action="edit-record" data-record-id="${item.type === 'placeholder' ? '' : safeRecordId}" data-preset-kanji="${item.type === 'placeholder' ? safeKanji : ''}">编辑记录</button>
       </div>
     </div>`;
 }
@@ -8221,18 +7954,19 @@ function renderPublished() {
     renderWorkflowScopeState('published');
     return;
   }
-  const items = getPublishedDisplayItems();
+  const pageModel = buildPublishedPageModel(getPublishedDisplayItems());
+  const items = pageModel.items;
   const grid = document.getElementById('publishedGrid');
   const empty = document.getElementById('publishedEmpty');
   const count = document.getElementById('publishedCount');
   if (!items.length) {
     grid.innerHTML = '';
     empty.style.display = 'flex';
-    count.textContent = '管理已经发到小红书的内容和表现';
+    count.textContent = pageModel.countText;
   } else {
     empty.style.display = 'none';
     grid.innerHTML = items.map(renderPublishedCard).join('');
-    count.textContent = `当前共 ${items.length} 条已发布记录 / 占位项`;
+    count.textContent = pageModel.countText;
   }
   updatePublishedBadge();
 }
@@ -8363,7 +8097,7 @@ function openTodayRecommendationAuditModal() {
     <div class="modal-shell audit-shell">
       <div class="modal-header settings-header">
         <h2 class="modal-title">推荐审计 · ${escapeHTML(audit.date || todayKey())}</h2>
-        <button class="modal-close" onclick="closeModal()">×</button>
+        <button class="modal-close" data-modal-action="close">×</button>
       </div>
       <div class="modal-body form-modal-body">
         <div class="modal-section compact-section">
@@ -8388,8 +8122,8 @@ function openTodayRecommendationAuditModal() {
           </div>
         </div>
         <div class="modal-footer-actions form-actions">
-          <button class="btn btn-ghost" onclick="exportTodayRecommendationAudit()">导出推荐审计</button>
-          <button class="btn btn-primary" onclick="closeModal()">知道了</button>
+          <button class="btn btn-ghost" data-modal-action="export-recommendation-audit">导出推荐审计</button>
+          <button class="btn btn-primary" data-modal-action="close">知道了</button>
         </div>
       </div>
     </div>`;
@@ -8497,8 +8231,8 @@ function renderDailyHot() {
     void loadCodexTomorrowDraft({ notifyOnError: true });
   }
   const words = isTomorrowPreview ? safeArray(codexTomorrowDraft?.items) : getCurrentDailyHotWords();
-  if (!isTomorrowPreview) populateSourceFilter('today', words);
-  const visibleWords = isTomorrowPreview ? words : applySourceFilter(words, 'today');
+  const sourceModel = isTomorrowPreview ? null : populateDailyHotSourceFilter('today', words);
+  const visibleWords = isTomorrowPreview ? words : sourceModel.visibleWords;
   renderTodayGrid(visibleWords, {
     mode: isTomorrowPreview ? 'codex-preview' : (isTodayView ? 'today' : 'history'),
     dateKey: currentDailyHotDateKey
@@ -8665,25 +8399,30 @@ function removeWordFromTodaySnapshot(kanji) {
 }
 
 function shiftHistoryDate(step) {
-  if (!rankingHistoryDates.length) return;
-  const currentIndex = Math.max(0, rankingHistoryDates.indexOf(currentHistoryDateKey));
-  const nextIndex = clamp(currentIndex + step, 0, rankingHistoryDates.length - 1);
-  currentHistoryDateKey = rankingHistoryDates[nextIndex];
+  const navigation = buildHistoryNavigationModel({
+    dates: rankingHistoryDates,
+    currentDate: currentHistoryDateKey
+  });
+  if (!navigation.currentDate) return;
+  currentHistoryDateKey = navigation.shift(step);
   localStorage.setItem(HISTORY_DATE_STORAGE_KEY, currentHistoryDateKey);
   renderHistory();
 }
 
 function renderHistory() {
   const words = getCurrentHistoryWords();
-  populateSourceFilter('history', words);
-  renderHistoryGrid(applySourceFilter(words, 'history'));
+  const sourceModel = populateDailyHotSourceFilter('history', words);
+  renderHistoryGrid(sourceModel.visibleWords);
   const historyDate = document.getElementById('historyDateLabel');
   if (historyDate) historyDate.textContent = currentHistoryDateKey ? `${formatDisplayDate(currentHistoryDateKey)} · ${getHistorySourceLabel(currentHistoryDateKey)}` : '暂无历史日期';
   const prevBtn = document.getElementById('historyPrevBtn');
   const nextBtn = document.getElementById('historyNextBtn');
-  const currentIndex = Math.max(0, rankingHistoryDates.indexOf(currentHistoryDateKey));
-  if (prevBtn) prevBtn.disabled = currentIndex >= rankingHistoryDates.length - 1;
-  if (nextBtn) nextBtn.disabled = currentIndex <= 0;
+  const navigation = buildHistoryNavigationModel({
+    dates: rankingHistoryDates,
+    currentDate: currentHistoryDateKey
+  });
+  if (prevBtn) prevBtn.disabled = navigation.earlierDisabled;
+  if (nextBtn) nextBtn.disabled = navigation.laterDisabled;
 }
 
 function renderFavorites() {
@@ -8695,20 +8434,19 @@ function renderFavorites() {
   populateSourceFilter('favorites', allFavWords);
   const statusSelect = document.getElementById('favoritesStatusFilter');
   if (statusSelect) statusSelect.value = statusFilter;
-  const visibleWords = getVisibleFavoriteWords();
+  const pageModel = getFavoritesPageModel(allFavWords);
+  const visibleWords = pageModel.visibleWords;
   const empty = document.getElementById('favEmpty');
   const count = document.getElementById('favCount');
   if (!visibleWords.length) {
     renderFavoritesGrid([]);
     empty.style.display = 'flex';
-    count.textContent = allFavWords.length ? '当前筛选条件下没有词' : '保存你感兴趣、准备发布和已进入工作流的词';
+    count.textContent = pageModel.countText;
   } else {
     empty.style.display = 'none';
     renderFavoritesGrid(visibleWords);
-    count.textContent = visibleWords.length === allFavWords.length
-      ? `当前选题池 ${visibleWords.length} 个词`
-      : `筛选显示 ${visibleWords.length} / ${allFavWords.length} 个词`;
-    void queueAutoGenerateAiCards(visibleWords.map(word => word.kanji), { source: 'favorites-visible', toast: false });
+    count.textContent = pageModel.countText;
+    void queueAutoGenerateAiCards(pageModel.autoGenerateWords, { source: 'favorites-visible', toast: false });
   }
   updateFavBadge();
 }
@@ -8849,23 +8587,24 @@ function getCandidatePoolStats(words = getCandidatePoolWords()) {
 
 function renderCandidateCard(word) {
   const entry = word.candidateMeta || cleanCandidatePoolEntry(word.kanji, candidatePool[word.kanji] || {}) || {};
-  const safeKanji = escapeJSString(word.kanji);
+  const safeKanji = escapeHTML(word.kanji);
   const isSelected = candidateSelection.includes(word.kanji);
   const sourceType = getCandidateSourceType(entry);
   const sourceLabel = CANDIDATE_SOURCE_FILTER_LABELS[sourceType] || word.source || '未知';
   const section = getCandidateSection(entry);
-  const aiCard = cleanAiCard(entry.aiCard || {});
-  const hasReadyAiCard = aiCard?.cardStatus === 'ready';
+  const wordCardView = buildWordCardViewModel({ word, entry, aiCard: entry.aiCard || {} });
+  const aiCard = wordCardView.card;
+  const hasReadyAiCard = wordCardView.hasFormalCard;
   return `
-    <div class="published-card candidate-card ${isSelected ? 'selected' : ''}" onclick="openDetail('${escapeJSString(word.id || word.kanji)}')">
+    <div class="published-card candidate-card ${isSelected ? 'selected' : ''}" data-workflow-action="candidate-open-detail" data-word-id="${escapeHTML(word.id || word.kanji)}">
       <div class="published-head">
         <div>
           <div class="published-word">${escapeHTML(word.kanji)}</div>
-          <div class="published-title line-2">${escapeHTML(hasReadyAiCard ? (word.suggestedTitle || 'DeepSeek 词卡已生成') : 'DeepSeek 词卡未生成')}</div>
+          <div class="published-title line-2">${escapeHTML(hasReadyAiCard ? (word.suggestedTitle || wordCardView.listTitle) : wordCardView.statusLabel)}</div>
           <div class="published-sub">${escapeHTML(word.reading || entry.kana || '')}${entry.romaji ? ` · ${escapeHTML(entry.romaji)}` : ''} · ${escapeHTML(word.meaning)}</div>
         </div>
         <div class="candidate-head-actions">
-          <button class="candidate-select-toggle ${isSelected ? 'active' : ''}" onclick="event.stopPropagation();toggleCandidateSelection('${safeKanji}')" aria-label="选择候选词">${isSelected ? '✓' : ''}</button>
+          <button class="candidate-select-toggle ${isSelected ? 'active' : ''}" data-workflow-action="candidate-toggle" data-kanji="${safeKanji}" aria-label="选择候选词">${isSelected ? '✓' : ''}</button>
           <div class="published-rating rating-${escapeHTML(word.reviewState || 'watch')}">${escapeHTML(word.reviewStateLabel || '值得继续观察')}</div>
         </div>
       </div>
@@ -8875,7 +8614,7 @@ function renderCandidateCard(word) {
         <span class="published-mini-chip">最终推荐分 ${word.finalScore}</span>
         <span class="published-mini-chip">内部状态 ${escapeHTML(word.reviewStateLabel || '值得继续观察')}</span>
         <span class="published-mini-chip">分桶 ${escapeHTML(CANDIDATE_SECTION_LABELS[section] || section || '长期候选')}</span>
-        <span class="published-mini-chip">${escapeHTML(getAiCardStatusLabel(aiCard))}</span>
+        <span class="published-mini-chip">${escapeHTML(wordCardView.statusLabel)}</span>
       </div>
       <div class="published-info-grid">
         <div><span>来源</span><strong>${escapeHTML(sourceLabel)}</strong></div>
@@ -8894,14 +8633,14 @@ function renderCandidateCard(word) {
         <strong>${escapeHTML(word.reviewStateLabel || '值得继续观察')}</strong>
         <span>${escapeHTML(word.reviewNote || '系统会继续跟踪这个词的综合表现和稳定性。')}</span>
       </div>
-      <div class="published-actions candidate-actions" onclick="event.stopPropagation()">
-        <button class="card-action-btn ghost" onclick="setCandidateManualState('${safeKanji}','ready')">直推首页</button>
-        <button class="card-action-btn ghost" onclick="setCandidateManualState('${safeKanji}','watch')">继续观察</button>
-        <button class="card-action-btn ghost" onclick="setCandidateManualState('${safeKanji}','review')">转复核</button>
-        <button class="card-action-btn ghost" onclick="setCandidateManualState('${safeKanji}','')">取消覆盖</button>
+      <div class="published-actions candidate-actions" data-workflow-stop>
+        <button class="card-action-btn ghost" data-workflow-action="candidate-state" data-kanji="${safeKanji}" data-state="ready">直推首页</button>
+        <button class="card-action-btn ghost" data-workflow-action="candidate-state" data-kanji="${safeKanji}" data-state="watch">继续观察</button>
+        <button class="card-action-btn ghost" data-workflow-action="candidate-state" data-kanji="${safeKanji}" data-state="review">转复核</button>
+        <button class="card-action-btn ghost" data-workflow-action="candidate-state" data-kanji="${safeKanji}" data-state="">取消覆盖</button>
         ${hasReadyAiCard
-          ? `<button class="card-action-btn ghost" disabled>已生成词卡</button><button class="card-action-btn ghost" onclick="generateDeepSeekWordCard('${safeKanji}', true)">重新生成 DeepSeek 词卡</button>`
-          : `<button class="card-action-btn ghost" onclick="generateDeepSeekWordCard('${safeKanji}', false)">生成 DeepSeek 词卡</button>`}
+          ? `<button class="card-action-btn ghost" disabled>已生成词卡</button><button class="card-action-btn ghost" data-workflow-action="generate-deepseek-card" data-kanji="${safeKanji}" data-force="true">重新生成 DeepSeek 词卡</button>`
+          : `<button class="card-action-btn ghost" data-workflow-action="generate-deepseek-card" data-kanji="${safeKanji}" data-force="false">生成 DeepSeek 词卡</button>`}
       </div>
     </div>`;
 }
@@ -9047,34 +8786,34 @@ function findWord(idOrKanji) {
   return null;
 }
 
-function renderWordDetailHero(word, aiCard, fallbackHero) {
-  const referenceImageUrl = aiCard?.referenceImage?.status === 'ready'
-    ? cleanShortText(aiCard.referenceImage.url, 1000)
+function renderWordDetailHero(word, wordCardView, fallbackHero) {
+  const referenceImageUrl = wordCardView?.hasReferenceImage
+    ? wordCardView.referenceImageUrl
     : '';
   const safeImageUrl = escapeHTML(referenceImageUrl || word.imageUrl || getHeroImageUrl(word.kanji));
   if (referenceImageUrl) {
     return `
       <div class="modal-hero modal-hero-recommendation modal-hero-full-reference">
-        <img class="modal-hero-img" src="${safeImageUrl}" alt="${escapeHTML(word.kanji)} 完整参考图" onerror="this.src='${fallbackHero}'">
-        <button class="modal-close" onclick="closeModal()">✕</button>
+        <img class="modal-hero-img" src="${safeImageUrl}" alt="${escapeHTML(word.kanji)} 完整参考图" data-image-fallback="fallback-src" data-fallback-src="${escapeHTML(fallbackHero)}">
+        <button class="modal-close" data-modal-action="close">✕</button>
       </div>
       <div class="modal-reference-heading">
         <div>
           <div class="modal-reference-word">${escapeHTML(word.kanji)}</div>
           <div class="modal-reference-reading">${escapeHTML(word.reading || word.kana || '')}</div>
         </div>
-        <a class="modal-reference-open" href="${escapeHTML(referenceImageUrl)}" target="_blank" rel="noopener" onclick="event.stopPropagation()">查看原图 ↗</a>
+        <a class="modal-reference-open" href="${escapeHTML(referenceImageUrl)}" target="_blank" rel="noopener">查看原图 ↗</a>
       </div>`;
   }
   return `
     <div class="modal-hero modal-hero-recommendation">
-      <img class="modal-hero-img" src="${safeImageUrl}" alt="${escapeHTML(word.kanji)}" onerror="this.src='${fallbackHero}'">
+      <img class="modal-hero-img" src="${safeImageUrl}" alt="${escapeHTML(word.kanji)}" data-image-fallback="fallback-src" data-fallback-src="${escapeHTML(fallbackHero)}">
       <div class="modal-hero-overlay"></div>
       <div class="modal-hero-content">
         <div class="modal-kanji">${escapeHTML(word.kanji)}</div>
         <div class="modal-reading-hero">${escapeHTML(word.reading || '')}</div>
       </div>
-      <button class="modal-close" onclick="closeModal()">✕</button>
+      <button class="modal-close" data-modal-action="close">✕</button>
     </div>`;
 }
 
@@ -9084,17 +8823,23 @@ function openDetail(idOrKanji) {
   currentWordForModal = word;
   const status = getFavoriteStatus(word.kanji);
   const fallbackHero = `data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 900 400%22><rect fill=%22%23fdeef0%22 width=%22900%22 height=%22400%22/><text x=%22450%22 y=%22210%22 text-anchor=%22middle%22 font-size=%22110%22 fill=%22%23f47a9a%22>${encodeURIComponent(word.kanji)}</text></svg>`;
-  const safeKanjiAction = escapeJSString(word.kanji);
+  const safeKanjiAction = escapeHTML(word.kanji);
   const entry = cleanCandidatePoolEntry(word.kanji, candidatePool[word.kanji] || word.candidateMeta || {}) || {};
-  const aiCard = cleanAiCard(entry.aiCard || word.aiCard || {});
-  const hasReadyAiCard = aiCard?.cardStatus === 'ready';
   const aiCardInFlight = aiCardAutoInFlight.has(word.kanji);
+  const rawAiCard = cleanAiCard(entry.aiCard || word.aiCard || {});
+  const wordCardView = buildWordCardViewModel({
+    word,
+    entry,
+    aiCard: rawAiCard,
+    inFlight: aiCardInFlight,
+    stalePending: isAiCardStalePending(rawAiCard, entry)
+  });
+  const aiCard = wordCardView.card;
+  const hasReadyAiCard = wordCardView.hasFormalCard;
   const displayAiCard = aiCardInFlight ? { ...(aiCard || {}), cardStatus: 'pending' } : aiCard;
   if (!hasReadyAiCard) {
-    const basicRomaji = entry.romaji || word.romaji || '';
-    const basicKana = entry.kana || word.kana || word.reading || '';
     document.getElementById('modalContainer').innerHTML = `
-      ${renderWordDetailHero(word, aiCard, fallbackHero)}
+      ${renderWordDetailHero(word, wordCardView, fallbackHero)}
       <div class="modal-body">
         <div class="modal-section compact-section">
           <div class="modal-section-title">核心判断</div>
@@ -9102,14 +8847,14 @@ function openDetail(idOrKanji) {
           ${renderRankingSignals(word.rankingSignals)}
         </div>
         <div class="detail-grid">
-          <div class="detail-item"><span>罗马音</span><strong>${escapeHTML(basicRomaji || '—')}</strong></div>
-          <div class="detail-item"><span>假名</span><strong>${escapeHTML(basicKana || '—')}</strong></div>
-          <div class="detail-item"><span>中文意思</span><strong>${escapeHTML(word.meaning || entry.meaning || '—')}</strong></div>
-          <div class="detail-item"><span>DeepSeek 词卡</span><strong>${escapeHTML(getAiCardStatusLabel(displayAiCard))}</strong></div>
+          <div class="detail-item"><span>罗马音</span><strong>${escapeHTML(wordCardView.basic.romaji || '—')}</strong></div>
+          <div class="detail-item"><span>假名</span><strong>${escapeHTML(wordCardView.basic.kana || '—')}</strong></div>
+          <div class="detail-item"><span>中文意思</span><strong>${escapeHTML(wordCardView.basic.meaning || '—')}</strong></div>
+          <div class="detail-item"><span>DeepSeek 词卡</span><strong>${escapeHTML(wordCardView.statusLabel)}</strong></div>
         </div>
         <div class="modal-section compact-section">
           <div class="modal-section-title">DeepSeek 词卡</div>
-          <div class="wrong-usage-box">${displayAiCard?.cardStatus === 'pending' ? 'DeepSeek 词卡生成中。生成完成后会刷新为正式词卡内容。' : '该词还没有生成 DeepSeek 词卡。未生成前不展示推荐标题、例句、详细解释、错误用法或互动引导。'}</div>
+          <div class="wrong-usage-box">${escapeHTML(wordCardView.unavailableMessage)}</div>
         </div>
         <div class="modal-section compact-section">
           <div class="modal-section-title">准入状态</div>
@@ -9123,26 +8868,26 @@ function openDetail(idOrKanji) {
     document.getElementById('modalOverlay').classList.add('open');
     return;
   }
-  const displayTitle = safeArray(aiCard?.suggestedTitles)[0] || '';
-  const displayHook = safeArray(aiCard?.contentAngles)[0] || '';
-  const displayAudience = aiCard?.targetAudience || '';
-  const displayReference = aiCard?.referenceDirection || '';
-  const displayReason = aiCard?.summary || '';
-  const displayDetail = aiCard?.explanation || '';
-  const displayRisk = aiCard?.riskWarning || '';
-  const displayWrongUsage = aiCard?.wrongUsage || '';
-  const displayExamples = safeArray(aiCard?.examples);
-  const displayInteractions = safeArray(aiCard?.interactionPrompts);
-  const displaySimilarWords = safeArray(aiCard?.similarWords);
-  const displayUsageScenes = safeArray(aiCard?.usageScenes);
-  const displayContentAngles = safeArray(aiCard?.contentAngles);
-  const displayCover = aiCard?.coverSuggestion || {};
-  const hasCoverSuggestion = Boolean(displayCover.coverText || displayCover.mainVisual || displayCover.style || displayCover.avoid);
+  const displayTitle = wordCardView.title;
+  const displayHook = wordCardView.contentAngles[0] || '';
+  const displayAudience = wordCardView.targetAudience;
+  const displayReference = wordCardView.referenceDirection;
+  const displayReason = wordCardView.summary;
+  const displayDetail = wordCardView.explanation;
+  const displayRisk = wordCardView.riskWarning;
+  const displayWrongUsage = wordCardView.wrongUsage;
+  const displayExamples = wordCardView.examples;
+  const displayInteractions = wordCardView.interactionPrompts;
+  const displaySimilarWords = wordCardView.similarWords;
+  const displayUsageScenes = wordCardView.usageScenes;
+  const displayContentAngles = wordCardView.contentAngles;
+  const displayCover = wordCardView.coverSuggestion;
+  const hasCoverSuggestion = wordCardView.hasCoverSuggestion;
   const scoreBreakdown = word.scoreBreakdown || {};
   const reviewCheckText = entry.reviewReason || (entry.confidenceLevel === 'review' || entry.evidenceType === 'unknown' ? '证据或用法不够稳定，发布前建议人工查证。' : '');
   const avoidScenarioText = displayCover.avoid || entry.riskWarning || '';
   document.getElementById('modalContainer').innerHTML = `
-    ${renderWordDetailHero(word, aiCard, fallbackHero)}
+    ${renderWordDetailHero(word, wordCardView, fallbackHero)}
     <div class="modal-body">
       <div class="modal-section compact-section">
         <div class="modal-section-title">核心判断</div>
@@ -9207,8 +8952,8 @@ function openDetail(idOrKanji) {
         <div class="modal-meta-item">🤖 词卡：${escapeHTML(aiCard.cardSource === 'codex' ? 'Codex 生成' : 'DeepSeek 生成')}</div>
       </div>
       <div class="modal-footer-actions">
-        <button class="btn btn-primary" onclick="markPending('${safeKanjiAction}')">标记待发布</button>
-        <button class="btn btn-ghost" onclick="openPublishedRecordModal('', '${safeKanjiAction}')">添加已发布记录</button>
+        <button class="btn btn-primary" data-modal-action="mark-pending" data-kanji="${safeKanjiAction}">标记待发布</button>
+        <button class="btn btn-ghost" data-modal-action="open-published-record" data-preset-kanji="${safeKanjiAction}">添加已发布记录</button>
         ${renderAiCardActionButton(word.kanji, aiCard, 'btn btn-ghost')}
       </div>
     </div>`;
@@ -9259,7 +9004,7 @@ function openLibraryCleanupModal() {
     <div class="modal-shell record-shell">
       <div class="modal-header settings-header">
         <h2 class="modal-title">AI 清洗历史种子数据并删除不合适词</h2>
-        <button class="modal-close" onclick="closeModal()">×</button>
+        <button class="modal-close" data-modal-action="close">×</button>
       </div>
       <div class="modal-body form-modal-body">
         <div class="modal-section compact-section">
@@ -9285,8 +9030,8 @@ function openLibraryCleanupModal() {
           <div class="modal-section-content">脚本会自动运行 npm run build:words，更新 words-data.js 和 shared/words-data.mjs。删除后首页补位只会使用 DeepSeek 审核词。</div>
         </div>
         <div class="modal-footer-actions form-actions">
-          <button class="btn btn-ghost" onclick="copyLibraryCleanupCommand('dry')">复制预览命令</button>
-          <button class="btn btn-primary" onclick="copyLibraryCleanupCommand('run')">复制真实删除命令</button>
+          <button class="btn btn-ghost" data-modal-action="copy-library-cleanup" data-mode="dry">复制预览命令</button>
+          <button class="btn btn-primary" data-modal-action="copy-library-cleanup" data-mode="run">复制真实删除命令</button>
         </div>
       </div>
     </div>`;
@@ -9321,13 +9066,13 @@ function openPublishedRecordModal(recordId = '', presetKanji = '') {
     <div class="modal-shell record-shell">
       <div class="modal-header settings-header">
         <h2 class="modal-title">${record ? '编辑已发布记录' : '添加已发布记录'}</h2>
-        <button class="modal-close" onclick="closeModal()">×</button>
+        <button class="modal-close" data-modal-action="close">×</button>
       </div>
       <div class="modal-body form-modal-body">
         <div class="form-grid two-col">
           <label class="form-field"><span>关联词</span><input class="form-input" id="recordWord" value="${escapeHTML(initialWord)}" placeholder="例如：尊い"></label>
           <label class="form-field"><span>内容类型</span><select class="form-input" id="recordContentType">${CONTENT_TYPE_OPTIONS.map(option => `<option value="${escapeHTML(option)}" ${(record?.contentType || '图文') === option ? 'selected' : ''}>${escapeHTML(option)}</option>`).join('')}</select></label>
-          <label class="form-field"><span>小红书链接 / 分享文案</span><div class="form-inline-actions"><input class="form-input" id="recordLink" value="${escapeHTML(record?.link || '')}" placeholder="粘贴分享链接或整段分享文案"><button class="card-action-btn ghost" type="button" onclick="autofillPublishedRecordFromLink()">自动识别</button></div></label>
+          <label class="form-field full"><span>小红书链接 / 分享文案</span><div class="form-inline-actions"><textarea class="form-input published-share-input" id="recordLink" rows="3" placeholder="粘贴分享链接或整段分享文案">${escapeHTML(record?.link || '')}</textarea><button class="card-action-btn ghost" type="button" data-modal-action="autofill-published-record">自动识别</button></div></label>
           <label class="form-field"><span>发布时间</span><input class="form-input" id="recordPublishedAt" type="datetime-local" value="${record?.publishedAt ? record.publishedAt.slice(0, 16) : ''}"></label>
           <label class="form-field full"><span>笔记标题</span><input class="form-input" id="recordTitle" value="${escapeHTML(record?.title || '')}" placeholder="小红书标题"></label>
           <label class="form-field full"><span>笔记描述</span><textarea class="form-input form-textarea" id="recordDescription" placeholder="笔记描述 / 备注文案">${escapeHTML(record?.description || '')}</textarea></label>
@@ -9362,8 +9107,8 @@ function openPublishedRecordModal(recordId = '', presetKanji = '') {
         </div>
 
         <div class="modal-footer-actions form-actions">
-          <button class="btn btn-primary" onclick="savePublishedRecord()">保存记录</button>
-          ${record ? `<button class="btn btn-ghost" onclick="openPublishedDetail('${escapeJSString(record.id)}')">返回详情</button>` : ''}
+          <button class="btn btn-primary" data-modal-action="save-published-record">保存记录</button>
+          ${record ? `<button class="btn btn-ghost" data-modal-action="open-published-detail" data-record-id="${escapeHTML(record.id)}">返回详情</button>` : ''}
         </div>
       </div>
     </div>`;
@@ -9379,85 +9124,6 @@ function readRecordFormStats(prefix = 'latest') {
     shares: document.getElementById(`${prefix}Shares`)?.value,
     views: document.getElementById(`${prefix}Views`)?.value
   });
-}
-
-function extractFirstUrl(text) {
-  const match = String(text || '').match(/https?:\/\/[^\s]+/i);
-  return match ? match[0].replace(/[）)\]}＞>，,。.!！?？]+$/, '') : '';
-}
-
-function normalizeXiaohongshuUrl(url) {
-  const cleanUrl = String(url || '').trim();
-  if (!cleanUrl) return '';
-  try {
-    const parsed = new URL(cleanUrl);
-    if (parsed.hostname.includes('xhslink.com') || parsed.hostname.includes('xiaohongshu.com')) return parsed.toString();
-  } catch (error) {
-    return '';
-  }
-  return '';
-}
-
-function parseCountLikeValue(value) {
-  const raw = String(value || '').trim().replace(/,/g, '');
-  if (!raw) return 0;
-  const match = raw.match(/(\d+(?:\.\d+)?)(万|w|W|k|K)?/);
-  if (!match) return toInt(raw, 0);
-  const number = Number.parseFloat(match[1]);
-  if (!Number.isFinite(number)) return 0;
-  const unit = match[2];
-  if (unit === '万' || unit === 'w' || unit === 'W') return Math.round(number * 10000);
-  if (unit === 'k' || unit === 'K') return Math.round(number * 1000);
-  return Math.round(number);
-}
-
-function extractShareMetric(text, labels = []) {
-  for (const label of labels) {
-    const pattern = new RegExp(`${label}\\s*[:：]?\\s*([\\d.,]+(?:万|w|W|k|K)?)`, 'i');
-    const match = String(text || '').match(pattern);
-    if (match?.[1]) {
-      const parsed = parseCountLikeValue(match[1]);
-      if (parsed > 0) return parsed;
-    }
-  }
-  return 0;
-}
-
-function extractPublishedAtFromShareText(text) {
-  const rawText = String(text || '');
-  const dateMatch = rawText.match(/(20\d{2})[./-](\d{1,2})[./-](\d{1,2})(?:\s+(\d{1,2}):(\d{2}))?/);
-  if (!dateMatch) return '';
-  const [, year, month, day, hour = '00', minute = '00'] = dateMatch;
-  return `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}T${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}`;
-}
-
-function parseXiaohongshuSharePayload(text) {
-  const rawText = String(text || '').trim();
-  const normalizedLines = rawText.split(/\n+/).map(line => line.trim()).filter(Boolean);
-  const url = normalizeXiaohongshuUrl(extractFirstUrl(rawText));
-  const titleLine = normalizedLines.find(line => !line.includes('http') && !/^复制/.test(line) && !/^打开小红书/.test(line) && !line.startsWith('😆') && line.length <= 60 && !/[赞藏评分享浏览曝光]\s*[:：]?\s*\d/.test(line)) || '';
-  const authorMatch = rawText.match(/@([^\s：:，,]+)/);
-  const typeMatch = rawText.match(/(图文|视频|笔记)/);
-  const noteIdMatch = url.match(/(?:explore|discovery\/item)\/([a-zA-Z0-9]+)/i);
-  const stats = cleanPublishedStats({
-    likes: extractShareMetric(rawText, ['点赞', '赞']),
-    favorites: extractShareMetric(rawText, ['收藏']),
-    comments: extractShareMetric(rawText, ['评论']),
-    shares: extractShareMetric(rawText, ['分享', '转发']),
-    views: extractShareMetric(rawText, ['浏览', '曝光', '阅读'])
-  });
-  const publishedAt = extractPublishedAtFromShareText(rawText);
-  const description = normalizedLines.filter(line => line !== titleLine && !line.includes(url) && !/[赞藏评分享浏览曝光]\s*[:：]?\s*\d/.test(line)).join('\n');
-  return {
-    url,
-    noteId: noteIdMatch ? noteIdMatch[1] : '',
-    title: titleLine,
-    description,
-    authorName: authorMatch ? authorMatch[1] : '',
-    contentType: typeMatch ? (typeMatch[1] === '视频' ? '视频' : '图文') : '',
-    publishedAt,
-    latestStats: stats
-  };
 }
 
 function autofillPublishedRecordFromLink() {
@@ -9585,7 +9251,7 @@ function openPublishedDetail(recordId) {
     <div class="modal-shell record-shell">
       <div class="modal-header settings-header">
         <h2 class="modal-title">已发布详情</h2>
-        <button class="modal-close" onclick="closeModal()">×</button>
+        <button class="modal-close" data-modal-action="close">×</button>
       </div>
       <div class="modal-body form-modal-body">
         <div class="published-detail-head">
@@ -9624,7 +9290,7 @@ function openPublishedDetail(recordId) {
         <div class="modal-section compact-section"><div class="modal-section-title">📝 笔记描述</div><div class="modal-section-content">${escapeHTML(record.description || '待填写')}</div></div>
         <div class="modal-section compact-section"><div class="modal-section-title">📒 备注</div><div class="modal-section-content">${escapeHTML(record.remarks || '暂无')}</div></div>
         <div class="modal-section compact-section"><div class="modal-section-title">⏱ 分时数据节点</div><div class="timeline-grid">${snapshotRows}</div></div>
-        <div class="modal-footer-actions form-actions"><button class="btn btn-ghost" onclick="refreshPublishedMetrics('${escapeJSString(record.id)}')">尝试自动更新</button><button class="btn btn-primary" onclick="openPublishedRecordModal('${escapeJSString(record.id)}')">编辑这条记录</button></div>
+        <div class="modal-footer-actions form-actions"><button class="btn btn-ghost" data-modal-action="refresh-published-record" data-record-id="${escapeHTML(record.id)}">尝试自动更新</button><button class="btn btn-primary" data-modal-action="open-published-record" data-record-id="${escapeHTML(record.id)}">编辑这条记录</button></div>
       </div>
     </div>`;
   document.getElementById('modalOverlay').classList.add('open');
@@ -9637,10 +9303,6 @@ function closeModal() {
   currentWordForModal = null;
   currentPublishedRecordId = null;
   hasUnsavedFormChanges = false;
-}
-
-function closeModalOutside(event) {
-  if (event.target === document.getElementById('modalOverlay')) closeModal();
 }
 
 function resetTransientUiState() {
@@ -9687,8 +9349,7 @@ function ensureWorkflowScopeLoaded(scope, options = {}) {
   const historyDate = cleanShortText(options.historyDate || getWorkflowScopeHistoryDate(cleanScope), 20);
   const scopeKey = getWorkflowScopeKey(cleanScope, historyDate);
   if (isWorkflowScopeLoaded(cleanScope, historyDate)) return Promise.resolve(true);
-  if (workflowScopeLoads.has(scopeKey)) return workflowScopeLoads.get(scopeKey);
-  const request = loadCloudWorkflow({
+  return workflowStore.loadScope(scopeKey, () => loadCloudWorkflow({
     mode: 'remote-first',
     showMessages: false,
     scope: cleanScope,
@@ -9699,11 +9360,7 @@ function ensureWorkflowScopeLoaded(scope, options = {}) {
       renderWorkflowScopeState(cleanScope, 'error');
     }
     return loaded;
-  }).finally(() => {
-    if (workflowScopeLoads.get(scopeKey) === request) workflowScopeLoads.delete(scopeKey);
-  });
-  workflowScopeLoads.set(scopeKey, request);
-  return request;
+  }));
 }
 
 function switchTab(tab) {
@@ -9750,21 +9407,21 @@ function exportSelected() {
   text += `📅 ${new Date().toLocaleDateString('zh-CN')}\n\n`;
   favWords.forEach((word, index) => {
     const entry = cleanCandidatePoolEntry(word.kanji, candidatePool[word.kanji] || word.candidateMeta || {}) || {};
-    const card = cleanAiCard(entry.aiCard || {});
+    const wordCardView = buildWordCardViewModel({ word, entry, aiCard: entry.aiCard || {} });
     text += `${index + 1}. 【${word.kanji}】${word.reading}\n`;
     text += `   中文：${word.meaning}\n`;
     text += `   状态：${FAVORITE_STATUS_LABELS[getFavoriteStatus(word.kanji)]}\n`;
-    if (card?.cardStatus !== 'ready') {
-      text += '   该词尚未生成 DeepSeek 词卡，请先生成词卡。\n\n';
+    if (!wordCardView.hasFormalCard) {
+      text += `   ${wordCardView.unavailableMessage}\n\n`;
       return;
     }
-    text += `   推荐标题：${safeArray(card.suggestedTitles).join(' / ') || '—'}\n`;
-    text += `   摘要：${card.summary || '—'}\n`;
-    text += `   详细解释：${card.explanation || '—'}\n`;
-    text += `   内容角度：${safeArray(card.contentAngles).join(' / ') || '—'}\n`;
-    text += `   例句：${safeArray(card.examples).map(example => `${example.jp}${example.cn ? `（${example.cn}）` : ''}`).join('；') || '—'}\n`;
-    text += `   封面建议：${card.coverSuggestion?.coverText || ''} ${card.coverSuggestion?.mainVisual || ''} ${card.coverSuggestion?.style || ''}`.trim() + '\n';
-    text += `   互动引导：${safeArray(card.interactionPrompts).join(' / ') || '—'}\n\n`;
+    text += `   推荐标题：${wordCardView.suggestedTitles.join(' / ') || '—'}\n`;
+    text += `   摘要：${wordCardView.summary || '—'}\n`;
+    text += `   详细解释：${wordCardView.explanation || '—'}\n`;
+    text += `   内容角度：${wordCardView.contentAngles.join(' / ') || '—'}\n`;
+    text += `   例句：${wordCardView.examples.map(example => `${example.jp}${example.cn ? `（${example.cn}）` : ''}`).join('；') || '—'}\n`;
+    text += `   封面建议：${wordCardView.coverSuggestion.coverText || ''} ${wordCardView.coverSuggestion.mainVisual || ''} ${wordCardView.coverSuggestion.style || ''}`.trim() + '\n';
+    text += `   互动引导：${wordCardView.interactionPrompts.join(' / ') || '—'}\n\n`;
   });
   navigator.clipboard.writeText(text).then(() => showToast('✅ 已复制到剪贴板')).catch(() => {
     const textarea = document.createElement('textarea');
@@ -9798,22 +9455,9 @@ async function restoreWorkflowBackup(event) {
     const summary = `选题 ${restored.words.length} 个、候选 ${Object.keys(restored.candidatePool).length} 个、发布记录 ${restored.publishedRecords.length} 条、今日推荐 ${restored.todaySnapshot.words.length} 个`;
     if (!window.confirm(`备份校验通过：${summary}。\n\n确认用这份备份覆盖当前团队工作流吗？`)) return;
 
-    const currentRevision = workflowRevision;
-    const currentAuditLog = workflowAuditLog;
-    favorites = restored.words;
-    favoriteStatuses = restored.statuses;
-    wordFeedback = restored.feedback;
-    publishedRecords = restored.publishedRecords;
-    candidatePool = restored.candidatePool;
-    aiBatches = restored.aiBatches;
-    aiPreview = restored.aiPreview;
-    syncAiPreviewGlobalsFromWorkflow();
-    todaySnapshot = restored.todaySnapshot;
-    todayDismissed = restored.todayDismissed;
-    historySnapshots = restored.historySnapshots;
-    todaySnapshotHistory = restored.todaySnapshotHistory;
-    workflowRevision = currentRevision;
-    workflowAuditLog = currentAuditLog;
+    const currentMetadata = workflowStore.getMetadata();
+    applyWorkflowData(restored);
+    workflowStore.replaceMetadata(currentMetadata);
     saveLocalWorkflow();
     const saved = await saveCloudWorkflow(false);
     if (!saved) {
@@ -9844,8 +9488,8 @@ function exportWorkflowBackup() {
     todayDismissed,
     historySnapshots,
     todaySnapshotHistory,
-    revision: workflowRevision,
-    auditLog: workflowAuditLog,
+    revision: workflowStore.getRevision(),
+    auditLog: workflowStore.getAuditLog(),
     updated: nowIso(),
     schemaVersion: 2
   });
@@ -9954,15 +9598,6 @@ function showToast(message) {
   setTimeout(() => toast.classList.remove('show'), 2200);
 }
 
-document.addEventListener('keydown', event => {
-  if (event.key === 'Escape') {
-    closeStatusMenu();
-    closeDailyManageMenu();
-    closeModal();
-    closeSettingsModal();
-  }
-});
-
 document.addEventListener('click', event => {
   if (!event.target.closest('.action-menu')) {
     closeDailyManageMenu();
@@ -10040,8 +9675,7 @@ async function init() {
 window.addEventListener('pageshow', event => {
   if (!event.persisted) return;
   cloudWorkflowLoadEpoch += 1;
-  activeApiControllers.forEach(controller => controller.abort());
-  activeApiControllers.clear();
+  apiClient.abortAll();
   backgroundSyncPromise = null;
   resetTransientUiState();
   ensureTodayGridVisible();
@@ -10060,6 +9694,132 @@ window.addEventListener('online', () => {
     updateSyncStatus('网络已恢复，云端数据已同步。', '#4caf50');
     showToast('网络已恢复，数据已重新同步');
   });
+});
+
+createAppShellController({
+  root: document,
+  onToggleSidebar: toggleSidebar,
+  onSwitchTab: switchTab,
+  onOpenSettings: openSettingsModal,
+  onCloseSettings: closeSettingsModal,
+  onCloseModal: closeModal,
+  onExportBackup: exportWorkflowBackup,
+  onSelectRestore: selectWorkflowBackupForRestore,
+  onRestoreWorkflow: restoreWorkflowBackup,
+  onEscape: () => {
+    closeStatusMenu();
+    closeDailyManageMenu();
+    closeModal();
+    closeSettingsModal();
+  },
+  onError: error => {
+    console.warn('应用外壳操作失败', error);
+    showToast('页面操作失败，请刷新后重试');
+  }
+});
+
+createManualWordModalController({
+  root: document.getElementById('modalContainer'),
+  onClose: closeModal,
+  onSubmit: submitManualWord,
+  onConfirmExisting: confirmAddExistingManualWord,
+  onOpenDetail: openDetail,
+  onError: error => {
+    console.warn('手动词弹窗操作失败', error);
+    showToast('手动词操作失败，请稍后重试');
+  }
+});
+
+createWorkflowActionsController({
+  root: document,
+  onToggleAiPreviewSelection: toggleAiPreviewSelection,
+  onGenerateTodayCard: generateTodayAiCard,
+  onGenerateDeepSeekCard: generateDeepSeekWordCard,
+  onToggleStatus: toggleStatusMenu,
+  onSelectStatus: selectFavoriteStatus,
+  onToggleFeedback: toggleFeedbackMenu,
+  onNegativeFeedback: applyNegativeFeedback,
+  onCodexFeedback: applyCodexDraftFeedback,
+  onOpenDetail: openDetail,
+  onToggleCandidate: toggleCandidateSelection,
+  onSetCandidateState: setCandidateManualState,
+  onError: error => {
+    console.warn('工作流卡片操作失败', error);
+    showToast('卡片操作失败，请稍后重试');
+  }
+});
+
+createModalActionsController({
+  root: document.getElementById('modalContainer'),
+  onClose: closeModal,
+  onToggleCodexFavorite: toggleCodexDraftFavorite,
+  onExportRecommendationAudit: exportTodayRecommendationAudit,
+  onMarkPending: markPending,
+  onOpenPublishedRecord: openPublishedRecordModal,
+  onCopyLibraryCleanup: copyLibraryCleanupCommand,
+  onAutofillPublishedRecord: autofillPublishedRecordFromLink,
+  onSavePublishedRecord: savePublishedRecord,
+  onOpenPublishedDetail: openPublishedDetail,
+  onRefreshPublishedRecord: refreshPublishedMetrics,
+  onError: error => {
+    console.warn('弹窗操作失败', error);
+    showToast('弹窗操作失败，请稍后重试');
+  }
+});
+
+createImageFallbackController({ root: document });
+
+createDailyHotPageController({
+  root: document.getElementById('mainContent'),
+  onDateChange: setDailyHotDate,
+  onSourceChange: setSourceFilter,
+  onRefresh: refreshData,
+  onToggleManage: toggleDailyManageMenu,
+  onManage: handleDailyManageAction,
+  onGenerateCards: generateMissingTodayAiCards,
+  onExport: exportSelected,
+  onShiftHistory: shiftHistoryDate,
+  onOpenDetail: openDetail,
+  onToggleFavorite: toggleFavorite,
+  onDismiss: dismissDailyHotRecommendation,
+  onGenerateCard: generateTodayAiCard,
+  onGenerateToday: handleGenerateTodaySnapshot,
+  onOpenCodexPreview: openCodexDraftPreview,
+  onToggleCodexFavorite: toggleCodexDraftFavorite,
+  onCodexFeedback: applyCodexDraftFeedback,
+  onError: error => {
+    console.warn('每日热门页面操作失败', error);
+    showToast('每日热门页面操作失败，请刷新后重试');
+  }
+});
+
+createFavoritesPageController({
+  root: document.getElementById('page-favorites'),
+  onOpenDetail: openDetail,
+  onToggleFavorite: toggleFavorite,
+  onToggleStatus: toggleStatusMenu,
+  onSelectStatus: selectFavoriteStatus,
+  onAddManualWord: openManualWordModal,
+  onExport: exportSelected,
+  onSourceFilter: value => setSourceFilter('favorites', value),
+  onStatusFilter: setStatusFilter,
+  onError: error => {
+    console.warn('收藏页操作失败', error);
+    showToast('收藏页操作失败，请刷新后重试');
+  }
+});
+
+createPublishedPageController({
+  root: document.getElementById('page-published'),
+  onOpenDetail: openPublishedDetail,
+  onEditRecord: openPublishedRecordModal,
+  onAddRecord: openPublishedRecordModal,
+  onRefresh: refreshPublishedMetrics,
+  onRender: renderPublished,
+  onError: error => {
+    console.warn('已发布页面操作失败', error);
+    showToast('已发布页面操作失败，请刷新后重试');
+  }
 });
 
 init();

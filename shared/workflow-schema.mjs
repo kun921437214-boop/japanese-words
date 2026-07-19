@@ -1302,5 +1302,8 @@ export function mergeWorkflowForFullSave(currentWorkflow = {}, incomingWorkflow 
 export {
   SCHEMA_VERSION,
   SOURCE_PROMPT_OPTIONS,
-  PROMPT_VERSION_BY_ACTION
+  PROMPT_VERSION_BY_ACTION,
+  mergeHistorySnapshots,
+  mergeTodaySnapshotHistory,
+  chooseTodaySnapshot as mergeTodaySnapshot
 };
