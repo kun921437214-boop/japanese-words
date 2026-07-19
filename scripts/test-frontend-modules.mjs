@@ -3,6 +3,13 @@ import fs from 'node:fs';
 import test from 'node:test';
 import { createApiClient, createApiError, getApiErrorMessage } from '../frontend/api-client.mjs';
 import {
+  buildDailyHotDateOptions,
+  buildDailyHotSourceFilterModel,
+  buildHistoryNavigationModel,
+  createDailyHotPageController,
+  normalizeDailyHotDateSelection
+} from '../frontend/daily-hot-page.mjs';
+import {
   buildFavoritesPageModel,
   createFavoritesPageController,
   normalizeFavoriteStatusFilter,
@@ -290,6 +297,113 @@ test('workflow cache quota errors do not escape into cloud sync flow', () => {
   assert.equal(warnings[0][0], '本地缓存写入失败，已保留当前云端数据');
 });
 
+test('daily hot date options keep today and tomorrow first and deduplicate history', () => {
+  const options = buildDailyHotDateOptions({
+    todayDateKey: '2026-07-19',
+    tomorrowDateKey: '2026-07-20',
+    historyDates: ['2026-07-18', '2026-07-17', '2026-07-18', '2026-07-20', 'invalid'],
+    formatWeekday: dateKey => ({ '2026-07-20': '周一', '2026-07-18': '周六', '2026-07-17': '周五' })[dateKey] || ''
+  });
+
+  assert.deepEqual(options, [
+    { value: 'today', label: '今天 · 2026-07-19' },
+    { value: '2026-07-20', label: '明天 · 2026-07-20 · 周一' },
+    { value: '2026-07-18', label: '2026-07-18 · 周六' },
+    { value: '2026-07-17', label: '2026-07-17 · 周五' }
+  ]);
+  assert.equal(normalizeDailyHotDateSelection('2026-07-18', options), '2026-07-18');
+  assert.equal(normalizeDailyHotDateSelection('2026-06-01', options), 'today');
+});
+
+test('daily hot source model filters a view without changing recommendation order', () => {
+  const words = [
+    { kanji: '思い切って', source: '每日热门归档' },
+    { kanji: '手間取る', source: 'DeepSeek' },
+    { kanji: '詰めが甘い', source: '每日热门归档' }
+  ];
+  const model = buildDailyHotSourceFilterModel({ words, sourceFilter: '每日热门归档' });
+
+  assert.deepEqual(model.sources, ['每日热门归档', 'DeepSeek']);
+  assert.deepEqual(model.visibleWords.map(word => word.kanji), ['思い切って', '詰めが甘い']);
+  assert.equal(model.total, 3);
+  assert.equal(model.visible, 2);
+  assert.deepEqual(words.map(word => word.kanji), ['思い切って', '手間取る', '詰めが甘い']);
+  assert.equal(buildDailyHotSourceFilterModel({ words, sourceFilter: '失效来源' }).sourceFilter, 'all');
+});
+
+test('history navigation sorts dates and keeps earlier/later boundaries stable', () => {
+  const navigation = buildHistoryNavigationModel({
+    dates: ['2026-07-17', '2026-07-19', '2026-07-18', '2026-07-18'],
+    currentDate: '2026-07-18'
+  });
+
+  assert.deepEqual(navigation.dates, ['2026-07-19', '2026-07-18', '2026-07-17']);
+  assert.equal(navigation.currentIndex, 1);
+  assert.equal(navigation.earlierDisabled, false);
+  assert.equal(navigation.laterDisabled, false);
+  assert.equal(navigation.shift(1), '2026-07-17');
+  assert.equal(navigation.shift(-1), '2026-07-19');
+  assert.equal(navigation.shift(99), '2026-07-17');
+});
+
+test('daily hot controller routes filters, cards and keyboard preview without inline handlers', () => {
+  const listeners = new Map();
+  const root = {
+    addEventListener: (type, listener) => listeners.set(type, listener),
+    removeEventListener: type => listeners.delete(type),
+    contains: () => true
+  };
+  const calls = [];
+  const controller = createDailyHotPageController({
+    root,
+    onDateChange: value => calls.push(['date', value]),
+    onSourceChange: (scope, value) => calls.push(['source', scope, value]),
+    onManage: action => calls.push(['manage', action]),
+    onOpenDetail: id => calls.push(['detail', id]),
+    onToggleFavorite: kanji => calls.push(['favorite', kanji]),
+    onOpenCodexPreview: index => calls.push(['preview', index]),
+    onShiftHistory: step => calls.push(['shift', step])
+  });
+  const dispatch = (type, actionElement, options = {}) => {
+    let stopped = false;
+    let prevented = false;
+    const stopElement = options.stopContains === undefined ? null : { contains: () => options.stopContains };
+    listeners.get(type)({
+      key: options.key,
+      target: {
+        closest: selector => selector === '[data-daily-hot-action]' ? actionElement : stopElement
+      },
+      stopPropagation: () => { stopped = true; },
+      preventDefault: () => { prevented = true; }
+    });
+    return { stopped, prevented };
+  };
+
+  dispatch('change', { dataset: { dailyHotAction: 'date' }, value: '2026-07-18' });
+  dispatch('change', { dataset: { dailyHotAction: 'source', scope: 'history' }, value: 'DeepSeek' });
+  dispatch('click', { dataset: { dailyHotAction: 'manage', manageAction: 'fill' } });
+  dispatch('click', { dataset: { dailyHotAction: 'open-detail', wordId: 'today-1' } });
+  assert.equal(dispatch('click', { dataset: { dailyHotAction: 'toggle-favorite', kanji: '思い切って' } }, { stopContains: true }).stopped, true);
+  dispatch('click', { dataset: { dailyHotAction: 'shift-history', step: '-1' } });
+  const keyResult = dispatch('keydown', { dataset: { dailyHotAction: 'open-codex-preview', index: '3' } }, { key: 'Enter' });
+  const beforeStoppedAncestor = calls.length;
+  dispatch('click', { dataset: { dailyHotAction: 'open-detail', wordId: 'blocked-card' } }, { stopContains: false });
+
+  assert.equal(keyResult.prevented, true);
+  assert.equal(calls.length, beforeStoppedAncestor);
+  assert.deepEqual(calls, [
+    ['date', '2026-07-18'],
+    ['source', 'history', 'DeepSeek'],
+    ['manage', 'fill'],
+    ['detail', 'today-1'],
+    ['favorite', '思い切って'],
+    ['shift', -1],
+    ['preview', 3]
+  ]);
+  controller.destroy();
+  assert.equal(listeners.size, 0);
+});
+
 test('favorites page model applies source and status filters without changing the full pool', () => {
   const words = [
     { kanji: '思い切って', source: '每日热门', status: 'none' },
@@ -542,8 +656,16 @@ test('module migration exposes every inline handler through the compatibility fa
   const favoriteCardSource = appSource.slice(appSource.indexOf('function renderFavoriteCard'), appSource.indexOf('function renderTodayGrid'));
   const publishedMarkup = indexSource.slice(indexSource.indexOf('id="page-published"'), indexSource.indexOf('</main>'));
   const publishedCardSource = appSource.slice(appSource.indexOf('function renderPublishedCard'), appSource.indexOf('function renderPublished()'));
+  const dailyHotMarkup = indexSource.slice(indexSource.indexOf('id="page-today"'), indexSource.indexOf('id="page-favorites"'));
+  const dailyHotCardSource = appSource.slice(appSource.indexOf('function renderTodayCard'), appSource.indexOf('function getCodexDraftAuditItem'));
+  const codexPreviewCardSource = appSource.slice(appSource.indexOf('function renderCodexDraftPreviewCard'), appSource.indexOf('function openCodexDraftPreview'));
+  const dailyHotGridSource = appSource.slice(appSource.indexOf('function renderTodayGrid'), appSource.indexOf('function renderHistoryGrid'));
   assert.doesNotMatch(favoritesMarkup, /on(?:click|change)=/);
   assert.doesNotMatch(favoriteCardSource, /onclick=/);
   assert.doesNotMatch(publishedMarkup, /onclick=/);
   assert.doesNotMatch(publishedCardSource, /onclick=/);
+  assert.doesNotMatch(dailyHotMarkup, /on(?:click|change|keydown)=/);
+  assert.doesNotMatch(dailyHotCardSource, /onclick=/);
+  assert.doesNotMatch(codexPreviewCardSource, /on(?:click|keydown)=/);
+  assert.doesNotMatch(dailyHotGridSource, /onclick=/);
 });

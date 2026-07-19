@@ -48,7 +48,7 @@
       记忆面包 × 热门日语口袋道具<br>© 2026 每日灵感，为你而来
     </div>
   </aside>
-  <main class="main-content">
+  <main class="main-content" id="mainContent">
     <div class="page page-today active" id="page-today">
       <div class="page-header">
         <div class="page-header-inner">
@@ -63,20 +63,20 @@
             <div class="page-actions-deco" aria-hidden="true">✦ ✦</div>
             <label class="daily-date-field">
               <span>查看日期</span>
-              <select class="filter-select" id="dailyHotDateSelect" onchange="setDailyHotDate(this.value)" aria-label="查看日期"></select>
+              <select class="filter-select" id="dailyHotDateSelect" data-daily-hot-action="date" aria-label="查看日期"></select>
             </label>
-            <select class="filter-select" id="todaySourceFilter" onchange="setSourceFilter('today', this.value)" aria-label="按来源筛选每日热门"></select>
-            <button class="btn btn-ghost" onclick="refreshData()">🔄 刷新</button>
+            <select class="filter-select" id="todaySourceFilter" data-daily-hot-action="source" data-scope="today" aria-label="按来源筛选每日热门"></select>
+            <button class="btn btn-ghost" data-daily-hot-action="refresh">🔄 刷新</button>
             <div class="action-menu">
-              <button class="btn btn-ghost" id="dailyManageBtn" data-today-action data-daily-preview-disabled onclick="toggleDailyManageMenu(event)">管理今日推荐</button>
+              <button class="btn btn-ghost" id="dailyManageBtn" data-today-action data-daily-preview-disabled data-daily-hot-action="toggle-manage">管理今日推荐</button>
               <div class="action-menu-panel" id="dailyManageMenu">
-                <button onclick="handleDailyManageAction('generate')">生成今日 20 个</button>
-                <button onclick="handleDailyManageAction('fill')">补满今日推荐</button>
-                <button onclick="handleDailyManageAction('regenerate')">重新生成今日推荐</button>
+                <button data-daily-hot-action="manage" data-manage-action="generate">生成今日 20 个</button>
+                <button data-daily-hot-action="manage" data-manage-action="fill">补满今日推荐</button>
+                <button data-daily-hot-action="manage" data-manage-action="regenerate">重新生成今日推荐</button>
               </div>
             </div>
-            <button class="btn btn-ghost" data-daily-preview-disabled onclick="generateMissingTodayAiCards()">生成今日缺失卡片</button>
-            <button class="btn btn-primary" data-daily-preview-disabled onclick="exportSelected()">📤 导出选词</button>
+            <button class="btn btn-ghost" data-daily-preview-disabled data-daily-hot-action="generate-cards">生成今日缺失卡片</button>
+            <button class="btn btn-primary" data-daily-preview-disabled data-daily-hot-action="export">📤 导出选词</button>
           </div>
         </div>
       </div>
@@ -103,10 +103,10 @@
           </div>
           <div class="page-actions history-actions">
             <div class="page-actions-deco" aria-hidden="true">✦ ✦</div>
-            <select class="filter-select" id="historySourceFilter" onchange="setSourceFilter('history', this.value)" aria-label="按来源筛选每日热门归档"></select>
-            <button class="btn btn-ghost" id="historyPrevBtn" onclick="shiftHistoryDate(1)">← 更早一天</button>
+            <select class="filter-select" id="historySourceFilter" data-daily-hot-action="source" data-scope="history" aria-label="按来源筛选每日热门归档"></select>
+            <button class="btn btn-ghost" id="historyPrevBtn" data-daily-hot-action="shift-history" data-step="1">← 更早一天</button>
             <div class="history-date-label" id="historyDateLabel">暂无历史日期</div>
-            <button class="btn btn-ghost" id="historyNextBtn" onclick="shiftHistoryDate(-1)">后一天 →</button>
+            <button class="btn btn-ghost" id="historyNextBtn" data-daily-hot-action="shift-history" data-step="-1">后一天 →</button>
           </div>
         </div>
       </div>

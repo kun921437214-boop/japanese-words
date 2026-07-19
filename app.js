@@ -1,5 +1,12 @@
 import { createApiClient } from './frontend/api-client.mjs';
 import {
+  buildDailyHotDateOptions,
+  buildDailyHotSourceFilterModel,
+  buildHistoryNavigationModel,
+  createDailyHotPageController,
+  normalizeDailyHotDateSelection
+} from './frontend/daily-hot-page.mjs';
+import {
   buildFavoritesPageModel,
   createFavoritesPageController,
   normalizeFavoriteStatus,
@@ -4213,24 +4220,19 @@ function getDailyHotDateOptions() {
   refreshHistoryDates();
   const today = todayKey();
   const tomorrow = addDaysToDateKey(today, 1);
-  const historyDates = getUniqueWords(rankingHistoryDates)
-    .filter(dateKeyValue => dateKeyValue && dateKeyValue !== today && dateKeyValue !== tomorrow)
-    .sort((left, right) => String(right).localeCompare(String(left)));
-  return [
-    { value: 'today', label: `今天 · ${today}` },
-    { value: tomorrow, label: `明天 · ${tomorrow} · ${formatWeekdayShort(tomorrow)}` },
-    ...historyDates.map(dateKeyValue => ({
-      value: dateKeyValue,
-      label: `${dateKeyValue} · ${formatWeekdayShort(dateKeyValue)}`
-    }))
-  ];
+  return buildDailyHotDateOptions({
+    todayDateKey: today,
+    tomorrowDateKey: tomorrow,
+    historyDates: rankingHistoryDates,
+    formatWeekday: formatWeekdayShort
+  });
 }
 
 function populateDailyHotDateSelect() {
   const select = document.getElementById('dailyHotDateSelect');
   if (!select) return;
   const options = getDailyHotDateOptions();
-  const current = options.some(option => option.value === currentDailyHotDateKey) ? currentDailyHotDateKey : 'today';
+  const current = normalizeDailyHotDateSelection(currentDailyHotDateKey, options);
   currentDailyHotDateKey = current;
   localStorage.setItem(DAILY_HOT_DATE_STORAGE_KEY, currentDailyHotDateKey);
   select.innerHTML = options.map(option => `<option value="${escapeHTML(option.value)}">${escapeHTML(option.label)}</option>`).join('');
@@ -5790,6 +5792,22 @@ function populateSourceFilter(tab, words) {
   select.value = current;
 }
 
+function populateDailyHotSourceFilter(tab, words) {
+  const model = buildDailyHotSourceFilterModel({
+    words,
+    sourceFilter: sourceFilters[tab]
+  });
+  sourceFilters[tab] = model.sourceFilter;
+  const select = document.getElementById(`${tab}SourceFilter`);
+  if (select) {
+    select.innerHTML = model.options
+      .map(option => `<option value="${escapeHTML(option.value)}">${escapeHTML(option.label)}</option>`)
+      .join('');
+    select.value = model.sourceFilter;
+  }
+  return model;
+}
+
 function applySourceFilter(words, tab) {
   const source = sourceFilters[tab] || 'all';
   return source === 'all' ? words : words.filter(word => word.source === source);
@@ -5832,6 +5850,10 @@ function setSourceFilter(tab, value) {
   if (!Object.prototype.hasOwnProperty.call(sourceFilters, tab)) return;
   sourceFilters[tab] = value || 'all';
   localStorage.setItem(`${SOURCE_FILTER_STORAGE_PREFIX}${tab}`, sourceFilters[tab]);
+  if (tab === 'history') {
+    renderHistory();
+    return;
+  }
   refreshCurrentGrid();
 }
 
@@ -7519,10 +7541,10 @@ function renderTodayCard(word) {
   const aiCardStalePending = isAiCardStalePending(aiCard, entry);
   const aiCardActionDisabled = aiCardInFlight || (aiCardStatus === 'pending' && !aiCardStalePending);
   const fallbackSvg = `data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 520 390%22><rect fill=%22%23fdeef0%22 width=%22520%22 height=%22390%22/><text x=%22260%22 y=%22195%22 text-anchor=%22middle%22 font-size=%2272%22 fill=%22%23f47a9a%22>${encodeURIComponent(word.kanji)}</text></svg>`;
-  const safeId = escapeJSString(word.id);
-  const safeKanjiAction = escapeJSString(word.kanji);
+  const safeId = escapeHTML(word.id || word.kanji);
+  const safeKanjiAction = escapeHTML(word.kanji);
   return `
-    <div class="word-card recommendation-card daily-hot-card${hasReferenceImage ? ' daily-hot-reference-card' : ''}" onclick="openDetail('${safeId}')">
+    <div class="word-card recommendation-card daily-hot-card${hasReferenceImage ? ' daily-hot-reference-card' : ''}" role="button" tabindex="0" aria-label="查看 ${safeKanjiAction} 词卡" data-daily-hot-action="open-detail" data-word-id="${safeId}">
       <div class="card-image-wrapper">
         <img class="card-image" src="${escapeHTML(cardImageUrl)}" alt="${escapeHTML(word.kanji)}" loading="lazy" onerror="this.src='${fallbackSvg}'">
         ${hasReferenceImage ? '' : `<div class="card-image-overlay"></div>
@@ -7530,11 +7552,11 @@ function renderTodayCard(word) {
           <div class="card-kanji">${escapeHTML(word.kanji)}</div>
           <div class="card-reading">${escapeHTML(word.reading)}</div>
         </div>
-        <div class="card-top-actions" onclick="event.stopPropagation()">
-          <button class="card-fav-btn ${isFav ? 'favorited' : ''}" onclick="toggleFavorite('${safeKanjiAction}')">
+        <div class="card-top-actions" data-daily-hot-stop>
+          <button class="card-fav-btn ${isFav ? 'favorited' : ''}" data-daily-hot-action="toggle-favorite" data-kanji="${safeKanjiAction}">
             <img class="fav-icon" src="assets/illustrations/dorayaki.png" alt="收藏">
           </button>
-          <button class="card-dismiss-btn" title="不感兴趣" aria-label="不感兴趣" onclick="dismissDailyHotRecommendation('${safeKanjiAction}')">×</button>
+          <button class="card-dismiss-btn" title="不感兴趣" aria-label="不感兴趣" data-daily-hot-action="dismiss" data-kanji="${safeKanjiAction}">×</button>
         </div>`}
       </div>
       <div class="card-body">
@@ -7543,11 +7565,11 @@ function renderTodayCard(word) {
             <div class="daily-hot-reference-word">${escapeHTML(word.kanji)}</div>
             <div class="daily-hot-reference-reading">${escapeHTML(word.reading)}</div>
           </div>
-          <div class="daily-hot-reference-controls" onclick="event.stopPropagation()">
-            <button class="card-fav-btn ${isFav ? 'favorited' : ''}" title="收藏" aria-label="收藏" onclick="toggleFavorite('${safeKanjiAction}')">
+          <div class="daily-hot-reference-controls" data-daily-hot-stop>
+            <button class="card-fav-btn ${isFav ? 'favorited' : ''}" title="收藏" aria-label="收藏" data-daily-hot-action="toggle-favorite" data-kanji="${safeKanjiAction}">
               <img class="fav-icon" src="assets/illustrations/dorayaki.png" alt="收藏">
             </button>
-            <button class="card-dismiss-btn" title="不感兴趣" aria-label="不感兴趣" onclick="dismissDailyHotRecommendation('${safeKanjiAction}')">×</button>
+            <button class="card-dismiss-btn" title="不感兴趣" aria-label="不感兴趣" data-daily-hot-action="dismiss" data-kanji="${safeKanjiAction}">×</button>
           </div>
         </div>` : ''}
         <div class="card-title-row">
@@ -7561,8 +7583,8 @@ function renderTodayCard(word) {
           <span class="daily-hot-tag risk-state-chip risk-${escapeHTML(riskStateKey)}">${escapeHTML(riskStateLabel)}</span>
           <span class="daily-hot-tag ai-card-state-${escapeHTML(aiCardStatus)}">${escapeHTML(getAiCardStatusLabel(aiCardInFlight ? { cardStatus: 'pending' } : aiCard))}</span>
         </div>
-        <div class="daily-hot-actions" onclick="event.stopPropagation()">
-          <button class="card-action-btn ghost" ${aiCardActionDisabled ? 'disabled' : ''} onclick="generateTodayAiCard('${safeKanjiAction}')">${escapeHTML(aiCardActionLabel)}</button>
+        <div class="daily-hot-actions" data-daily-hot-stop>
+          <button class="card-action-btn ghost" ${aiCardActionDisabled ? 'disabled' : ''} data-daily-hot-action="generate-card" data-kanji="${safeKanjiAction}">${escapeHTML(aiCardActionLabel)}</button>
         </div>
       </div>
     </div>`;
@@ -7651,18 +7673,18 @@ function renderCodexDraftPreviewCard(item, index) {
   const isFav = ['favorite', 'pending', 'published'].includes(teamState.key);
   const riskStateLabel = getRiskStateLabel({ ...item, candidateMeta: item });
   const riskStateKey = getRiskStateKey(riskStateLabel);
-  const safeKanjiAction = escapeJSString(item.kanji);
+  const safeKanjiAction = escapeHTML(item.kanji);
   const fallbackSvg = `data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 900 1200%22><rect fill=%22%23fffdf9%22 width=%22900%22 height=%221200%22/><text x=%22450%22 y=%22220%22 text-anchor=%22middle%22 font-size=%22110%22 font-weight=%22700%22 fill=%22%23222222%22>${encodeURIComponent(item.kanji)}</text></svg>`;
   return `
-    <article class="word-card codex-preview-card" role="button" tabindex="0" aria-label="预览 ${escapeHTML(item.kanji)} 词卡" onclick="openCodexDraftPreview(${index})" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();openCodexDraftPreview(${index})}">
+    <article class="word-card codex-preview-card" role="button" tabindex="0" aria-label="预览 ${escapeHTML(item.kanji)} 词卡" data-daily-hot-action="open-codex-preview" data-index="${index}">
       <div class="codex-preview-image-wrapper">
         <img class="codex-preview-image" src="${escapeHTML(imageUrl || fallbackSvg)}" alt="${escapeHTML(item.kanji)} 参考插画" loading="lazy" onerror="this.src='${fallbackSvg}'">
         <span class="codex-preview-readonly-badge">草稿内容只读</span>
-        <div class="card-top-actions" onclick="event.stopPropagation()">
-          <button class="card-fav-btn ${isFav ? 'favorited' : ''}" title="${isFav ? '取消收藏' : '收藏'}" aria-label="${isFav ? '取消收藏' : '收藏'}" onclick="toggleCodexDraftFavorite('${safeKanjiAction}')">
+        <div class="card-top-actions" data-daily-hot-stop>
+          <button class="card-fav-btn ${isFav ? 'favorited' : ''}" title="${isFav ? '取消收藏' : '收藏'}" aria-label="${isFav ? '取消收藏' : '收藏'}" data-daily-hot-action="toggle-codex-favorite" data-kanji="${safeKanjiAction}">
             <img class="fav-icon" src="assets/illustrations/dorayaki.png" alt="收藏">
           </button>
-          <button class="card-dismiss-btn" title="不感兴趣（记录负反馈）" aria-label="不感兴趣" onclick="applyCodexDraftFeedback('${safeKanjiAction}','uninterested')">×</button>
+          <button class="card-dismiss-btn" title="不感兴趣（记录负反馈）" aria-label="不感兴趣" data-daily-hot-action="codex-feedback" data-kanji="${safeKanjiAction}" data-reason="uninterested">×</button>
         </div>
       </div>
       <div class="card-body codex-preview-card-body">
@@ -7838,10 +7860,10 @@ function renderTodayGrid(words, options = {}) {
   }
   const state = getRenderableAutoDailyRefreshState();
   if (state.dateKey === todayKey() && state.status === 'failed') {
-    grid.innerHTML = `<div class="empty-state inline-empty"><div class="empty-title">今天暂无固定推荐</div><div class="empty-desc">${escapeHTML(state.error || '可等待每日定时任务生成，或点击“管理今日推荐”手动生成。')}</div><button class="btn btn-primary" data-today-action onclick="handleGenerateTodaySnapshot()">手动生成今日 20 个</button></div>`;
+    grid.innerHTML = `<div class="empty-state inline-empty"><div class="empty-title">今天暂无固定推荐</div><div class="empty-desc">${escapeHTML(state.error || '可等待每日定时任务生成，或点击“管理今日推荐”手动生成。')}</div><button class="btn btn-primary" data-today-action data-daily-hot-action="generate-today">手动生成今日 20 个</button></div>`;
     return;
   }
-  grid.innerHTML = '<div class="empty-state inline-empty"><div class="empty-title">今天暂无固定推荐</div><div class="empty-desc">可等待每日定时任务生成，或点击“管理今日推荐”手动生成。</div><button class="btn btn-primary" data-today-action onclick="handleGenerateTodaySnapshot()">手动生成今日 20 个</button></div>';
+  grid.innerHTML = '<div class="empty-state inline-empty"><div class="empty-title">今天暂无固定推荐</div><div class="empty-desc">可等待每日定时任务生成，或点击“管理今日推荐”手动生成。</div><button class="btn btn-primary" data-today-action data-daily-hot-action="generate-today">手动生成今日 20 个</button></div>';
 }
 
 function renderHistoryGrid(words) {
@@ -8195,8 +8217,8 @@ function renderDailyHot() {
     void loadCodexTomorrowDraft({ notifyOnError: true });
   }
   const words = isTomorrowPreview ? safeArray(codexTomorrowDraft?.items) : getCurrentDailyHotWords();
-  if (!isTomorrowPreview) populateSourceFilter('today', words);
-  const visibleWords = isTomorrowPreview ? words : applySourceFilter(words, 'today');
+  const sourceModel = isTomorrowPreview ? null : populateDailyHotSourceFilter('today', words);
+  const visibleWords = isTomorrowPreview ? words : sourceModel.visibleWords;
   renderTodayGrid(visibleWords, {
     mode: isTomorrowPreview ? 'codex-preview' : (isTodayView ? 'today' : 'history'),
     dateKey: currentDailyHotDateKey
@@ -8363,25 +8385,30 @@ function removeWordFromTodaySnapshot(kanji) {
 }
 
 function shiftHistoryDate(step) {
-  if (!rankingHistoryDates.length) return;
-  const currentIndex = Math.max(0, rankingHistoryDates.indexOf(currentHistoryDateKey));
-  const nextIndex = clamp(currentIndex + step, 0, rankingHistoryDates.length - 1);
-  currentHistoryDateKey = rankingHistoryDates[nextIndex];
+  const navigation = buildHistoryNavigationModel({
+    dates: rankingHistoryDates,
+    currentDate: currentHistoryDateKey
+  });
+  if (!navigation.currentDate) return;
+  currentHistoryDateKey = navigation.shift(step);
   localStorage.setItem(HISTORY_DATE_STORAGE_KEY, currentHistoryDateKey);
   renderHistory();
 }
 
 function renderHistory() {
   const words = getCurrentHistoryWords();
-  populateSourceFilter('history', words);
-  renderHistoryGrid(applySourceFilter(words, 'history'));
+  const sourceModel = populateDailyHotSourceFilter('history', words);
+  renderHistoryGrid(sourceModel.visibleWords);
   const historyDate = document.getElementById('historyDateLabel');
   if (historyDate) historyDate.textContent = currentHistoryDateKey ? `${formatDisplayDate(currentHistoryDateKey)} · ${getHistorySourceLabel(currentHistoryDateKey)}` : '暂无历史日期';
   const prevBtn = document.getElementById('historyPrevBtn');
   const nextBtn = document.getElementById('historyNextBtn');
-  const currentIndex = Math.max(0, rankingHistoryDates.indexOf(currentHistoryDateKey));
-  if (prevBtn) prevBtn.disabled = currentIndex >= rankingHistoryDates.length - 1;
-  if (nextBtn) nextBtn.disabled = currentIndex <= 0;
+  const navigation = buildHistoryNavigationModel({
+    dates: rankingHistoryDates,
+    currentDate: currentHistoryDateKey
+  });
+  if (prevBtn) prevBtn.disabled = navigation.earlierDisabled;
+  if (nextBtn) nextBtn.disabled = navigation.laterDisabled;
 }
 
 function renderFavorites() {
@@ -9787,6 +9814,30 @@ Object.assign(window, {
   autofillPublishedRecordFromLink,
   savePublishedRecord,
   openPublishedDetail
+});
+
+createDailyHotPageController({
+  root: document.getElementById('mainContent'),
+  onDateChange: setDailyHotDate,
+  onSourceChange: setSourceFilter,
+  onRefresh: refreshData,
+  onToggleManage: toggleDailyManageMenu,
+  onManage: handleDailyManageAction,
+  onGenerateCards: generateMissingTodayAiCards,
+  onExport: exportSelected,
+  onShiftHistory: shiftHistoryDate,
+  onOpenDetail: openDetail,
+  onToggleFavorite: toggleFavorite,
+  onDismiss: dismissDailyHotRecommendation,
+  onGenerateCard: generateTodayAiCard,
+  onGenerateToday: handleGenerateTodaySnapshot,
+  onOpenCodexPreview: openCodexDraftPreview,
+  onToggleCodexFavorite: toggleCodexDraftFavorite,
+  onCodexFeedback: applyCodexDraftFeedback,
+  onError: error => {
+    console.warn('每日热门页面操作失败', error);
+    showToast('每日热门页面操作失败，请刷新后重试');
+  }
 });
 
 createFavoritesPageController({

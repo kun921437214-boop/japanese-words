@@ -35,8 +35,12 @@ Extract one page at a time:
    - low-exposure posts with strong save rate are protected from being mislabeled as weak content, while the existing 72-hour observation window remains intact;
    - Published page controls and cards no longer depend on inline click handlers, and placeholder records now prefill the correct word when edited;
    - executable tests cover score weights, rating boundaries, page models, refresh summaries, and event routing.
-3. Daily Recommendations and history — next;
-4. shared word-card rendering.
+3. Daily Recommendations and history — completed:
+   - `frontend/daily-hot-page.mjs` owns date options, source-filter view models, historical date navigation, and delegated page/card events;
+   - Today, tomorrow-preview, and historical date controls now share one tested date-selection model without changing snapshot or candidate ranking data;
+   - Daily Hot page controls, recommendation cards, Codex preview cards, and empty-state generation actions no longer depend on inline click/change/keydown handlers;
+   - executable tests cover date ordering, source filtering, history boundaries, stopped card controls, and keyboard preview routing.
+4. shared word-card rendering — next.
 
 Remove inline HTML handlers only after the corresponding page module has executable interaction tests.
 
