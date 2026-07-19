@@ -1,6 +1,11 @@
 import { createApiClient } from './frontend/api-client.mjs';
 import { createAppShellController } from './frontend/app-shell.mjs';
 import {
+  buildFavoriteSelectionExportText,
+  buildRecommendationAuditCsv,
+  getRecommendationAuditFilename
+} from './frontend/content-export.mjs';
+import {
   buildDailyHotDateOptions,
   buildDailyHotSourceFilterModel,
   buildHistoryNavigationModel,
@@ -8138,11 +8143,6 @@ function openTodayRecommendationAuditModal() {
   document.getElementById('modalOverlay').classList.add('open');
 }
 
-function csvCell(value) {
-  const text = safeArray(value).join('；') || String(value ?? '');
-  return `"${text.replace(/"/g, '""')}"`;
-}
-
 function downloadTextFile(filename, text, type = 'text/plain;charset=utf-8') {
   const blob = new Blob([text], { type });
   const url = URL.createObjectURL(blob);
@@ -8157,42 +8157,18 @@ function downloadTextFile(filename, text, type = 'text/plain;charset=utf-8') {
 
 function exportTodayRecommendationAudit() {
   const audit = getCurrentDailyHotAudit();
-  const headers = [
-    '日期', '日语词', '读音', '中文意思', '推荐等级', '风险状态', '来源类型', '来源说明',
-    '是否 DeepSeek 新生成', '是否候选池旧词', '是否补位', '是否本地兜底', '是否去重放宽',
-    '使用的去重天数', '最终分', '账号学习加分', '账号学习扣分', '表达价值分', '中文透明度',
-    '是否泛话题词', '入选原因', '诊断结论'
-  ];
   const wordsByKanji = new Map(getCurrentDailyHotWords().map(word => [word.kanji, word]));
-  const lines = [headers.map(csvCell).join(',')];
-  safeArray(audit.items).forEach(item => {
+  const riskStateByKanji = Object.fromEntries(safeArray(audit.items).map(item => {
     const word = wordsByKanji.get(item.kanji) || {};
-    lines.push([
-      audit.date,
-      item.kanji,
-      word.reading || word.kana || word.romaji || '',
-      item.meaning || word.meaning || '',
-      item.recommendationLevel,
-      getRiskStateLabel(word.candidateMeta ? word : { candidateMeta: item }),
-      item.originType,
-      item.originLabel,
-      item.fromDeepSeekNew ? '是' : '否',
-      item.fromCandidatePool ? '是' : '否',
-      item.isBackfill ? '是' : '否',
-      item.fromLocalFallback ? '是' : '否',
-      item.isDedupRelaxed ? '是' : '否',
-      item.dedupDaysUsed,
-      item.finalScore,
-      item.accountLearningBonus,
-      item.accountLearningPenalty,
-      item.expressionValueScore,
-      item.chineseTransparencyScore,
-      item.genericTopicPenalty ? '是' : '否',
-      item.selectedReason,
-      safeArray(item.diagnosis).join('；')
-    ].map(csvCell).join(','));
+    return [item.kanji, getRiskStateLabel(word.candidateMeta ? word : { candidateMeta: item })];
+  }));
+  const dateKeyValue = audit.date || todayKey();
+  const csv = buildRecommendationAuditCsv({
+    audit,
+    words: [...wordsByKanji.values()],
+    riskStateByKanji
   });
-  downloadTextFile(`daily-hot-audit-${audit.date || todayKey()}.csv`, lines.join('\n'), 'text/csv;charset=utf-8');
+  downloadTextFile(getRecommendationAuditFilename(dateKeyValue), csv, 'text/csv;charset=utf-8');
   showToast('✅ 已导出推荐审计 CSV');
 }
 
@@ -9411,25 +9387,18 @@ function exportSelected() {
     showToast('请先把词加入选题池再导出');
     return;
   }
-  let text = '🍞 记忆面包 — 小红书日语选题导出\n';
-  text += `📅 ${new Date().toLocaleDateString('zh-CN')}\n\n`;
-  favWords.forEach((word, index) => {
+  const items = favWords.map(word => {
     const entry = cleanCandidatePoolEntry(word.kanji, candidatePool[word.kanji] || word.candidateMeta || {}) || {};
     const wordCardView = buildWordCardViewModel({ word, entry, aiCard: entry.aiCard || {} });
-    text += `${index + 1}. 【${word.kanji}】${word.reading}\n`;
-    text += `   中文：${word.meaning}\n`;
-    text += `   状态：${FAVORITE_STATUS_LABELS[getFavoriteStatus(word.kanji)]}\n`;
-    if (!wordCardView.hasFormalCard) {
-      text += `   ${wordCardView.unavailableMessage}\n\n`;
-      return;
-    }
-    text += `   推荐标题：${wordCardView.suggestedTitles.join(' / ') || '—'}\n`;
-    text += `   摘要：${wordCardView.summary || '—'}\n`;
-    text += `   详细解释：${wordCardView.explanation || '—'}\n`;
-    text += `   内容角度：${wordCardView.contentAngles.join(' / ') || '—'}\n`;
-    text += `   例句：${wordCardView.examples.map(example => `${example.jp}${example.cn ? `（${example.cn}）` : ''}`).join('；') || '—'}\n`;
-    text += `   封面建议：${wordCardView.coverSuggestion.coverText || ''} ${wordCardView.coverSuggestion.mainVisual || ''} ${wordCardView.coverSuggestion.style || ''}`.trim() + '\n';
-    text += `   互动引导：${wordCardView.interactionPrompts.join(' / ') || '—'}\n\n`;
+    return {
+      word,
+      wordCardView,
+      statusLabel: FAVORITE_STATUS_LABELS[getFavoriteStatus(word.kanji)]
+    };
+  });
+  const text = buildFavoriteSelectionExportText({
+    dateLabel: new Date().toLocaleDateString('zh-CN'),
+    items
   });
   navigator.clipboard.writeText(text).then(() => showToast('✅ 已复制到剪贴板')).catch(() => {
     const textarea = document.createElement('textarea');

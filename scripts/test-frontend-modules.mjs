@@ -4,6 +4,12 @@ import test from 'node:test';
 import { createApiClient, createApiError, getApiErrorMessage } from '../frontend/api-client.mjs';
 import { createAppShellController } from '../frontend/app-shell.mjs';
 import {
+  buildFavoriteSelectionExportText,
+  buildRecommendationAuditCsv,
+  csvCell,
+  getRecommendationAuditFilename
+} from '../frontend/content-export.mjs';
+import {
   buildDailyHotDateOptions,
   buildDailyHotSourceFilterModel,
   buildHistoryNavigationModel,
@@ -104,6 +110,86 @@ test('workflow backup parser rejects invalid roots before cleaning restored data
     () => parseWorkflowBackupText('{}'),
     /工作流清理器不可用/
   );
+});
+
+test('recommendation audit CSV preserves every field and escapes spreadsheet values', () => {
+  const csv = buildRecommendationAuditCsv({
+    audit: {
+      date: '2026-07-19',
+      items: [{
+        kanji: '気が重い',
+        meaning: '心情沉重，"不想面对"',
+        recommendationLevel: 'A',
+        riskLevel: 'low',
+        originType: 'candidate_pool',
+        originLabel: '候选池旧词',
+        fromDeepSeekNew: false,
+        fromCandidatePool: true,
+        isBackfill: false,
+        fromLocalFallback: false,
+        isDedupRelaxed: false,
+        dedupDaysUsed: 30,
+        finalScore: 88,
+        accountLearningBonus: 7,
+        accountLearningPenalty: 0,
+        expressionValueScore: 92,
+        chineseTransparencyScore: 45,
+        genericTopicPenalty: 0,
+        selectedReason: '有场景、适合收藏',
+        diagnosis: ['情绪状态词', '容易配图']
+      }]
+    },
+    words: [{ kanji: '気が重い', reading: 'きがおもい', meaning: '回退意思' }],
+    riskStateByKanji: { '気が重い': '低风险' }
+  });
+
+  assert.equal(csv.split('\n').length, 2);
+  assert.match(csv, /"心情沉重，""不想面对"""/);
+  assert.match(csv, /"きがおもい"/);
+  assert.match(csv, /"低风险"/);
+  assert.match(csv, /"否","是","否","否","否","30","88"/);
+  assert.match(csv, /"情绪状态词；容易配图"/);
+  assert.equal(csvCell(['甲', '乙']), '"甲；乙"');
+  assert.equal(getRecommendationAuditFilename('2026-07-19'), 'daily-hot-audit-2026-07-19.csv');
+});
+
+test('favorite selection export exposes formal fields only for ready card views', () => {
+  const text = buildFavoriteSelectionExportText({
+    dateLabel: '2026/7/19',
+    items: [
+      {
+        word: { kanji: '抜け感', reading: 'ぬけかん', meaning: '松弛感' },
+        statusLabel: '待发布',
+        wordCardView: {
+          hasFormalCard: false,
+          unavailableMessage: 'DeepSeek 词卡未生成',
+          suggestedTitles: ['不应导出的标题']
+        }
+      },
+      {
+        word: { kanji: '気が重い', reading: 'きがおもい', meaning: '心情沉重' },
+        statusLabel: '无',
+        wordCardView: {
+          hasFormalCard: true,
+          suggestedTitles: ['这个日语词太适合今天了'],
+          summary: '不想面对某件事时的沉重感。',
+          explanation: '强调心理负担。',
+          contentAngles: ['上班前', '社交压力'],
+          examples: [{ jp: '明日の会議は気が重い。', cn: '想到明天的会议就心情沉重。' }],
+          coverSuggestion: { coverText: '不想面对', mainVisual: '通勤人物', style: '柔和插画' },
+          interactionPrompts: ['你最近为什么気が重い？']
+        }
+      }
+    ]
+  });
+
+  assert.match(text, /📅 2026\/7\/19/);
+  assert.match(text, /1\. 【抜け感】ぬけかん/);
+  assert.match(text, /DeepSeek 词卡未生成/);
+  assert.doesNotMatch(text, /不应导出的标题/);
+  assert.match(text, /推荐标题：这个日语词太适合今天了/);
+  assert.match(text, /明日の会議は気が重い。（想到明天的会议就心情沉重。）/);
+  assert.match(text, /互动引导：你最近为什么気が重い？/);
 });
 
 test('API client adds workflow revision and operation headers', async () => {
@@ -848,6 +934,8 @@ test('daily hot controller routes filters, cards and keyboard preview without in
   dispatch('change', { dataset: { dailyHotAction: 'date' }, value: '2026-07-18' });
   dispatch('change', { dataset: { dailyHotAction: 'source', scope: 'history' }, value: 'DeepSeek' });
   dispatch('click', { dataset: { dailyHotAction: 'manage', manageAction: 'fill' } });
+  dispatch('click', { dataset: { dailyHotAction: 'manage', manageAction: 'audit' } });
+  dispatch('click', { dataset: { dailyHotAction: 'manage', manageAction: 'exportAudit' } });
   dispatch('click', { dataset: { dailyHotAction: 'open-detail', wordId: 'today-1' } });
   assert.equal(dispatch('click', { dataset: { dailyHotAction: 'toggle-favorite', kanji: '思い切って' } }, { stopContains: true }).stopped, true);
   dispatch('click', { dataset: { dailyHotAction: 'shift-history', step: '-1' } });
@@ -861,6 +949,8 @@ test('daily hot controller routes filters, cards and keyboard preview without in
     ['date', '2026-07-18'],
     ['source', 'history', 'DeepSeek'],
     ['manage', 'fill'],
+    ['manage', 'audit'],
+    ['manage', 'exportAudit'],
     ['detail', 'today-1'],
     ['favorite', '思い切って'],
     ['shift', -1],
@@ -1194,6 +1284,7 @@ test('module migration removes inline handlers and the temporary window compatib
   const combined = `${indexSource}\n${appSource}`;
   assert.ok(indexSource.includes('<script type="module" src="app.js"></script>'));
   assert.ok(appSource.includes("from './frontend/app-shell.mjs'"));
+  assert.ok(appSource.includes("from './frontend/content-export.mjs'"));
   assert.ok(appSource.includes("from './frontend/image-fallback.mjs'"));
   assert.ok(appSource.includes("from './frontend/manual-word-modal.mjs'"));
   assert.ok(appSource.includes("from './frontend/modal-actions.mjs'"));
@@ -1204,6 +1295,8 @@ test('module migration removes inline handlers and the temporary window compatib
   assert.doesNotMatch(appSource, /Object\.assign\(window/);
   assert.doesNotMatch(appSource, /Compatibility facade/);
   assert.ok(indexSource.includes('data-app-shell-action="switch-tab"'));
+  assert.ok(indexSource.includes('data-manage-action="audit"'));
+  assert.ok(indexSource.includes('data-manage-action="exportAudit"'));
   assert.ok(indexSource.includes('data-image-fallback="parent-text"'));
   assert.ok(appSource.includes('data-manual-word-action="submit"'));
   assert.ok(appSource.includes('data-workflow-action="generate-deepseek-card"'));

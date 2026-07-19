@@ -96,6 +96,17 @@ Remove inline HTML handlers only after the corresponding page module has executa
 - Executable tests cover cleaning before export/restore, complete summary counts, serialization, filenames, size limits, invalid JSON, invalid roots, and missing-cleaner failure.
 - Computer Use validation on the built site confirmed Daily Recommendations, Favorites, Published Records, settings open/close, both backup actions, and the desktop modal layout without exporting, restoring, or saving workflow data.
 
+## Completed: Phase 7 — Content Export and Recommendation Audit
+
+- `frontend/content-export.mjs` owns recommendation-audit CSV construction, CSV escaping, audit filenames, and Favorites / Topic Pool text-export formatting.
+- Favorites export keeps the shared ready-card boundary: formal titles, summaries, explanations, examples, cover suggestions, and interaction prompts are exported only when `aiCard.cardStatus === "ready"`; unavailable cards export status copy instead of local template content.
+- Recommendation audit export preserves all 22 operational fields, including origin, fallback, deduplication, account-learning scores, expression value, Chinese transparency, selection reason, and diagnosis.
+- The existing recommendation-audit view and CSV export are now reachable from the Daily Recommendations management menu instead of remaining hidden behind application code.
+- The audit modal now has responsive metric cards, a readable diagnosis panel, a sticky table header, and contained horizontal scrolling for the wide per-word audit table.
+- Executable tests cover CSV field order and escaping, audit filenames, ready-only Favorites content, unavailable-card copy, and both management-menu routes.
+- Computer Use validation on the built site confirmed the management entries, audit-modal layout, Favorites export entry, and Published Records navigation without generating recommendations, downloading files, or mutating cloud workflow data.
+- No API path, localStorage key, Cloudflare binding, KV data, daily snapshot, candidate pool, or draft content changed.
+
 ## Required Validation
 
 ```bash

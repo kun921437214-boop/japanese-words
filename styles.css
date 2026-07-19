@@ -3464,6 +3464,116 @@ body::before {
   margin-top:16px;
 }
 
+.audit-shell {
+  width:100%;
+}
+
+.audit-metric-grid {
+  display:grid;
+  grid-template-columns:repeat(3, minmax(0, 1fr));
+  gap:10px;
+}
+
+.audit-metric {
+  min-width:0;
+  padding:12px 14px;
+  border:1px solid rgba(242, 216, 202, 0.72);
+  border-radius:16px;
+  background:#fff9f7;
+}
+
+.audit-metric span {
+  display:block;
+  color:var(--ink-400);
+  font-size:0.74rem;
+  font-weight:800;
+  line-height:1.45;
+}
+
+.audit-metric strong {
+  display:block;
+  margin-top:5px;
+  color:var(--ink-800, var(--ink-700));
+  font-size:1.02rem;
+  line-height:1.35;
+  word-break:break-word;
+}
+
+.audit-metric-warn {
+  border-color:rgba(237, 164, 80, 0.5);
+  background:#fff8e8;
+}
+
+.audit-metric-warn strong {
+  color:#98611e;
+}
+
+.audit-diagnosis-list {
+  display:grid;
+  gap:8px;
+}
+
+.audit-diagnosis-list > div {
+  padding:10px 12px;
+  border-radius:14px;
+  background:#fff9f7;
+  color:var(--ink-500);
+  font-size:0.82rem;
+  line-height:1.6;
+}
+
+.audit-diagnosis-list:empty::before {
+  content:'暂无自动诊断。';
+  padding:10px 12px;
+  border-radius:14px;
+  background:#fff9f7;
+  color:var(--ink-300);
+  font-size:0.82rem;
+}
+
+.audit-table-wrap {
+  max-width:100%;
+  overflow:auto;
+  border:1px solid rgba(242, 216, 202, 0.78);
+  border-radius:16px;
+  background:#fff;
+}
+
+.audit-table {
+  width:100%;
+  min-width:1080px;
+  border-collapse:collapse;
+  color:var(--ink-600);
+  font-size:0.76rem;
+}
+
+.audit-table th,
+.audit-table td {
+  padding:10px 11px;
+  border-bottom:1px solid rgba(242, 216, 202, 0.62);
+  text-align:left;
+  vertical-align:top;
+  line-height:1.5;
+}
+
+.audit-table th {
+  position:sticky;
+  top:0;
+  z-index:1;
+  background:#fff5f3;
+  color:var(--ink-700);
+  font-weight:900;
+  white-space:nowrap;
+}
+
+.audit-table tbody tr:last-child td {
+  border-bottom:0;
+}
+
+.audit-table tbody tr:hover {
+  background:#fffbf9;
+}
+
 .snapshot-form-table {
   display:flex;
   flex-direction:column;
@@ -3826,6 +3936,14 @@ body::before {
     padding:18px 16px 22px;
   }
 
+  .audit-metric-grid {
+    grid-template-columns:1fr 1fr;
+  }
+
+  .audit-table {
+    min-width:920px;
+  }
+
   .form-inline-actions {
     flex-direction:column;
   }
@@ -3841,5 +3959,11 @@ body::before {
 
   .published-title {
     font-size:0.92rem;
+  }
+}
+
+@media (max-width:380px) {
+  .audit-metric-grid {
+    grid-template-columns:1fr;
   }
 }

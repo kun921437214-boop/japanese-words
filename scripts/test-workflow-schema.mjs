@@ -278,7 +278,8 @@ test('Codex 明日预览保留团队操作和完整词卡详情', () => {
   assert.ok(appSource.includes('加入收藏 / 选题池'));
   assert.ok(appSource.includes('目标受众'));
   assert.ok(appSource.includes('封面建议'));
-  assert.ok(appSource.includes('互动引导'));
+  assert.ok(appSource.includes('const interactionPrompts = wordCardView.interactionPrompts;'));
+  assert.ok(appSource.includes('interactionPrompts.map(prompt =>'));
   assert.ok(appSource.includes('相近词'));
   assert.ok(appSource.includes('风险与使用提醒'));
 });
