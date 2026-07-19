@@ -22,6 +22,7 @@ import {
   getDailyQualityScoreDelta
 } from '../shared/today-quality.mjs';
 import { getAccountLearningSummary } from '../shared/account-learning.mjs';
+import { DAILY_WORD_COUNT } from '../shared/daily-config.mjs';
 import { buildDeepSeekExclusionContext } from '../shared/deepseek-exclusion.mjs';
 import {
   AI_CARD_PENDING_TTL_MS as FRONTEND_AI_CARD_PENDING_TTL_MS,
@@ -523,13 +524,13 @@ test('daily snapshot selection limits basic, beauty, fandom and keeps account-fi
   const words = result.todaySnapshot.words;
   const categories = words.map(word => getDailyQualityCategory(candidatePool[word]));
   const countCategory = category => categories.filter(item => item === category).length;
-  assert.equal(words.length, 20);
+  assert.equal(words.length, DAILY_WORD_COUNT);
   assert.ok(countCategory('basic_greeting') + countCategory('textbook_polite') <= 1);
   assert.ok(countCategory('beauty_product') <= 1);
   assert.ok(countCategory('fandom_circle') <= 2);
-  assert.ok(countCategory('emotion_state') >= 4);
-  assert.ok(countCategory('social_nuance') >= 3);
-  assert.ok(countCategory('life_state') >= 4);
+  assert.ok(countCategory('emotion_state') >= 2);
+  assert.ok(countCategory('social_nuance') >= 2);
+  assert.ok(countCategory('life_state') >= 2);
   assert.equal(result.recommendationAudit.qualitySummary.relaxed, false);
 });
 
@@ -1199,7 +1200,7 @@ test('generateTodaySnapshot 硬排除最近 30 天历史词', () => {
   assert.equal(result.relaxedDedup, false);
   assert.equal(result.todaySnapshot.generatorVersion, TODAY_SNAPSHOT_GENERATOR_VERSION);
   assert.equal(isCurrentGeneratorSnapshot(result.todaySnapshot, new Date('2026-06-08T01:00:00.000Z')), true);
-  assert.equal(words.length, 20);
+  assert.equal(words.length, DAILY_WORD_COUNT);
   assert.equal(words.some(word => word.startsWith('回流词')), false);
 });
 
@@ -1220,7 +1221,7 @@ test('generateTodaySnapshot 硬排除中文直读低价值首页词', () => {
     candidatePool
   }, { mode: 'create', now: new Date('2026-06-08T01:00:00.000Z') });
   const words = result.todaySnapshot.words;
-  assert.equal(words.length, 20);
+  assert.equal(words.length, DAILY_WORD_COUNT);
   assert.equal(words.includes('副業'), false);
   assert.equal(words.includes('資格勉強'), false);
   assert.equal(words.includes('自己投資'), false);
@@ -1271,8 +1272,8 @@ test('generateTodaySnapshot 降级泛话题词并优先表达价值高的词', (
     candidatePool
   }, { mode: 'create', now: new Date('2026-06-08T01:00:00.000Z') });
   const words = result.todaySnapshot.words;
-  assert.equal(words.length, 20);
-  strongWords.forEach(word => assert.ok(words.includes(word), `${word} 应进入每日热门候选`));
+  assert.equal(words.length, DAILY_WORD_COUNT);
+  assert.ok(strongWords.filter(word => words.includes(word)).length >= 4, '高表达价值词应占据明显的优先位置');
   ['ネイル', 'ベースメイク', 'オーバサイズ', 'オーバーサイズ', 'メンズメイク', '資格勉強', '自己投資', 'おじさん構文', '紅葉', 'お弁当', '地雷系', '祭り', '副業', '転職'].forEach(word => {
     assert.equal(words.includes(word), false, `${word} 不应默认进入每日热门`);
   });

@@ -1,4 +1,5 @@
-import { addDays, buildRankingForDate, cleanDateKey, cleanStoredRanking, dateKey } from '../shared/rankings.mjs';
+import { isStoredDailyWordCount } from '../shared/daily-config.mjs';
+import { addDays, buildRankingForDate, cleanDateKey, cleanStoredRanking, dateKey, WORDS_PER_DAY } from '../shared/rankings.mjs';
 import {
   cleanStoredWorkflow,
   generateTodaySnapshot,
@@ -377,13 +378,13 @@ async function readRankingHistoryWords(env, todayDateKey, days = 30) {
   }));
 
   storedRankings.forEach(({ dateKey: currentDateKey, ranking }) => {
-    if (ranking.words.length === 20) cachedSelections.set(currentDateKey, ranking.words);
+    if (isStoredDailyWordCount(ranking.words.length)) cachedSelections.set(currentDateKey, ranking.words);
   });
 
   const rankingHistoryWords = {};
   historyDateKeys.forEach(cursor => {
     let words = cachedSelections.get(cursor);
-    if (!words || words.length !== 20) {
+    if (!words || !isStoredDailyWordCount(words.length)) {
       words = buildRankingForDate(cursor, cachedSelections);
       cachedSelections.set(cursor, words);
     }
@@ -1149,7 +1150,7 @@ async function runDailyRefreshJob({ origin, env, key, today, options = {}, reque
         onFailure: writeAiFailure,
         count: runState.count,
         exclusionContext: topUpExclusionContext,
-        batchHint: `topUp 补词：当前今日热门只有 ${safeArray(snapshot.workflow.todaySnapshot?.words).length}/20 个。首批、本轮已生成、今日已选和近 30 天历史词都在禁止列表里，必须换新方向。`
+        batchHint: `topUp 补词：当前今日热门只有 ${safeArray(snapshot.workflow.todaySnapshot?.words).length}/${WORDS_PER_DAY} 个。首批、本轮已生成、今日已选和近 30 天历史词都在禁止列表里，必须换新方向。`
       });
       recordGeneratedWords(noveltyStats, extraGenerated.items);
       totalGenerated += extraGenerated.items.length;

@@ -1,4 +1,5 @@
 import { getAccountLearningSummary } from './account-learning.mjs';
+import { DAILY_WORD_COUNT, MAX_DAILY_S_LEVEL_COUNT } from './daily-config.mjs';
 import { addDays, cleanDateKey, dateKey } from './rankings.mjs';
 import { buildTodayRecommendationAudit } from './today-snapshot.mjs';
 import {
@@ -13,7 +14,7 @@ import {
 
 export const CODEX_DAILY_DRAFT_VERSION = 1;
 export const CODEX_DAILY_GENERATOR_VERSION = 'codex-daily-v1';
-export const CODEX_DAILY_WORD_COUNT = 20;
+export const CODEX_DAILY_WORD_COUNT = DAILY_WORD_COUNT;
 export const CODEX_DAILY_DRAFT_TTL_SECONDS = 8 * 24 * 60 * 60;
 
 function safeArray(value) {
@@ -195,7 +196,9 @@ export function validateCodexDailyDraft(input = {}, options = {}) {
   if (qualitySummary.basicPoliteCount > 1) errors.push('基础寒暄或教材礼貌词同日最多 1 个');
   const missingCoverage = safeArray(qualitySummary.relaxedReasons).filter(reason => reason.endsWith('_below_target'));
   if (missingCoverage.length) errors.push(`账号核心方向覆盖不足：${missingCoverage.join('、')}`);
-  if (qualitySummary.sLevelCount > 12) errors.push(`S 级数量过多：${qualitySummary.sLevelCount}/12`);
+  if (qualitySummary.sLevelCount > MAX_DAILY_S_LEVEL_COUNT) {
+    errors.push(`S 级数量过多：${qualitySummary.sLevelCount}/${MAX_DAILY_S_LEVEL_COUNT}`);
+  }
   if (qualitySummary.estimatedHumanQualityScore < 75) {
     errors.push(`人工质量估分过低：${qualitySummary.estimatedHumanQualityScore}/75`);
   }
@@ -258,7 +261,7 @@ export function buildCodexDailyContext(workflowInput = {}, targetDateKey = '') {
     qualityRules: {
       exactWords: CODEX_DAILY_WORD_COUNT,
       recentDedupDays: 30,
-      maxSLevel: 12,
+      maxSLevel: MAX_DAILY_S_LEVEL_COUNT,
       maxBeautyCategory: 1,
       maxBasicPolite: 1,
       imagesRequiredForPublish: false,

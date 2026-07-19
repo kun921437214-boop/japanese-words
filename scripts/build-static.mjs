@@ -7,7 +7,7 @@ const output = path.join(root, 'dist');
 const files = ['index.html', 'styles.css', 'app.js', 'words-data.js', 'sync-config.js', '_headers'];
 const directories = ['assets'];
 const moduleDirectories = ['frontend'];
-const sharedModules = ['workflow-schema.mjs', 'published-refresh.mjs'];
+const sharedModules = ['daily-config.mjs', 'workflow-schema.mjs', 'published-refresh.mjs'];
 const publicAssetExtensions = new Set(['.avif', '.gif', '.jpeg', '.jpg', '.png', '.svg', '.webp']);
 
 fs.rmSync(output, { recursive: true, force: true });

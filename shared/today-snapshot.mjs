@@ -1,4 +1,5 @@
 import { ALL_WORDS } from './words-data.mjs';
+import { LEGACY_DAILY_WORD_LIMIT, MAX_DAILY_S_LEVEL_COUNT } from './daily-config.mjs';
 import { APP_TIME_ZONE, WORDS_PER_DAY, dateKey } from './rankings.mjs';
 import {
   archiveTodaySnapshotIntoSnapshotHistory,
@@ -403,7 +404,7 @@ export function buildTodayRecommendationAudit(todayEntries = [], context = {}) {
   qualitySummary.aLevelCount = items.filter(item => item.recommendationLevel === 'A').length;
   qualitySummary.bLevelCount = items.filter(item => item.recommendationLevel === 'B').length;
   qualitySummary.cLevelCount = items.filter(item => item.recommendationLevel === 'C').length;
-  if (qualitySummary.sLevelCount > 10) {
+  if (qualitySummary.sLevelCount > MAX_DAILY_S_LEVEL_COUNT) {
     qualitySummary.estimatedHumanQualityScore = Math.min(qualitySummary.estimatedHumanQualityScore, 88);
     qualitySummary.healthWarnings = [...safeArray(qualitySummary.healthWarnings), '推荐等级过松，需要收紧 S/A 评分标准。'];
   }
@@ -418,7 +419,7 @@ export function buildTodayRecommendationAudit(todayEntries = [], context = {}) {
     diagnosis.push('问题主要来自筛选 / 排序 / 补位策略。');
   }
   if ((sourceSummary.today_backfill / total) > 0.3) {
-    diagnosis.push('今日推荐候选不足，补位比例过高，建议不要硬凑满 20 个。');
+    diagnosis.push(`今日推荐候选不足，补位比例过高，建议不要硬凑满 ${WORDS_PER_DAY} 个。`);
   }
   if ((sourceSummary.local_word_bank / total) > 0.2) {
     diagnosis.push('本地词库兜底过多，说明候选池有效词不足或去重规则过滤太多。');
@@ -426,7 +427,7 @@ export function buildTodayRecommendationAudit(todayEntries = [], context = {}) {
   if ((sourceSummary.dedup_relaxed / total) > 0.2) {
     diagnosis.push('30 天去重后候选不足，需要扩大候选池，而不是频繁放宽去重。');
   }
-  if (qualitySummary.sLevelCount > 10) {
+  if (qualitySummary.sLevelCount > MAX_DAILY_S_LEVEL_COUNT) {
     diagnosis.push('推荐等级过松，需要收紧 S/A 评分标准。');
   }
   if (qualitySummary.highTransparencyCount > 6) {
@@ -617,7 +618,7 @@ function cleanCandidatePool(pool) {
 
 export function cleanTodaySnapshot(snapshot = {}) {
   const snapshotDateKey = /^\d{4}-\d{2}-\d{2}$/.test(String(snapshot?.dateKey || '')) ? String(snapshot.dateKey) : '';
-  const words = cleanWords(snapshot?.words).slice(0, WORDS_PER_DAY);
+  const words = cleanWords(snapshot?.words).slice(0, LEGACY_DAILY_WORD_LIMIT);
   return {
     dateKey: snapshotDateKey,
     words,
@@ -630,8 +631,8 @@ export function cleanTodaySnapshot(snapshot = {}) {
     dedupDaysUsed: clamp(toInt(snapshot?.dedupDaysUsed, 0), 0, 365),
     relaxedDedup: Boolean(snapshot?.relaxedDedup),
     shortage: Boolean(snapshot?.shortage),
-    repeated30Count: clamp(toInt(snapshot?.repeated30Count, 0), 0, WORDS_PER_DAY),
-    repeated30Words: uniqueWords(snapshot?.repeated30Words).slice(0, WORDS_PER_DAY),
+    repeated30Count: clamp(toInt(snapshot?.repeated30Count, 0), 0, LEGACY_DAILY_WORD_LIMIT),
+    repeated30Words: uniqueWords(snapshot?.repeated30Words).slice(0, LEGACY_DAILY_WORD_LIMIT),
     recommendationAudit: snapshot?.recommendationAudit || {}
   };
 }
@@ -646,7 +647,7 @@ export function isCurrentGeneratorSnapshot(snapshot = {}, now = new Date()) {
 export function cleanHistorySnapshot(snapshot = {}, fallbackDateKey = '') {
   const record = snapshot || {};
   const snapshotDateKey = /^\d{4}-\d{2}-\d{2}$/.test(String(record?.dateKey || '')) ? String(record.dateKey) : (/^\d{4}-\d{2}-\d{2}$/.test(String(fallbackDateKey || '')) ? String(fallbackDateKey) : '');
-  const words = cleanWords(record?.words).slice(0, WORDS_PER_DAY);
+  const words = cleanWords(record?.words).slice(0, LEGACY_DAILY_WORD_LIMIT);
   return {
     dateKey: snapshotDateKey,
     words,
@@ -659,8 +660,8 @@ export function cleanHistorySnapshot(snapshot = {}, fallbackDateKey = '') {
     dedupDaysUsed: clamp(toInt(record?.dedupDaysUsed, 0), 0, 365),
     relaxedDedup: Boolean(record?.relaxedDedup),
     shortage: Boolean(record?.shortage),
-    repeated30Count: clamp(toInt(record?.repeated30Count, 0), 0, WORDS_PER_DAY),
-    repeated30Words: uniqueWords(record?.repeated30Words).slice(0, WORDS_PER_DAY),
+    repeated30Count: clamp(toInt(record?.repeated30Count, 0), 0, LEGACY_DAILY_WORD_LIMIT),
+    repeated30Words: uniqueWords(record?.repeated30Words).slice(0, LEGACY_DAILY_WORD_LIMIT),
     archivedAt: typeof record?.archivedAt === 'string' ? record.archivedAt : '',
     title: cleanText(record?.title || '今日 AI 候选归档', 120),
     recommendationAudit: record?.recommendationAudit || {}

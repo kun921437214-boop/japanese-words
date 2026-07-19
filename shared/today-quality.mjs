@@ -1,4 +1,6 @@
-const WORDS_PER_DAY = 20;
+import { DAILY_WORD_COUNT } from './daily-config.mjs';
+
+const WORDS_PER_DAY = DAILY_WORD_COUNT;
 
 export const QUALITY_CATEGORIES = [
   'basic_greeting',
@@ -21,9 +23,9 @@ export const DAILY_QUALITY_MAXIMA = {
 };
 
 export const DAILY_QUALITY_MINIMA = {
-  emotion_state: 4,
-  social_nuance: 3,
-  life_state: 4
+  emotion_state: 2,
+  social_nuance: 2,
+  life_state: 2
 };
 
 const BASIC_GREETING_WORDS = new Set([

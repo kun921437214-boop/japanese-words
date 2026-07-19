@@ -66,6 +66,7 @@ import {
   mergeTodaySnapshot as mergeSharedTodaySnapshot,
   mergeTodaySnapshotHistory as mergeSharedTodaySnapshotHistory
 } from './shared/workflow-schema.mjs';
+import { DAILY_WORD_COUNT } from './shared/daily-config.mjs';
 
 /* ═══════════════════════════════════════════
    记忆面包 — 小红书日语选题推荐系统（Phase 1）
@@ -140,7 +141,7 @@ const LEGACY_SYNC_CODE_STORAGE_KEY = 'kotoba_sync_code';
 const SYNC_API_URL = normalizeSyncApiUrl(window.KOTOBA_SYNC_API_URL);
 const APP_TIME_ZONE = 'Asia/Shanghai';
 const RANKINGS_DAYS = 30;
-const WORDS_PER_DAY = 20;
+const WORDS_PER_DAY = DAILY_WORD_COUNT;
 const FAVORITE_STATUS_ORDER = ['none', 'pending', 'published'];
 const FAVORITE_STATUS_LABELS = {
   none: '已收藏',
@@ -1295,7 +1296,7 @@ function buildTodayRecommendationAudit(words = [], context = {}) {
   const diagnosis = [];
   if ((sourceSummary.deepseek_new / total) >= 0.5 && qualitySummary.genericTopicCount >= 5) diagnosis.push('问题主要来自 DeepSeek 找词方向，需要优化生成 prompt。');
   if (latestBatchItems.length && rawGenericCount <= 3 && qualitySummary.genericTopicCount >= 5) diagnosis.push('问题主要来自筛选 / 排序 / 补位策略。');
-  if ((sourceSummary.today_backfill / total) > 0.3) diagnosis.push('今日推荐候选不足，补位比例过高，建议不要硬凑满 20 个。');
+  if ((sourceSummary.today_backfill / total) > 0.3) diagnosis.push(`今日推荐候选不足，补位比例过高，建议不要硬凑满 ${WORDS_PER_DAY} 个。`);
   if ((sourceSummary.local_word_bank / total) > 0.2) diagnosis.push('本地词库兜底过多，说明候选池有效词不足或去重规则过滤太多。');
   if ((sourceSummary.dedup_relaxed / total) > 0.2) diagnosis.push('30 天去重后候选不足，需要扩大候选池，而不是频繁放宽去重。');
   if (qualitySummary.sLevelCount > 10) diagnosis.push('推荐等级过松，需要收紧 S/A 评分标准。');
@@ -5838,6 +5839,9 @@ function renderAiCardActionButton(kanji, aiCard = {}, className = 'btn btn-ghost
     return `<button class="${escapeHTML(className)}" disabled>已生成词卡</button><button class="${escapeHTML(className)}" data-workflow-action="generate-deepseek-card" data-kanji="${safeKanji}" data-force="true">重新生成 DeepSeek 词卡</button>`;
   }
   if (card.cardStatus === 'pending') {
+    if (isAiCardStalePending(card, candidatePool?.[cleanKanji] || {})) {
+      return `<button class="${escapeHTML(className)}" data-workflow-action="generate-deepseek-card" data-kanji="${safeKanji}" data-force="true">重试 DeepSeek 词卡</button>`;
+    }
     return `<button class="${escapeHTML(className)}" disabled>DeepSeek 词卡生成中</button>`;
   }
   return `<button class="${escapeHTML(className)}" data-workflow-action="generate-deepseek-card" data-kanji="${safeKanji}" data-force="false">${card.cardStatus === 'failed' ? '重试 DeepSeek 词卡' : '生成 DeepSeek 词卡'}</button>`;
@@ -7101,7 +7105,13 @@ function renderFavoriteCard(word) {
   const fallbackSvg = `data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 520 390%22><rect fill=%22%23fdeef0%22 width=%22520%22 height=%22390%22/><text x=%22260%22 y=%22195%22 text-anchor=%22middle%22 font-size=%2272%22 fill=%22%23f47a9a%22>${encodeURIComponent(word.kanji)}</text></svg>`;
   const isFav = favorites.includes(word.kanji);
   const entry = cleanCandidatePoolEntry(word.kanji, candidatePool[word.kanji] || word.candidateMeta || {}) || {};
-  const wordCardView = buildWordCardViewModel({ word, entry, aiCard: entry.aiCard || word.aiCard || {} });
+  const rawAiCard = entry.aiCard || word.aiCard || {};
+  const wordCardView = buildWordCardViewModel({
+    word,
+    entry,
+    aiCard: rawAiCard,
+    stalePending: isAiCardStalePending(rawAiCard, entry)
+  });
   const aiCardText = wordCardView.hasFormalCard
     ? (word.suggestedTitle || wordCardView.listTitle)
     : wordCardView.statusLabel;
@@ -7125,8 +7135,8 @@ function renderFavoriteCard(word) {
           <div class="card-meaning">${escapeHTML(word.meaning)}</div>
         </div>
         <div class="insight-block compact">
-          <div class="insight-label">DeepSeek 词卡</div>
-          <div class="insight-text line-2">${escapeHTML(aiCardText || 'DeepSeek 词卡未生成')}</div>
+          <div class="insight-label">${escapeHTML(wordCardView.sourceLabel)}</div>
+          <div class="insight-text line-2">${escapeHTML(aiCardText || `${wordCardView.sourceLabel}未生成`)}</div>
         </div>
         <div class="card-meta workflow-meta">
           ${renderFavoriteSourceChip(entry)}
@@ -7163,10 +7173,10 @@ function renderTodayGrid(words, options = {}) {
   }
   const state = getRenderableAutoDailyRefreshState();
   if (state.dateKey === todayKey() && state.status === 'failed') {
-    grid.innerHTML = `<div class="empty-state inline-empty"><div class="empty-title">今天暂无固定推荐</div><div class="empty-desc">${escapeHTML(state.error || '每日任务生成后会自动显示；需要立即使用时，可从“管理今日推荐”手动生成。')}</div><button class="btn btn-primary" data-today-action data-daily-hot-action="generate-today">立即生成今日 20 个</button></div>`;
+    grid.innerHTML = `<div class="empty-state inline-empty"><div class="empty-title">今天暂无固定推荐</div><div class="empty-desc">${escapeHTML(state.error || '每日任务生成后会自动显示；需要立即使用时，可从“管理今日推荐”手动生成。')}</div><button class="btn btn-primary" data-today-action data-daily-hot-action="generate-today">立即生成今日 ${WORDS_PER_DAY} 个</button></div>`;
     return;
   }
-  grid.innerHTML = '<div class="empty-state inline-empty"><div class="empty-title">今天暂无固定推荐</div><div class="empty-desc">每日任务生成后会自动显示；需要立即使用时，可从“管理今日推荐”手动生成。</div><button class="btn btn-primary" data-today-action data-daily-hot-action="generate-today">立即生成今日 20 个</button></div>';
+  grid.innerHTML = `<div class="empty-state inline-empty"><div class="empty-title">今天暂无固定推荐</div><div class="empty-desc">每日任务生成后会自动显示；需要立即使用时，可从“管理今日推荐”手动生成。</div><button class="btn btn-primary" data-today-action data-daily-hot-action="generate-today">立即生成今日 ${WORDS_PER_DAY} 个</button></div>`;
 }
 
 function renderHistoryGrid(words) {
@@ -7552,7 +7562,7 @@ async function finishTodaySnapshotGeneration(result, actionLabel, options = {}) 
   const supplementHint = supplementStats.attempts
     ? ` DeepSeek 已补充候选 ${supplementStats.imported || 0} 个。`
     : '';
-  const shortageHint = result.shortage ? ' 备选池可用词不足，已尝试 DeepSeek 补充后仍不足 20 个。' : '';
+  const shortageHint = result.shortage ? ` 备选池可用词不足，已尝试 DeepSeek 补充后仍不足 ${WORDS_PER_DAY} 个。` : '';
   const dedupHint = result.relaxedDedup
     ? ' 注意：本次结果启用了去重放宽。'
     : '';
@@ -7611,7 +7621,7 @@ async function handleGenerateTodaySnapshot() {
   }
   try {
     const result = await generateTodaySnapshotOnServerWithAiSupplement('create');
-    await finishTodaySnapshotGeneration(result, '已生成今日 20 个', { cloudSaved: true });
+    await finishTodaySnapshotGeneration(result, `已生成今日 ${WORDS_PER_DAY} 个`, { cloudSaved: true });
   } catch (error) {
     console.warn('服务端生成今日候选失败', error);
     showToast(`服务端生成失败，未写入团队后台：${error.message || '请稍后重试'}`);
@@ -7641,7 +7651,7 @@ async function handleRegenerateTodaySnapshot() {
     showToast('自动日更正在运行，稍等一下');
     return;
   }
-  if (!window.confirm('确定要重新生成今日 20 个吗？这会替换今天当前首页候选。')) return;
+  if (!window.confirm(`确定要重新生成今日 ${WORDS_PER_DAY} 个吗？这会替换今天当前首页候选。`)) return;
   try {
     const result = await generateTodaySnapshotOnServerWithAiSupplement('regenerate');
     await finishTodaySnapshotGeneration(result, '已重新生成今日候选', { cloudSaved: true });
@@ -7852,10 +7862,10 @@ function openDetail(idOrKanji) {
           <div class="detail-item"><span>罗马音</span><strong>${escapeHTML(wordCardView.basic.romaji || '—')}</strong></div>
           <div class="detail-item"><span>假名</span><strong>${escapeHTML(wordCardView.basic.kana || '—')}</strong></div>
           <div class="detail-item"><span>中文意思</span><strong>${escapeHTML(wordCardView.basic.meaning || '—')}</strong></div>
-          <div class="detail-item"><span>DeepSeek 词卡</span><strong>${escapeHTML(wordCardView.statusLabel)}</strong></div>
+          <div class="detail-item"><span>${escapeHTML(wordCardView.sourceLabel)}</span><strong>${escapeHTML(wordCardView.statusLabel)}</strong></div>
         </div>
         <div class="modal-section compact-section">
-          <div class="modal-section-title">DeepSeek 词卡</div>
+          <div class="modal-section-title">${escapeHTML(wordCardView.sourceLabel)}</div>
           <div class="wrong-usage-box">${escapeHTML(wordCardView.unavailableMessage)}</div>
         </div>
         <div class="modal-section compact-section">

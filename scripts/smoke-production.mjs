@@ -1,3 +1,5 @@
+import { getExpectedDailyWordCount } from '../shared/daily-config.mjs';
+
 const SITE_URL = String(process.env.SITE_URL || 'https://jiyimianbao.pages.dev').replace(/\/+$/, '');
 const TIMEOUT_MS = 30000;
 
@@ -54,8 +56,11 @@ try {
   const dateKey = todayKey();
   const snapshot = workflow.data.todaySnapshot || {};
   const words = Array.isArray(snapshot.words) ? snapshot.words : [];
+  const expectedWordCount = getExpectedDailyWordCount(dateKey);
   if (snapshot.dateKey !== dateKey) fail('Production 今日快照日期不正确', { expected: dateKey, actual: snapshot.dateKey || '' });
-  if (words.length !== 20) fail('Production 今日推荐不是 20 个', { count: words.length });
+  if (words.length !== expectedWordCount) {
+    fail(`Production 今日推荐不是 ${expectedWordCount} 个`, { count: words.length, expected: expectedWordCount });
+  }
 
   const candidatePool = workflow.data.candidatePool || {};
   const readyCards = words.filter(word => candidatePool[word]?.aiCard?.cardStatus === 'ready');
@@ -82,10 +87,11 @@ try {
       action: latestAudit.action || ''
     });
   }
-  if (latestAudit.after?.todaySnapshotDateKey !== dateKey || Number(latestAudit.after?.todaySnapshotCount) !== 20) {
-    fail('Production 最新审计记录未保留今日 20 词快照', {
+  if (latestAudit.after?.todaySnapshotDateKey !== dateKey || Number(latestAudit.after?.todaySnapshotCount) !== expectedWordCount) {
+    fail(`Production 最新审计记录未保留今日 ${expectedWordCount} 词快照`, {
       dateKey: latestAudit.after?.todaySnapshotDateKey || '',
       count: Number(latestAudit.after?.todaySnapshotCount) || 0,
+      expected: expectedWordCount,
       action: latestAudit.action || ''
     });
   }

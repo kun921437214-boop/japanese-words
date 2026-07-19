@@ -6,6 +6,7 @@ import {
   promoteCodexDailyDraft,
   validateCodexDailyDraft
 } from '../shared/codex-daily-draft.mjs';
+import { isExpectedDailyWordCount } from '../shared/daily-config.mjs';
 import { addDays, cleanDateKey, dateKey } from '../shared/rankings.mjs';
 import { cleanStoredWorkflow } from '../shared/workflow-schema.mjs';
 import {
@@ -200,7 +201,7 @@ export async function onRequest({ request, env }) {
     const storedDraft = await env.FAVORITES.get(draftKey, 'json');
 
     const existingSnapshotIsCodex = workflow.todaySnapshot?.dateKey === expectedDateKey
-      && workflow.todaySnapshot?.words?.length === 20
+      && isExpectedDailyWordCount(workflow.todaySnapshot?.words?.length, expectedDateKey)
       && workflow.todaySnapshot?.source === 'codex_draft';
     if (existingSnapshotIsCodex) {
       if (storedDraft) {

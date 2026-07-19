@@ -1419,6 +1419,7 @@ test('word card view exposes sanitized formal content and image for ready cards'
   });
 
   assert.equal(view.hasFormalCard, true);
+  assert.equal(view.sourceLabel, 'Codex 词卡');
   assert.equal(view.statusLabel, '已生成词卡');
   assert.equal(view.title, '日本人说「思い切って」是什么感觉？');
   assert.equal(view.summary, '跨过犹豫，鼓起勇气行动。');
@@ -1426,6 +1427,17 @@ test('word card view exposes sanitized formal content and image for ready cards'
   assert.equal(view.hasCoverSuggestion, true);
   assert.equal(view.referenceImageUrl, 'https://example.com/ready.png');
   assert.equal(view.listTitle, view.title);
+});
+
+test('word card view labels DeepSeek cards by their stored source and marks stale pending cards retryable', () => {
+  const view = buildWordCardViewModel({
+    aiCard: { cardStatus: 'pending', cardSource: 'deepseek_api' },
+    stalePending: true
+  });
+
+  assert.equal(view.sourceLabel, 'DeepSeek 词卡');
+  assert.equal(view.statusLabel, '生成超时 · 可重试');
+  assert.match(view.unavailableMessage, /DeepSeek 词卡生成已超时/);
 });
 
 test('word card view keeps ready content visible while an explicit regeneration is in flight', () => {

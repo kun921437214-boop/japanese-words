@@ -1,7 +1,8 @@
 import { ALL_WORDS } from './words-data.mjs';
+import { DAILY_WORD_COUNT, LEGACY_DAILY_WORD_LIMIT } from './daily-config.mjs';
 
 export const APP_TIME_ZONE = 'Asia/Shanghai';
-export const WORDS_PER_DAY = 20;
+export const WORDS_PER_DAY = DAILY_WORD_COUNT;
 export const DEDUP_DAYS = 15;
 const PURE_KANJI_RE = /^[\u3400-\u9fff々ヶ]+$/;
 
@@ -87,7 +88,7 @@ export function seededShuffle(list, rng) {
   return copy;
 }
 
-export function cleanRankingWords(words) {
+export function cleanRankingWords(words, limit = LEGACY_DAILY_WORD_LIMIT) {
   if (!Array.isArray(words)) return [];
   const uniqueWords = [];
   const seen = new Set();
@@ -97,7 +98,7 @@ export function cleanRankingWords(words) {
     if (!kanji || seen.has(kanji) || !knownWord || !isWordApproved(knownWord) || shouldFilterPureChineseCandidate(knownWord)) continue;
     seen.add(kanji);
     uniqueWords.push(kanji);
-    if (uniqueWords.length >= WORDS_PER_DAY) break;
+    if (uniqueWords.length >= limit) break;
   }
   return uniqueWords;
 }

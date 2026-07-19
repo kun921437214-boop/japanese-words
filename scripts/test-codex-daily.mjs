@@ -8,6 +8,7 @@ import {
 } from '../functions/codex-image.js';
 import { onRequest as handleFavorites } from '../functions/favorites.js';
 import {
+  CODEX_DAILY_WORD_COUNT,
   getCodexDraftStorageKey,
   promoteCodexDailyDraft,
   validateCodexDailyDraft
@@ -28,11 +29,12 @@ import {
 } from '../worker/favorites-worker.js';
 
 const CURATED_WORDS = [
-  'モヤる', '甘えん坊', '心地よい', 'ツンデレ', '余裕',
-  '仕切り直し', 'アンニュイ', '見切り', 'リフレッシュ', 'おけまる',
-  'しんみり', 'ほのぼの', 'わくわく', 'かぶる', 'だらける',
-  '追い込み', 'やりくり', '煮詰まる', 'そわそわ', 'ドキドキ'
+  'モヤる', 'しんみり', 'かぶる', '気を遣う', 'だらける',
+  '追い込み', '余裕', 'アンニュイ', '見切り', 'おけまる',
+  '甘えん坊', '心地よい', 'ツンデレ', '仕切り直し', 'リフレッシュ',
+  'ほのぼの', 'わくわく', 'やりくり', '煮詰まる', 'そわそわ'
 ];
+const DAILY_CURATED_WORDS = CURATED_WORDS.slice(0, CODEX_DAILY_WORD_COUNT);
 
 const JUNE_30_WORDS = [
   'モヤる', 'テンション', '甘えん坊', 'もやもや', '失礼します',
@@ -74,7 +76,7 @@ function makeCard(word, imageReady = false) {
   };
 }
 
-function makeDraft(words = CURATED_WORDS, options = {}) {
+function makeDraft(words = DAILY_CURATED_WORDS, options = {}) {
   return {
     targetDateKey: options.targetDateKey || '2026-07-14',
     threadId: '019f5c0e-3d15-75b2-92b1-5f6cb05610aa',
@@ -83,9 +85,9 @@ function makeDraft(words = CURATED_WORDS, options = {}) {
       kanji,
       kana: kanji,
       romaji: `word-${index + 1}`,
-      meaning: `${kanji} 的中文语感说明`,
-      category: '情绪与生活表达',
-      candidateType: '生活方式词',
+      meaning: `${kanji} 的中文含义说明`,
+      category: index < 2 ? '情绪状态' : index < 4 ? '人际语感' : index < 6 ? '生活状态' : '自然日语表达',
+      candidateType: index < 2 ? '网络口语词' : index < 4 ? '稳定候选' : index < 6 ? '生活方式词' : '稳定候选',
       reason: index < 6
         ? '有情绪状态、真实场景和收藏价值，适合标题与封面。'
         : index < 10
@@ -93,7 +95,7 @@ function makeDraft(words = CURATED_WORDS, options = {}) {
           : index < 16
             ? '有生活场景和状态画面，适合中文用户收藏和做标题。'
             : '有自然语感和真实场景，适合中文用户收藏和做标题。',
-      xhsFitScore: index < 10 ? 92 : 84,
+      xhsFitScore: index < 6 ? 92 : 84,
       riskLevel: 'low',
       confidenceLevel: 'high',
       aiCard: makeCard(kanji, Boolean(options.imageReady))
@@ -144,12 +146,12 @@ test('2026-06-30 audit reports the known quality risks and lowers S grades', () 
   assert.ok(audit.qualitySummary.healthWarnings.some(message => message.includes('推荐等级过松')));
 });
 
-test('a complete 20-word Codex draft passes while missing images remain non-blocking', () => {
+test('a complete 10-word Codex draft passes while missing images remain non-blocking', () => {
   const draft = validateCodexDailyDraft(makeDraft(), { workflow: {}, expectedDateKey: '2026-07-14' });
   assert.equal(draft.validation.valid, true);
   assert.equal(draft.status, 'valid');
-  assert.equal(draft.wordCount, 20);
-  assert.equal(draft.cardReadyCount, 20);
+  assert.equal(draft.wordCount, CODEX_DAILY_WORD_COUNT);
+  assert.equal(draft.cardReadyCount, CODEX_DAILY_WORD_COUNT);
   assert.equal(draft.imageReadyCount, 0);
   assert.ok(draft.validation.warnings.some(message => message.includes('参考图片未全部就绪')));
 });
@@ -213,7 +215,7 @@ test('Codex batch image helpers enforce supported formats and retry only transie
 
 test('tomorrow preview is public and sanitized while the full draft stays protected', async () => {
   const targetDateKey = addDays(dateKey(), 1);
-  const storedDraft = makeDraft(CURATED_WORDS, { targetDateKey, imageReady: true });
+  const storedDraft = makeDraft(DAILY_CURATED_WORDS, { targetDateKey, imageReady: true });
   storedDraft.notes = 'internal notes';
   storedDraft.operationId = 'internal-operation';
   const kv = makeKv({
@@ -228,8 +230,8 @@ test('tomorrow preview is public and sanitized while the full draft stays protec
   });
   assert.equal(previewResponse.status, 200);
   const preview = (await previewResponse.json()).draft;
-  assert.equal(preview.wordCount, 20);
-  assert.equal(preview.items.length, 20);
+  assert.equal(preview.wordCount, CODEX_DAILY_WORD_COUNT);
+  assert.equal(preview.items.length, CODEX_DAILY_WORD_COUNT);
   assert.equal(preview.threadId, undefined);
   assert.equal(preview.notes, undefined);
   assert.equal(preview.operationId, undefined);
@@ -262,7 +264,7 @@ test('tomorrow preview is public and sanitized while the full draft stays protec
 });
 
 test('semantic duplicates and recent 30-day repeats block a Codex draft', () => {
-  const words = [...CURATED_WORDS];
+  const words = [...DAILY_CURATED_WORDS];
   words[1] = 'もやもや';
   const draft = validateCodexDailyDraft(makeDraft(words), {
     workflow: { todaySnapshot: { dateKey: '2026-07-13', words: ['余裕'], generatedAt: '2026-07-13T01:00:00.000Z' } },
@@ -286,7 +288,7 @@ test('promotion preserves team-owned fields and publishes Codex cards', () => {
   assert.equal(result.workflow.publishedRecords[0].title, '人工标题');
   assert.equal(result.workflow.todaySnapshot.source, 'codex_draft');
   assert.equal(result.workflow.todaySnapshot.createdBy, 'codex');
-  assert.equal(result.workflow.todaySnapshot.words.length, 20);
+  assert.equal(result.workflow.todaySnapshot.words.length, CODEX_DAILY_WORD_COUNT);
   assert.equal(result.workflow.candidatePool['モヤる'].aiCard.cardStatus, 'ready');
 });
 
@@ -389,7 +391,7 @@ test('a valid Codex draft replaces a same-day non-Codex fallback snapshot', asyn
   assert.equal(result.published, true);
   assert.equal(result.alreadyPublished, false);
   assert.equal(result.source, 'codex_draft');
-  assert.deepEqual(stored.todaySnapshot.words, CURATED_WORDS);
+  assert.deepEqual(stored.todaySnapshot.words, DAILY_CURATED_WORDS);
   assert.equal(stored.todaySnapshot.source, 'codex_draft');
   assert.equal(stored.todaySnapshot.version, 2);
 });

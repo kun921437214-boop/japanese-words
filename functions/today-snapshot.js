@@ -1,5 +1,6 @@
 import { cleanStoredWorkflow, generateTodaySnapshot } from '../shared/today-snapshot.mjs';
-import { addDays, buildRankingForDate, cleanStoredRanking, dateKey } from '../shared/rankings.mjs';
+import { isStoredDailyWordCount } from '../shared/daily-config.mjs';
+import { addDays, buildRankingForDate, cleanStoredRanking, dateKey, WORDS_PER_DAY } from '../shared/rankings.mjs';
 import {
   API_LIMITS,
   authorizeRequest,
@@ -38,7 +39,7 @@ async function readRankingHistoryWords(env, todayDateKey, days = 30) {
   while (cursor) {
     const stored = await env.FAVORITES.get(getRankingStorageKey(cursor), 'json');
     const ranking = cleanStoredRanking(stored, cursor);
-    if (ranking.words.length === 20) cachedSelections.set(cursor, ranking.words);
+    if (isStoredDailyWordCount(ranking.words.length)) cachedSelections.set(cursor, ranking.words);
     if (cursor === todayDateKey) break;
     cursor = addDays(cursor, 1);
   }
@@ -47,7 +48,7 @@ async function readRankingHistoryWords(env, todayDateKey, days = 30) {
   cursor = generationStartDateKey;
   while (cursor) {
     let words = cachedSelections.get(cursor);
-    if (!words || words.length !== 20) {
+    if (!words || !isStoredDailyWordCount(words.length)) {
       words = buildRankingForDate(cursor, cachedSelections);
       cachedSelections.set(cursor, words);
     }
@@ -118,7 +119,7 @@ export async function onRequest({ request, env }) {
       ok: true,
       mode,
       selectedCount,
-      shortage: selectedCount < 20,
+      shortage: selectedCount < WORDS_PER_DAY,
       todaySnapshot: stored.todaySnapshot,
       recommendationAudit: stored.todaySnapshot?.recommendationAudit || null,
       revision: stored.revision,
