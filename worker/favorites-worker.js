@@ -21,6 +21,7 @@ import {
   readJsonBody,
   unauthorizedResponse
 } from '../shared/api-security.mjs';
+import { getCodexDraftStorageKey } from '../shared/codex-daily-draft.mjs';
 import {
   getWorkflowMutationMetadata,
   inspectWorkflowMutation,
@@ -28,6 +29,7 @@ import {
 } from '../shared/workflow-mutation.mjs';
 
 const DAILY_REFRESH_CRON = '0 16 * * *';
+const CODEX_LATE_PROMOTION_CRON = '5,25,45 * * * *';
 const AI_CARD_BATCH_CRONS = new Set([
   '10,20,30,40,50 16 * * *',
   '0 17 * * *'
@@ -144,6 +146,61 @@ export async function triggerDailyPublishOrFallback(env, fetchImpl = fetch) {
   }
   console.log('daily refresh trigger completed', response.status);
   return { ok: true, source: 'deepseek', status: response.status };
+}
+
+export async function triggerCodexPromotionIfAvailable(env, fetchImpl = fetch) {
+  const siteUrl = String(env.SITE_URL || '').trim().replace(/\/+$/, '');
+  const autoRefreshSecret = String(env.AUTO_REFRESH_SECRET || '').trim();
+  if (!siteUrl || !autoRefreshSecret || !env.FAVORITES) {
+    console.warn('late Codex promotion skipped because required configuration is missing');
+    return { ok: false, source: 'skipped', reason: 'configuration_missing' };
+  }
+
+  const targetDateKey = dateKey(new Date());
+  const draftKey = getCodexDraftStorageKey(targetDateKey);
+  const draft = await env.FAVORITES.get(draftKey, 'json');
+  if (!draft) return { ok: true, source: 'skipped', reason: 'draft_missing', targetDateKey };
+  if (draft.status === 'published' || draft.publishedAt) {
+    return { ok: true, source: 'skipped', reason: 'already_published', targetDateKey };
+  }
+  if (draft.status !== 'valid' || !draft.validation?.valid) {
+    return { ok: true, source: 'skipped', reason: 'draft_not_valid', targetDateKey };
+  }
+
+  const codexUrl = new URL(`${siteUrl}/codex-daily`);
+  codexUrl.searchParams.set('date', targetDateKey);
+  try {
+    const response = await fetchImpl(codexUrl.toString(), {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${autoRefreshSecret}`
+      },
+      body: JSON.stringify({ action: 'promote', targetDateKey })
+    });
+    const result = await response.json().catch(() => null);
+    if (response.ok && result?.published) {
+      console.log('late Codex draft promoted', targetDateKey, Boolean(result.alreadyPublished));
+      return {
+        ok: true,
+        source: 'codex',
+        status: response.status,
+        targetDateKey,
+        alreadyPublished: Boolean(result.alreadyPublished)
+      };
+    }
+    console.warn('late Codex promotion unavailable', targetDateKey, response.status, result?.error?.code || 'UNKNOWN');
+    return {
+      ok: false,
+      source: 'codex',
+      status: response.status,
+      targetDateKey,
+      reason: result?.error?.code || 'promotion_failed'
+    };
+  } catch (error) {
+    console.warn('late Codex promotion failed', targetDateKey, error?.message || error);
+    return { ok: false, source: 'codex', status: 0, targetDateKey, reason: 'network_error' };
+  }
 }
 
 async function triggerTodayAiCardBatch(env) {
@@ -666,6 +723,12 @@ export default {
     if (cron === DAILY_REFRESH_CRON) {
       ctx.waitUntil(
         triggerDailyPublishOrFallback(env).catch(error => console.warn('daily publish trigger failed', error?.message || error))
+      );
+    }
+
+    if (cron === CODEX_LATE_PROMOTION_CRON) {
+      ctx.waitUntil(
+        triggerCodexPromotionIfAvailable(env).catch(error => console.warn('late Codex promotion failed', error?.message || error))
       );
     }
 
