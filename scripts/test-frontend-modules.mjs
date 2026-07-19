@@ -9,6 +9,14 @@ import {
   transitionFavoriteStatus,
   transitionFavoriteToggle
 } from '../frontend/favorites-page.mjs';
+import {
+  buildPublishedPageModel,
+  createPublishedPageController,
+  getPublishedAutoRefreshSummary,
+  getPublishedPerformanceScore,
+  getRecentPublishedAverage,
+  ratePublishedRecord
+} from '../frontend/published-page.mjs';
 import { createWorkflowCache } from '../frontend/workflow-cache.mjs';
 import { createWorkflowStore } from '../frontend/workflow-store.mjs';
 import { createWorkflowSync } from '../frontend/workflow-sync.mjs';
@@ -392,6 +400,127 @@ test('favorites page controller delegates card and filter actions without window
   assert.equal(listeners.size, 0);
 });
 
+test('published performance score weights saves and deeper engagement above likes', () => {
+  const score = getPublishedPerformanceScore({
+    latestStats: { likes: 10, favorites: 5, comments: 2, shares: 1, views: 1000 }
+  });
+  assert.equal(score, 29);
+  assert.equal(getRecentPublishedAverage([
+    { sourceStatus: 'placeholder', latestStats: { likes: 999 } },
+    { publishedAt: '2026-07-18', latestStats: { likes: 20 } },
+    { publishedAt: '2026-07-17', latestStats: { favorites: 10 } }
+  ]), 20);
+});
+
+test('published rating keeps high-save low-exposure content from penalizing the word', () => {
+  const rating = ratePublishedRecord({
+    publishedAt: '2026-07-15T12:00:00.000Z',
+    latestStats: { likes: 10, favorites: 50, comments: 2, shares: 1, views: 1000 }
+  }, {
+    now: Date.parse('2026-07-19T12:00:00.000Z'),
+    recentAverage: 300
+  });
+
+  assert.equal(rating.performanceScore, 119);
+  assert.equal(rating.saveRate, 0.05);
+  assert.equal(rating.level, '正常');
+  assert.match(rating.reason, /流量不足/);
+});
+
+test('published rating waits 72 hours and flags high-exposure low-engagement content', () => {
+  const recent = ratePublishedRecord({
+    publishedAt: '2026-07-19T00:00:00.000Z',
+    latestStats: { likes: 100, favorites: 30, comments: 10, shares: 2, views: 1000 }
+  }, {
+    now: Date.parse('2026-07-19T12:00:00.000Z'),
+    recentAverage: 100
+  });
+  assert.equal(recent.level, '待评估');
+
+  const weak = ratePublishedRecord({
+    publishedAt: '2026-07-15T00:00:00.000Z',
+    latestStats: { likes: 2, favorites: 2, comments: 1, shares: 0, views: 5000 }
+  }, {
+    now: Date.parse('2026-07-19T12:00:00.000Z'),
+    recentAverage: 5
+  });
+  assert.equal(weak.level, '偏弱');
+  assert.match(weak.reason, /有一定曝光但互动偏低/);
+});
+
+test('published page model and refresh summary provide stable empty and status copy', () => {
+  assert.deepEqual(buildPublishedPageModel([]), {
+    items: [],
+    count: 0,
+    isEmpty: true,
+    countText: '管理已经发到小红书的内容和表现'
+  });
+  const model = buildPublishedPageModel([{ type: 'record' }, { type: 'placeholder' }]);
+  assert.equal(model.countText, '当前共 2 条已发布记录 / 占位项');
+  const summary = getPublishedAutoRefreshSummary({
+    autoRefresh: {
+      status: 'success',
+      source: 'remote',
+      lastMessage: '已更新',
+      lastAttemptAt: '2026-07-19T09:10:00.000Z'
+    }
+  }, {
+    statusLabels: { idle: '待更新', success: '更新成功' },
+    sourceLabels: { remote: '页面识别' }
+  });
+  assert.deepEqual(summary, {
+    label: '更新成功',
+    message: '已更新',
+    sourceLabel: '页面识别',
+    timeLabel: '2026-07-19 09:10'
+  });
+});
+
+test('published page controller routes cards, placeholders and actions without opening stopped links', () => {
+  const listeners = new Map();
+  const root = {
+    addEventListener: (type, listener) => listeners.set(type, listener),
+    removeEventListener: type => listeners.delete(type),
+    contains: () => true
+  };
+  const calls = [];
+  const controller = createPublishedPageController({
+    root,
+    onOpenDetail: recordId => calls.push(['detail', recordId]),
+    onEditRecord: (recordId, presetKanji) => calls.push(['edit', recordId, presetKanji]),
+    onRefresh: recordId => calls.push(['refresh', recordId]),
+    onRender: () => calls.push(['render'])
+  });
+  const dispatch = (actionElement, stopContains = null) => {
+    let stopped = false;
+    const stopElement = stopContains === null ? null : { contains: () => stopContains };
+    listeners.get('click')({
+      target: {
+        closest: selector => selector === '[data-published-action]' ? actionElement : stopElement
+      },
+      stopPropagation: () => { stopped = true; },
+      preventDefault() {}
+    });
+    return stopped;
+  };
+
+  dispatch({ dataset: { publishedAction: 'open-detail', recordId: 'record-1' } });
+  dispatch({ dataset: { publishedAction: 'edit-record', recordId: '', presetKanji: '詰めが甘い' } });
+  assert.equal(dispatch({ dataset: { publishedAction: 'refresh', recordId: 'record-1' } }, true), true);
+  dispatch({ dataset: { publishedAction: 'render' } });
+  const beforeStoppedLink = calls.length;
+  assert.equal(dispatch({ dataset: { publishedAction: 'open-detail', recordId: 'record-1' } }, false), true);
+  assert.equal(calls.length, beforeStoppedLink);
+  assert.deepEqual(calls, [
+    ['detail', 'record-1'],
+    ['edit', '', '詰めが甘い'],
+    ['refresh', 'record-1'],
+    ['render']
+  ]);
+  controller.destroy();
+  assert.equal(listeners.size, 0);
+});
+
 test('module migration exposes every inline handler through the compatibility facade', () => {
   const indexSource = fs.readFileSync(new URL('../index.html', import.meta.url), 'utf8');
   const appSource = fs.readFileSync(new URL('../app.js', import.meta.url), 'utf8');
@@ -411,6 +540,10 @@ test('module migration exposes every inline handler through the compatibility fa
   handlers.forEach(handler => assert.match(facade, new RegExp(`\\b${handler}\\b`), `missing window handler: ${handler}`));
   const favoritesMarkup = indexSource.slice(indexSource.indexOf('id="page-favorites"'), indexSource.indexOf('id="page-published"'));
   const favoriteCardSource = appSource.slice(appSource.indexOf('function renderFavoriteCard'), appSource.indexOf('function renderTodayGrid'));
+  const publishedMarkup = indexSource.slice(indexSource.indexOf('id="page-published"'), indexSource.indexOf('</main>'));
+  const publishedCardSource = appSource.slice(appSource.indexOf('function renderPublishedCard'), appSource.indexOf('function renderPublished()'));
   assert.doesNotMatch(favoritesMarkup, /on(?:click|change)=/);
   assert.doesNotMatch(favoriteCardSource, /onclick=/);
+  assert.doesNotMatch(publishedMarkup, /onclick=/);
+  assert.doesNotMatch(publishedCardSource, /onclick=/);
 });

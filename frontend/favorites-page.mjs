@@ -126,6 +126,7 @@ export function createFavoritesPageController(options = {}) {
     if (stopElement && belongsToRoot(stopElement)) event.stopPropagation?.();
     const actionElement = target.closest('[data-favorites-action]');
     if (!actionElement || !belongsToRoot(actionElement)) return;
+    if (stopElement && typeof stopElement.contains === 'function' && !stopElement.contains(actionElement)) return;
     const action = actionElement.dataset?.favoritesAction;
     if (!action || ['source-filter', 'status-filter'].includes(action)) return;
     event.preventDefault?.();

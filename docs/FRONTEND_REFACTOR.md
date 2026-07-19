@@ -30,8 +30,12 @@ Extract one page at a time:
    - Favorites page controls and cards no longer depend on inline click/change handlers;
    - favorite removal clears stale status in one tested transition, while status changes always preserve membership in the topic pool;
    - executable tests cover filters, counts, add/remove transitions, status transitions, and event routing.
-2. Published Records — next;
-3. Daily Recommendations and history;
+2. Published Records — completed:
+   - `frontend/published-page.mjs` owns performance scoring, save-rate-aware rating, page summaries, and delegated page events;
+   - low-exposure posts with strong save rate are protected from being mislabeled as weak content, while the existing 72-hour observation window remains intact;
+   - Published page controls and cards no longer depend on inline click handlers, and placeholder records now prefill the correct word when edited;
+   - executable tests cover score weights, rating boundaries, page models, refresh summaries, and event routing.
+3. Daily Recommendations and history — next;
 4. shared word-card rendering.
 
 Remove inline HTML handlers only after the corresponding page module has executable interaction tests.

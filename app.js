@@ -7,6 +7,12 @@ import {
   transitionFavoriteStatus,
   transitionFavoriteToggle
 } from './frontend/favorites-page.mjs';
+import {
+  buildPublishedPageModel,
+  createPublishedPageController,
+  getPublishedAutoRefreshSummary,
+  ratePublishedRecord
+} from './frontend/published-page.mjs';
 import { createWorkflowCache, DEFAULT_CANDIDATE_LIMIT } from './frontend/workflow-cache.mjs';
 import { createWorkflowStore } from './frontend/workflow-store.mjs';
 import { createWorkflowSync } from './frontend/workflow-sync.mjs';
@@ -6911,64 +6917,11 @@ function getFavoritesPageModel(words = getFavoriteWords()) {
   });
 }
 
-function getPerformanceScore(record) {
-  const stats = cleanPublishedStats(record.latestStats || record);
-  return stats.likes * 1 + stats.favorites * 2 + stats.comments * 3 + stats.shares * 3;
-}
-
-function getRecordAgeHours(record) {
-  if (!record.publishedAt) return 0;
-  const publishedTime = new Date(record.publishedAt).getTime();
-  if (!Number.isFinite(publishedTime)) return 0;
-  return Math.max(0, (Date.now() - publishedTime) / 3600000);
-}
-
-function getRecentTwentyAveragePerformance() {
-  const records = cleanPublishedRecords(publishedRecords)
-    .filter(record => record.sourceStatus !== 'placeholder')
-    .sort((left, right) => String(right.publishedAt || right.updatedAt).localeCompare(String(left.publishedAt || left.updatedAt)))
-    .slice(0, 20);
-  if (!records.length) return 0;
-  return records.reduce((sum, record) => sum + getPerformanceScore(record), 0) / records.length;
-}
-
 function getRecordRating(record) {
-  const performanceScore = getPerformanceScore(record);
-  const average = getRecentTwentyAveragePerformance() || performanceScore;
-  const ratio = average > 0 ? performanceScore / average : 1;
-  const ageHours = getRecordAgeHours(record);
-  const stats = cleanPublishedStats(record.latestStats || record);
-  const exposure = stats.views;
-  const saveRate = exposure > 0 ? stats.favorites / exposure : 0;
-
-  let level = '待评估';
-  let reason = '还没满 72 小时，先继续观察。';
-
-  if (ageHours >= 72) {
-    if (exposure > 0 && saveRate >= 0.04 && performanceScore < average * 0.7) {
-      level = '正常';
-      reason = '曝光不算高，但收藏率不错，更像流量不足，不一定是词方向问题。';
-    } else if (ratio >= 1.5) {
-      level = '优秀';
-      reason = '综合互动明显高于最近已发布内容的平均水平。';
-    } else if (ratio >= 0.7) {
-      level = '正常';
-      reason = '综合表现处于近期内容的正常区间。';
-    } else if (ratio >= 0.3) {
-      level = '偏弱';
-      reason = '综合互动低于近期平均，需要结合标题、封面和发布时间判断。';
-    } else {
-      level = '异常差';
-      reason = '综合互动显著低于近期平均，建议重点复盘词方向和内容包装。';
-    }
-
-    if (exposure > 0 && exposure >= 1000 && stats.likes + stats.favorites + stats.comments <= 10) {
-      level = '偏弱';
-      reason = '有一定曝光但互动偏低，说明这个词或选题包装当前不够适配。';
-    }
-  }
-
-  return { level, reason, performanceScore };
+  return ratePublishedRecord(record, {
+    records: cleanPublishedRecords(publishedRecords),
+    now: Date.now()
+  });
 }
 
 function ensureFavoriteWord(kanji) {
@@ -7903,13 +7856,10 @@ function renderFavoritesGrid(words) {
 }
 
 function getAutoRefreshSummary(record) {
-  const state = cleanAutoRefreshState(record?.autoRefresh);
-  return {
-    label: AUTO_REFRESH_STATUS_LABELS[state.status] || AUTO_REFRESH_STATUS_LABELS.idle,
-    message: state.lastMessage || '系统会在每天 09:00（北京时间）尝试更新一次，失败时保留上次数据。',
-    sourceLabel: AUTO_REFRESH_SOURCE_LABELS[state.source] || '',
-    timeLabel: state.lastAttemptAt ? state.lastAttemptAt.slice(0, 16).replace('T', ' ') : '尚未自动更新'
-  };
+  return getPublishedAutoRefreshSummary(cleanAutoRefreshState(record?.autoRefresh), {
+    statusLabels: AUTO_REFRESH_STATUS_LABELS,
+    sourceLabels: AUTO_REFRESH_SOURCE_LABELS
+  });
 }
 
 function renderPublishedCard(item) {
@@ -7918,13 +7868,11 @@ function renderPublishedCard(item) {
   const latestStats = cleanPublishedStats(record.latestStats);
   const rating = getRecordRating(record);
   const refreshMeta = getAutoRefreshSummary(record);
-  const safeRecordId = escapeJSString(record.id);
-  const safeKanji = escapeJSString(word.kanji || record.word || '');
-  const openAction = item.type === 'placeholder'
-    ? `openPublishedRecordModal('', '${safeKanji}')`
-    : `openPublishedDetail('${safeRecordId}')`;
+  const safeRecordId = escapeHTML(record.id);
+  const safeKanji = escapeHTML(word.kanji || record.word || '');
+  const openAction = item.type === 'placeholder' ? 'edit-record' : 'open-detail';
   return `
-    <div class="published-card" onclick="${openAction}">
+    <div class="published-card" data-published-action="${openAction}" data-record-id="${item.type === 'placeholder' ? '' : safeRecordId}" data-preset-kanji="${item.type === 'placeholder' ? safeKanji : ''}">
       <div class="published-head">
         <div>
           <div class="published-word">${escapeHTML(word.kanji || '未关联词')}</div>
@@ -7933,7 +7881,7 @@ function renderPublishedCard(item) {
         </div>
         <div class="published-rating rating-${escapeHTML(rating.level)}">${escapeHTML(rating.level)}</div>
       </div>
-      <div class="published-meta">${record.link ? `<a class="published-link" href="${escapeHTML(record.link)}" target="_blank" rel="noopener" onclick="event.stopPropagation()">查看链接 ↗</a>` : '<span class="published-link muted">待补充链接</span>'}</div>
+      <div class="published-meta">${record.link ? `<a class="published-link" href="${escapeHTML(record.link)}" target="_blank" rel="noopener" data-published-stop>查看链接 ↗</a>` : '<span class="published-link muted">待补充链接</span>'}</div>
       <div class="published-mini-stats">
         <span class="published-mini-chip">👍 ${latestStats.likes}</span>
         <span class="published-mini-chip">⭐ ${latestStats.favorites}</span>
@@ -7958,9 +7906,9 @@ function renderPublishedCard(item) {
         <span>${escapeHTML(refreshMeta.message)}</span>
       </div>
       <div class="published-reason line-2">${escapeHTML(record.performanceNote || rating.reason)}</div>
-      <div class="published-actions" onclick="event.stopPropagation()">
-        ${item.type === 'placeholder' ? '' : `<button class="card-action-btn ghost" onclick="refreshPublishedMetrics('${safeRecordId}')">尝试更新</button>`}
-        <button class="card-action-btn ghost" onclick="openPublishedRecordModal('${safeRecordId}')">编辑记录</button>
+      <div class="published-actions" data-published-stop>
+        ${item.type === 'placeholder' ? '' : `<button class="card-action-btn ghost" data-published-action="refresh" data-record-id="${safeRecordId}">尝试更新</button>`}
+        <button class="card-action-btn ghost" data-published-action="edit-record" data-record-id="${item.type === 'placeholder' ? '' : safeRecordId}" data-preset-kanji="${item.type === 'placeholder' ? safeKanji : ''}">编辑记录</button>
       </div>
     </div>`;
 }
@@ -7970,18 +7918,19 @@ function renderPublished() {
     renderWorkflowScopeState('published');
     return;
   }
-  const items = getPublishedDisplayItems();
+  const pageModel = buildPublishedPageModel(getPublishedDisplayItems());
+  const items = pageModel.items;
   const grid = document.getElementById('publishedGrid');
   const empty = document.getElementById('publishedEmpty');
   const count = document.getElementById('publishedCount');
   if (!items.length) {
     grid.innerHTML = '';
     empty.style.display = 'flex';
-    count.textContent = '管理已经发到小红书的内容和表现';
+    count.textContent = pageModel.countText;
   } else {
     empty.style.display = 'none';
     grid.innerHTML = items.map(renderPublishedCard).join('');
-    count.textContent = `当前共 ${items.length} 条已发布记录 / 占位项`;
+    count.textContent = pageModel.countText;
   }
   updatePublishedBadge();
 }
@@ -9853,6 +9802,19 @@ createFavoritesPageController({
   onError: error => {
     console.warn('收藏页操作失败', error);
     showToast('收藏页操作失败，请刷新后重试');
+  }
+});
+
+createPublishedPageController({
+  root: document.getElementById('page-published'),
+  onOpenDetail: openPublishedDetail,
+  onEditRecord: openPublishedRecordModal,
+  onAddRecord: openPublishedRecordModal,
+  onRefresh: refreshPublishedMetrics,
+  onRender: renderPublished,
+  onError: error => {
+    console.warn('已发布页面操作失败', error);
+    showToast('已发布页面操作失败，请刷新后重试');
   }
 });
 
