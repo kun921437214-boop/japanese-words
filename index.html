@@ -34,11 +34,6 @@
         <span class="nav-label">我的收藏 / 选题池</span>
         <span class="nav-badge" id="favBadge" style="display:none">0</span>
       </div>
-      <div class="nav-item" data-tab="candidate" onclick="switchTab('candidate')">
-        <span class="nav-icon"><img src="assets/illustrations/propeller.png" alt=""></span>
-        <span class="nav-label">候选池后台</span>
-        <span class="nav-badge" id="candidateBadge" style="display:none">0</span>
-      </div>
       <div class="nav-item" data-tab="published" onclick="switchTab('published')">
         <span class="nav-icon"><img src="assets/illustrations/time-machine.png" alt=""></span>
         <span class="nav-label">已发布</span>
@@ -75,7 +70,7 @@
             <div class="action-menu">
               <button class="btn btn-ghost" id="dailyManageBtn" data-today-action data-daily-preview-disabled onclick="toggleDailyManageMenu(event)">管理今日推荐</button>
               <div class="action-menu-panel" id="dailyManageMenu">
-                <button onclick="handleDailyManageAction('generate')">从 AI 候选库生成今日 20 个</button>
+                <button onclick="handleDailyManageAction('generate')">生成今日 20 个</button>
                 <button onclick="handleDailyManageAction('fill')">补满今日推荐</button>
                 <button onclick="handleDailyManageAction('regenerate')">重新生成今日推荐</button>
               </div>
@@ -93,7 +88,7 @@
           <img class="design-asset design-asset-scene-small" src="assets/illustrations/memory-bread.png" alt="" onerror="this.remove()">
         </div>
         <div class="scene-trail" aria-hidden="true">✦　🍞　✦　✦</div>
-        <div class="scene-bubble">系统会把新词和历史候选词统一评分，再把最值得做成小红书内容的词放到这里。</div>
+        <div class="scene-bubble">系统会把新词和历史词统一评分，再把最值得做成小红书内容的词放到这里。</div>
       </div>
     </div>
     <div class="page page-history" id="page-history">
@@ -153,121 +148,6 @@
         <div class="empty-icon">🎐</div>
         <div class="empty-title">还没有进入选题池的词</div>
         <div class="empty-desc">先从每日热门里收藏，或者把词标记为待发布</div>
-      </div>
-    </div>
-    <div class="page page-candidate" id="page-candidate">
-      <div class="page-header">
-        <div class="page-header-inner">
-          <div class="page-heading">
-            <div class="page-title-icon"><img src="assets/illustrations/propeller.png" alt="" onerror="this.parentElement.textContent='🗂'"></div>
-            <div>
-              <h1 class="page-title">候选池后台</h1>
-              <p class="page-date" id="candidateCount">查看系统内部候选词，管理晋级、观察和复核状态</p>
-            </div>
-          </div>
-          <div class="page-actions">
-            <div class="page-actions-deco" aria-hidden="true">✦</div>
-            <select class="filter-select" id="candidateSourceFilter" onchange="setSourceFilter('candidate', this.value)" aria-label="按来源筛选候选池"></select>
-            <select class="filter-select" id="candidateReviewFilter" onchange="setCandidateReviewFilter(this.value)" aria-label="按内部状态筛选候选池">
-              <option value="all">全部状态</option>
-              <option value="ready">可直接上首页</option>
-              <option value="watch">值得继续观察</option>
-              <option value="review">需复核</option>
-            </select>
-            <select class="filter-select" id="candidateTypeFilter" onchange="setCandidateTypeFilter(this.value)" aria-label="按候选类型筛选">
-              <option value="all">全部类型</option>
-              <option value="稳定候选">稳定候选</option>
-              <option value="新鲜梗词">新鲜梗词</option>
-              <option value="审美氛围词">审美氛围词</option>
-              <option value="美妆穿搭词">美妆穿搭词</option>
-              <option value="追星兴趣词">追星兴趣词</option>
-              <option value="生活方式词">生活方式词</option>
-              <option value="网络口语词">网络口语词</option>
-              <option value="圈层词">圈层词</option>
-              <option value="高风险话题词">高风险话题词</option>
-            </select>
-            <select class="filter-select" id="candidateFreshnessFilter" onchange="setCandidateFreshnessFilter(this.value)" aria-label="按时效性筛选">
-              <option value="all">全部时效</option>
-              <option value="长期">长期</option>
-              <option value="中期">中期</option>
-              <option value="短期">短期</option>
-              <option value="需要尽快判断">需要尽快判断</option>
-            </select>
-            <select class="filter-select" id="candidateOriginFilter" onchange="setCandidateOriginFilter(this.value)" aria-label="按候选来源筛选">
-              <option value="all">全部来源</option>
-              <option value="deepseek_generated">DeepSeek 生成词</option>
-              <option value="deepseek_reviewed">DeepSeek 审核词</option>
-              <option value="manual_keep">手动保留词</option>
-            </select>
-            <select class="filter-select" id="candidateSortSelect" onchange="setCandidateSort(this.value)" aria-label="候选池排序">
-              <option value="score">按最终分</option>
-              <option value="recent">按最近评分</option>
-              <option value="ignored">按被忽略次数</option>
-            </select>
-            <button class="btn btn-primary" onclick="renderCandidatePool()">🔄 刷新候选池</button>
-          </div>
-        </div>
-      </div>
-      <section class="ai-workbench">
-        <div class="ai-workbench-head">
-          <div>
-            <h2>AI 候选词主脑</h2>
-            <p id="aiMeta">尚未生成 AI 候选</p>
-          </div>
-          <div class="ai-status" id="aiStatus" data-tone="muted">待生成</div>
-        </div>
-        <div class="ai-controls">
-          <label class="form-field"><span>模式</span><select class="form-input" id="aiAction">
-            <option value="stable_today">稳定今日候选</option>
-            <option value="wild_ideas" selected>野生灵感扩词</option>
-            <option value="extract_from_materials">从素材提词</option>
-            <option value="enrich_words">给定词生成词卡</option>
-            <option value="rerank_candidates">根据反馈重新推荐</option>
-          </select></label>
-          <label class="form-field"><span>生成数量</span><select class="form-input" id="aiCount">
-            <option value="20">20</option>
-            <option value="30">30</option>
-            <option value="40" selected>40</option>
-            <option value="50">50</option>
-          </select></label>
-          <label class="tag-check ai-toggle"><input type="checkbox" id="aiIncludeMemes" checked><span>包含梗化词</span></label>
-          <label class="form-field"><span>高风险词策略</span><select class="form-input" id="aiHighRiskStrategy">
-            <option value="review_only">仅进入复核池</option>
-            <option value="exclude">不生成</option>
-          </select></label>
-        </div>
-        <textarea class="form-input form-textarea ai-input" id="aiInput" maxlength="12000" placeholder="粘贴素材、输入方向或给定词列表。留空时，AI 会结合收藏、负反馈、已发布和候选池扩词。"></textarea>
-        <div class="ai-actions">
-          <button class="btn btn-primary" id="aiGenerateBtn" onclick="generateAiCandidates(false)">生成候选词</button>
-          <button class="btn btn-ghost" onclick="generateAiCandidates(true)">重新生成</button>
-          <button class="btn btn-ghost" onclick="selectAllAiPreview()">全选可导入</button>
-          <button class="btn btn-ghost" onclick="importSelectedAiCandidates()">导入选中候选</button>
-          <button class="btn btn-ghost" onclick="importAllAiCandidates()">全部导入候选池</button>
-        </div>
-        <div id="aiPreview" class="ai-preview"></div>
-      </section>
-      <div class="candidate-admin-panel">
-        <div class="candidate-stats" id="candidateStats"></div>
-        <div class="candidate-batch-toolbar">
-          <div class="candidate-selection-copy" id="candidateSelectionCopy">当前未选中候选词</div>
-          <div class="candidate-batch-actions">
-            <button class="btn btn-ghost" onclick="selectAllVisibleCandidates()">☑️ 全选当前</button>
-            <button class="btn btn-ghost" onclick="clearCandidateSelection()">🧹 清空选择</button>
-            <button class="btn btn-ghost" onclick="applyBatchCandidateState('ready')">⬆️ 批量直推</button>
-            <button class="btn btn-ghost" onclick="applyBatchCandidateState('watch')">👀 批量观察</button>
-            <button class="btn btn-ghost" onclick="applyBatchCandidateState('review')">🛠 批量复核</button>
-            <button class="btn btn-ghost" onclick="generateSelectedDeepSeekCards()">批量生成选中词卡</button>
-            <button class="btn btn-ghost" onclick="openLibraryCleanupModal()">AI 清洗历史种子数据并删除不合适词</button>
-            <button class="btn btn-ghost" onclick="applyBatchCandidateState('')">↩️ 清除覆盖</button>
-            <label class="tag-check candidate-blocked-toggle"><input type="checkbox" id="showBlockedCandidates" onchange="setShowBlockedCandidates(this.checked)"><span>显示不建议词</span></label>
-          </div>
-        </div>
-      </div>
-      <div class="published-grid" id="candidateGrid"></div>
-      <div class="empty-state" id="candidateEmpty" style="display:none">
-        <div class="empty-icon">🗂</div>
-        <div class="empty-title">当前没有可看的候选词</div>
-        <div class="empty-desc">可以先从每日热门、AI 候选生成或已发布延展里继续积累候选词</div>
       </div>
     </div>
     <div class="page page-published" id="page-published">
