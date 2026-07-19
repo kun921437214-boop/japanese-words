@@ -23,7 +23,8 @@ import {
   readJsonBody as readLimitedJsonBody,
   unauthorizedResponse
 } from '../shared/api-security.mjs';
-import { mergeAutomatedWorkflowUpdate, prepareWorkflowMutation } from '../shared/workflow-mutation.mjs';
+import { mergeAutomatedWorkflowUpdate } from '../shared/workflow-mutation.mjs';
+import { commitWorkflowMutation } from '../shared/workflow-coordinator.mjs';
 const PROMPT_VERSION_BY_ACTION = {
   stable_today: 'candidate-v3',
   wild_ideas: 'candidate-v3',
@@ -950,15 +951,14 @@ async function generateCardsAndSave(origin, workflow, env, key, requestId = '') 
   const cardResult = await generateCards(origin, workflow, authorization);
   const storedAfterCards = cleanStoredWorkflow(await env.FAVORITES.get(key, 'json'));
   const mergedWorkflow = mergeAutomatedWorkflowUpdate(storedAfterCards, cardResult.workflow);
-  const mutation = prepareWorkflowMutation(storedAfterCards, mergedWorkflow, {
+  const mutation = await commitWorkflowMutation(env, key, mergedWorkflow, {
     operationId: `${requestId || crypto.randomUUID()}:cards`,
     expectedRevision: null,
     action: 'daily-refresh.cards',
     actor: 'scheduled-worker',
     target: storedAfterCards.todaySnapshot?.dateKey || '',
     summary: `生成 ${cardResult.generatedCards} 张词卡`
-  });
-  if (!mutation.duplicate) await env.FAVORITES.put(key, JSON.stringify(mutation.workflow));
+  }, { strategy: 'automated' });
   return cardResult.generatedCards;
 }
 
@@ -1206,14 +1206,14 @@ async function runDailyRefreshJob({ origin, env, key, today, options = {}, reque
       ...snapshot.workflow,
       updated: nowIso()
     });
-    const mutation = prepareWorkflowMutation(storedBeforeSave, finalCandidateWorkflow, {
+    const mutation = await commitWorkflowMutation(env, key, finalCandidateWorkflow, {
       operationId: requestId || crypto.randomUUID(),
       expectedRevision: null,
       action: 'daily-refresh.generate',
       actor: 'scheduled-worker',
       target: today,
       summary: `生成 ${safeArray(finalCandidateWorkflow.todaySnapshot?.words).length} 个今日推荐`
-    });
+    }, { strategy: 'automated' });
     const finalWorkflow = mutation.workflow;
 
     await writeStep('save_workflow_start', {
@@ -1222,7 +1222,6 @@ async function runDailyRefreshJob({ origin, env, key, today, options = {}, reque
       todayCount: safeArray(finalWorkflow.todaySnapshot?.words).length,
       ...getNoveltyPatch()
     });
-    if (!mutation.duplicate) await env.FAVORITES.put(key, JSON.stringify(finalWorkflow));
     const todayWords = safeArray(finalWorkflow.todaySnapshot?.words);
     const cardTargets = todayWords.filter(kanji => cleanAiCard(finalWorkflow.candidatePool?.[kanji]?.aiCard || {}).cardStatus !== 'ready');
     const workflowSavedPatch = {

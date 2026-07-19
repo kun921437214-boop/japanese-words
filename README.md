@@ -62,6 +62,8 @@ npm test
 npm run backup:workflow
 npm run restore:workflow -- <backup-file>
 npm run test:workflow
+npm run test:e2e
+npm run deploy:coordinator
 npm run deploy
 npm run deploy:worker
 ```

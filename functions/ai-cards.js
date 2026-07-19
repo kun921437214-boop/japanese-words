@@ -19,9 +19,9 @@ import {
 } from '../shared/api-security.mjs';
 import {
   getWorkflowMutationMetadata,
-  inspectWorkflowMutation,
-  prepareWorkflowMutation
+  inspectWorkflowMutation
 } from '../shared/workflow-mutation.mjs';
+import { commitWorkflowMutation } from '../shared/workflow-coordinator.mjs';
 
 const MAX_WORDS_PER_REQUEST = 5;
 export const AI_CARD_PENDING_TTL_MS = 10 * 60 * 1000;
@@ -477,12 +477,11 @@ export async function onRequest({ request, env }) {
         aiBatches: mergedBatches.slice(0, 100),
         updated: nowIso()
       });
-      const mutation = prepareWorkflowMutation(storedAfterGeneration, mergedWorkflow, {
+      const mutation = await commitWorkflowMutation(env, key, mergedWorkflow, {
         ...mutationMetadata,
         expectedRevision: null
-      });
+      }, { strategy: 'automated' });
       const nextWorkflow = mutation.workflow;
-      if (!mutation.duplicate) await env.FAVORITES.put(key, JSON.stringify(nextWorkflow));
       result.workflow = nextWorkflow;
       result.summary = summarizeTodayAiCards(nextWorkflow);
     }

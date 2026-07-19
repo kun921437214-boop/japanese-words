@@ -13,6 +13,10 @@ import {
   isAiCardStalePending,
   selectMissingTodayAiCardKanjis
 } from '../frontend/ai-card-generation.mjs';
+import {
+  buildAutoAiCandidatePayload,
+  requestAutoAiCandidateBatch
+} from '../frontend/ai-candidate-service.mjs';
 import { createAppShellController } from '../frontend/app-shell.mjs';
 import {
   buildFavoriteSelectionExportText,
@@ -193,6 +197,79 @@ test('AI-card request builders preserve limits, retry flags, and account context
   assert.deepEqual(payload.context.publishedWords, ['抜け感']);
   assert.deepEqual(payload.context.accountLearningSummary, { priority: 'saves' });
   assert.equal(payload.preferences.includeHighRisk, 'review_only');
+});
+
+test('automatic candidate service builds a stable context without duplicate favorites', () => {
+  const payload = buildAutoAiCandidatePayload({
+    favorites: ['気が重い', '気が重い', '抜け感'],
+    negativeFeedback: { 基本: { lastReason: 'tooBasic' } },
+    publishedRecords: [{ id: 'published-1', word: '沼', date: '2026-07-18' }],
+    candidatePool: {
+      そわそわ: {
+        kanji: 'そわそわ',
+        candidateType: '网络口语词',
+        freshness: '长期',
+        riskLevel: 'low',
+        confidenceLevel: 'high',
+        displayBucket: 'today',
+        lastScore: 88
+      }
+    }
+  });
+  assert.equal(payload.action, 'stable_today');
+  assert.equal(payload.count, 50);
+  assert.deepEqual(payload.context.favorites, ['気が重い', '抜け感']);
+  assert.deepEqual(payload.context.publishedWords, ['沼']);
+  assert.equal(payload.context.existingCandidates[0].kanji, 'そわそわ');
+  assert.equal(payload.context.existingCandidates[0].lastScore, 88);
+});
+
+test('automatic candidate service normalizes response and preserves batch trace', async () => {
+  const payload = buildAutoAiCandidatePayload({});
+  const result = await requestAutoAiCandidateBatch({
+    request: async (_endpoint, requestOptions, meta) => {
+      assert.equal(requestOptions.method, 'POST');
+      assert.equal(meta.timeoutMs, 100000);
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          items: [{ kanji: 'そわそわ' }, {}],
+          usage: { model: 'deepseek-test', createdAt: '2026-07-19T00:00:00.000Z' },
+          summary: { trendNotes: '生活感表达增加' }
+        })
+      };
+    },
+    endpoint: '/ai-candidates',
+    payload,
+    normalizeItem: (item, batchId) => item.kanji ? { ...item, batchId } : null,
+    buildBatchItems: rawItems => rawItems,
+    buildTrace: () => ({ promptVersion: 'test-v1' }),
+    cleanBatch: batch => batch,
+    createBatchId: () => 'auto-test'
+  });
+  assert.deepEqual(result.items, [{ kanji: 'そわそわ', batchId: 'auto-test' }]);
+  assert.equal(result.batch.id, 'auto-test');
+  assert.equal(result.batch.rawCount, 2);
+  assert.equal(result.batch.rejectedCount, 1);
+  assert.equal(result.batch.promptVersion, 'test-v1');
+  assert.equal(result.batch.trendNotes, '生活感表达增加');
+});
+
+test('automatic candidate service surfaces API errors', async () => {
+  await assert.rejects(() => requestAutoAiCandidateBatch({
+    request: async () => ({
+      ok: false,
+      status: 503,
+      json: async () => ({ error: { message: '候选词服务暂时不可用' } })
+    }),
+    endpoint: '/ai-candidates',
+    payload: buildAutoAiCandidatePayload({}),
+    normalizeItem: item => item,
+    buildBatchItems: items => items,
+    buildTrace: () => ({}),
+    cleanBatch: batch => batch
+  }), /候选词服务暂时不可用/);
 });
 
 test('workflow backup builder cleans and serializes the complete workflow payload', () => {
@@ -536,7 +613,7 @@ test('manual word modal controller ignores outside actions and reports async fai
   assert.deepEqual(errors, ['submit failed']);
 });
 
-test('workflow actions controller routes shared card, feedback, candidate and preview actions', () => {
+test('workflow actions controller routes shared card and feedback actions', () => {
   const listeners = new Map();
   const root = {
     addEventListener: (type, listener) => listeners.set(type, listener),
@@ -547,17 +624,13 @@ test('workflow actions controller routes shared card, feedback, candidate and pr
   let stopped = 0;
   const controller = createWorkflowActionsController({
     root,
-    onToggleAiPreviewSelection: kanji => calls.push(['preview', kanji]),
     onGenerateTodayCard: kanji => calls.push(['today-card', kanji]),
     onGenerateDeepSeekCard: (kanji, force) => calls.push(['deepseek-card', kanji, force]),
     onToggleStatus: kanji => calls.push(['toggle-status', kanji]),
     onSelectStatus: (kanji, status) => calls.push(['select-status', kanji, status]),
     onToggleFeedback: kanji => calls.push(['toggle-feedback', kanji]),
     onNegativeFeedback: (kanji, reason) => calls.push(['feedback', kanji, reason]),
-    onCodexFeedback: (kanji, reason) => calls.push(['codex-feedback', kanji, reason]),
-    onOpenDetail: id => calls.push(['detail', id]),
-    onToggleCandidate: kanji => calls.push(['candidate-toggle', kanji]),
-    onSetCandidateState: (kanji, state) => calls.push(['candidate-state', kanji, state])
+    onCodexFeedback: (kanji, reason) => calls.push(['codex-feedback', kanji, reason])
   });
   const action = (name, dataset = {}) => {
     const element = { dataset: { workflowAction: name, ...dataset } };
@@ -566,7 +639,6 @@ test('workflow actions controller routes shared card, feedback, candidate and pr
   };
   const click = target => listeners.get('click')({ target, stopPropagation: () => { stopped += 1; } });
 
-  listeners.get('change')({ target: action('ai-preview-selection', { kanji: '抜け感' }) });
   click(action('generate-today-card', { kanji: '気が楽' }));
   click(action('generate-deepseek-card', { kanji: '沼', force: 'true' }));
   click(action('toggle-status', { kanji: '沼' }));
@@ -574,24 +646,17 @@ test('workflow actions controller routes shared card, feedback, candidate and pr
   click(action('toggle-feedback', { kanji: '沼' }));
   click(action('apply-feedback', { kanji: '沼', reason: 'tooBasic', context: 'default' }));
   click(action('apply-feedback', { kanji: 'エモい', reason: 'uninterested', context: 'codex-preview' }));
-  click(action('candidate-open-detail', { wordId: 'candidate-1' }));
-  click(action('candidate-toggle', { kanji: '沼' }));
-  click(action('candidate-state', { kanji: '沼', state: 'review' }));
 
   assert.deepEqual(calls, [
-    ['preview', '抜け感'],
     ['today-card', '気が楽'],
     ['deepseek-card', '沼', true],
     ['toggle-status', '沼'],
     ['select-status', '沼', 'pending'],
     ['toggle-feedback', '沼'],
     ['feedback', '沼', 'tooBasic'],
-    ['codex-feedback', 'エモい', 'uninterested'],
-    ['detail', 'candidate-1'],
-    ['candidate-toggle', '沼'],
-    ['candidate-state', '沼', 'review']
+    ['codex-feedback', 'エモい', 'uninterested']
   ]);
-  assert.equal(stopped, 10);
+  assert.equal(stopped, 7);
   controller.destroy();
   assert.equal(listeners.size, 0);
 });
@@ -1421,7 +1486,8 @@ test('module migration removes inline handlers and the temporary window compatib
   assert.ok(indexSource.includes('data-image-fallback="parent-text"'));
   assert.ok(appSource.includes('data-manual-word-action="submit"'));
   assert.ok(appSource.includes('data-workflow-action="generate-deepseek-card"'));
-  assert.ok(appSource.includes('data-workflow-action="candidate-state"'));
+  assert.equal(appSource.includes('data-workflow-action="candidate-state"'), false);
+  assert.equal(appSource.includes('data-workflow-action="ai-preview-selection"'), false);
   assert.ok(appSource.includes('data-modal-action="save-published-record"'));
   assert.ok(appSource.includes('data-image-fallback="fallback-src"'));
 });

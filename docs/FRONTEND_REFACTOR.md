@@ -62,8 +62,8 @@ Remove inline HTML handlers only after the corresponding page module has executa
   - validation, duplicate handling, team sync, and DeepSeek generation behavior remain in the existing application services;
   - executable tests cover action routing, outside-root isolation, async failures, cleanup, and compatibility-facade removal;
   - browser checks cover empty-word validation, cancel/close actions, and reopening without creating or syncing a word.
-- Shared workflow and AI-management actions — completed:
-  - `frontend/workflow-actions.mjs` owns delegated AI-preview selection, word-card generation, status/feedback, and internal candidate actions;
+- Shared workflow actions — completed:
+  - `frontend/workflow-actions.mjs` owns delegated word-card generation and status/feedback actions;
   - buttons and cards use escaped data attributes rather than executable inline JavaScript;
   - executable tests cover every route, propagation boundaries, outside-root isolation, async failures, and cleanup.
 - Generated modal actions — completed:
@@ -118,6 +118,13 @@ Remove inline HTML handlers only after the corresponding page module has executa
 - Executable tests cover fresh/stale pending boundaries, every action label and disabled state, retry-mode selection, duplicate/in-flight/attempt guards, missing-card filtering, request limits, and account-learning context.
 - Computer Use validation on the built site confirmed Daily Recommendations, its management and missing-card controls, Favorites, and Published Records in Chrome, with a second Safari load check. No generation, refresh, export, or cloud write was triggered.
 
+## Completed: Phase 9 — Candidate UI Retirement and Browser E2E
+
+- The unused Candidate Pool / AI Workbench interface, event routes, selection state, audit buttons, and CSS were removed. The internal `candidatePool`, `aiBatches`, `aiPreview`, automatic daily generation, scoring, and formal `aiCard` source remain compatible.
+- `frontend/ai-candidate-service.mjs` now owns the automatic candidate request context and response/batch assembly, reducing the generation responsibility left in `app.js`.
+- Playwright E2E runs against a read-only local static server with mocked API boundaries. It covers Daily Recommendations, Favorites and pending status, revision-conflict reconciliation, backup validation without restore, retired-UI absence, page errors, and the iPhone 15 Pro (393×852) / iPhone 16 Pro (402×874) layouts.
+- CI installs Chromium and runs the E2E suite after lint, typecheck, unit tests, and the production static build.
+
 ## Required Validation
 
 ```bash
@@ -125,6 +132,7 @@ npm run lint
 npm run typecheck
 npm test
 npm run build
+npm run test:e2e
 ```
 
 After every frontend update, use Computer Use to verify the affected workflow on the built site in a real browser. Also verify Daily Recommendations, Favorites, and Published Records before deployment.

@@ -101,7 +101,9 @@ test('候选池后台从用户界面下线但内部日更数据结构保持不�
   assert.equal(indexSource.includes('id="candidateGrid"'), false);
   assert.ok(appSource.includes("['today', 'favorites', 'published'].includes(normalizedTab)"));
   assert.ok(appSource.includes("(['today', 'favorites', 'published'].includes(savedTab)"));
-  assert.ok(appSource.includes("const grid = document.getElementById('candidateGrid');\n  if (!grid) return;"));
+  assert.equal(appSource.includes("document.getElementById('candidateGrid')"), false);
+  assert.equal(appSource.includes('candidateSelection'), false);
+  assert.equal(appSource.includes('renderAiWorkbench'), false);
   assert.ok(appSource.includes('candidatePool: cleanCandidatePool(candidatePool)'));
 });
 

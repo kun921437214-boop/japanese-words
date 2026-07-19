@@ -18,7 +18,7 @@ import {
   readJsonBody,
   unauthorizedResponse
 } from '../shared/api-security.mjs';
-import { prepareWorkflowMutation } from '../shared/workflow-mutation.mjs';
+import { commitWorkflowMutation } from '../shared/workflow-coordinator.mjs';
 
 const METHODS = ['GET', 'PUT', 'POST', 'OPTIONS'];
 
@@ -225,15 +225,14 @@ export async function onRequest({ request, env }) {
       }, 422);
     }
     const operationId = `codex-promote-${scope}-${expectedDateKey}`;
-    const mutation = prepareWorkflowMutation(workflow, promoted.workflow, {
+    const mutation = await commitWorkflowMutation(env, workflowKey, promoted.workflow, {
       operationId,
       expectedRevision: null,
       action: 'codex-daily.promote',
       actor: authorization.actor,
       target: expectedDateKey,
       summary: `发布 Codex 次日草稿 ${promoted.draft.wordCount} 个词`
-    });
-    if (!mutation.duplicate) await env.FAVORITES.put(workflowKey, JSON.stringify(mutation.workflow));
+    }, { strategy: 'automated' });
     await env.FAVORITES.put(draftKey, JSON.stringify(promoted.draft), { expirationTtl: CODEX_DAILY_DRAFT_TTL_SECONDS });
     return respond({
       ok: true,

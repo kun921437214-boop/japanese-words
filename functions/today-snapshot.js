@@ -12,9 +12,9 @@ import {
 } from '../shared/api-security.mjs';
 import {
   getWorkflowMutationMetadata,
-  inspectWorkflowMutation,
-  prepareWorkflowMutation
+  inspectWorkflowMutation
 } from '../shared/workflow-mutation.mjs';
+import { commitWorkflowMutation } from '../shared/workflow-coordinator.mjs';
 
 function cleanSyncCode(value) {
   return String(value || '').trim().replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 64);
@@ -127,10 +127,10 @@ export async function onRequest({ request, env }) {
   }
   const rankingHistoryWords = await readRankingHistoryWords(env, dateKey(), 30);
   const generated = generateTodaySnapshot({ ...stored, rankingHistoryWords }, { mode, createdBy: 'server' });
-  const mutation = prepareWorkflowMutation(stored, generated.workflow, {
+  const mutation = await commitWorkflowMutation(env, key, generated.workflow, {
     ...mutationMetadata,
     summary: `今日推荐 ${generated.result.todaySnapshot?.words?.length || 0} 个词`
-  });
+  }, { strategy: 'replace' });
   if (mutation.conflict) {
     return respond({
       ok: false,
@@ -139,7 +139,6 @@ export async function onRequest({ request, env }) {
     }, 409);
   }
 
-  if (!mutation.duplicate) await env.FAVORITES.put(key, JSON.stringify(mutation.workflow));
   return respond({
     ...generated.result,
     revision: mutation.workflow.revision,

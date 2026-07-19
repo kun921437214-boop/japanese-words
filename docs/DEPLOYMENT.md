@@ -19,6 +19,13 @@ Production is deployed to Cloudflare Pages:
 - Site: `https://jiyimianbao.pages.dev`
 - Pages Functions: `functions/`
 - KV binding: `FAVORITES`
+- Workflow write coordinator: `japanese-words-workflow-coordinator` Durable Object Worker
+
+Deploy the write coordinator first:
+
+```bash
+npm run deploy:coordinator
+```
 
 Deploy the Pages project:
 
@@ -38,7 +45,7 @@ Run the read-only production smoke check after deployment:
 npm run smoke:production
 ```
 
-The smoke check does not write workflow or KV data. It verifies the Pages bindings, current Daily Hot snapshot, card/image readiness, and the compact app response size.
+The smoke check does not write workflow or KV data. It verifies the Pages bindings (including the workflow coordinator), current Daily Hot snapshot, card/image readiness, and the compact app response size.
 
 ## Environment Variables
 
@@ -71,7 +78,7 @@ Important workflow fields:
 - `aiBatches`
 - `todaySnapshot`
 
-Any server write must preserve all major fields, even if the current endpoint only edits one of them.
+Any server write must preserve all major fields, even if the current endpoint only edits one of them. Workflow writes from Pages and the scheduled Worker are serialized by the external `WORKFLOW_COORDINATOR` Durable Object before the final KV write.
 
 ## Daily Refresh
 
@@ -117,4 +124,4 @@ Inspect `/favorites` and verify the response still includes `candidatePool`, `ai
 - `GET /healthz` checks whether required bindings are present without reading workflow data.
 - `npm run backup:workflow` creates a validated mode-`0600` backup and performs no write.
 - `npm run restore:workflow -- <file>` is a dry run. A write additionally requires `--apply --confirm=RESTORE` and an up-to-date workflow revision.
-- See `docs/SYSTEM_HARDENING.md` for deployment order, rollback, and the remaining Cloudflare KV concurrency limitation.
+- See `docs/SYSTEM_HARDENING.md` for deployment order, coordinator verification, and rollback.

@@ -46,6 +46,7 @@ async function fetchJson(path) {
 try {
   const health = await fetchJson('/healthz');
   if (!health.data.storageConfigured) fail('Production FAVORITES binding 未生效');
+  if (!health.data.workflowCoordinatorConfigured) fail('Production Durable Object 写入协调 binding 未生效');
   if (!health.data.imageStorageConfigured) fail('Production 图片 KV binding 未生效');
 
   const workflow = await fetchJson('/favorites?view=app&scope=today');

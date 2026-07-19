@@ -24,9 +24,9 @@ import {
 import { getCodexDraftStorageKey } from '../shared/codex-daily-draft.mjs';
 import {
   getWorkflowMutationMetadata,
-  inspectWorkflowMutation,
-  prepareWorkflowMutation
+  inspectWorkflowMutation
 } from '../shared/workflow-mutation.mjs';
+import { commitWorkflowMutation } from '../shared/workflow-coordinator.mjs';
 
 const DAILY_REFRESH_CRON = '0 16 * * *';
 const CODEX_LATE_PROMOTION_CRON = '5,25,45 * * * *';
@@ -452,17 +452,14 @@ async function refreshWorkflowPublishedData(env, key, data, options = {}) {
     publishedRecords: cleanPublishedRecords(result.records),
     updated: new Date().toISOString()
   });
-  const mutation = prepareWorkflowMutation(data, nextData, options.mutationMetadata || {
+  const mutation = await commitWorkflowMutation(env, key, nextData, options.mutationMetadata || {
     operationId: crypto.randomUUID(),
     expectedRevision: null,
     action: 'scheduled.published-refresh',
     actor: 'scheduled-worker',
     target: options.recordId || '',
     summary: `更新 ${result.summary?.updated || 0} 条发布数据`
-  });
-  if (!mutation.duplicate && !mutation.conflict) {
-    await env.FAVORITES.put(key, JSON.stringify(mutation.workflow));
-  }
+  }, { strategy: 'merge' });
   return {
     data: mutation.workflow,
     summary: result.summary,
@@ -629,11 +626,11 @@ export default {
         ...body,
         updated: new Date().toISOString()
       });
-      const mutation = prepareWorkflowMutation(current, data, getWorkflowMutationMetadata(request, body, {
+      const mutation = await commitWorkflowMutation(env, key, data, getWorkflowMutationMetadata(request, body, {
         action: 'workflow.replace',
         actor: authorization.actor,
         summary: '保存完整团队工作流'
-      }));
+      }), { strategy: 'full-save' });
       if (mutation.conflict) {
         return respond({
           ok: false,
@@ -641,7 +638,6 @@ export default {
           currentRevision: mutation.currentRevision
         }, 409);
       }
-      if (!mutation.duplicate) await env.FAVORITES.put(key, JSON.stringify(mutation.workflow));
       return respond({
         ...mutation.workflow,
         mutation: { duplicate: mutation.duplicate, operationId: mutation.event?.id || '' }
@@ -685,12 +681,12 @@ export default {
         todaySnapshotHistory: body.todaySnapshotHistory || current.todaySnapshotHistory,
         updated: new Date().toISOString()
       });
-      const mutation = prepareWorkflowMutation(current, data, getWorkflowMutationMetadata(request, body, {
+      const mutation = await commitWorkflowMutation(env, key, data, getWorkflowMutationMetadata(request, body, {
         action: `favorite.${body.action}`,
         actor: authorization.actor,
         target: word,
         summary: body.action === 'status' ? `状态更新为 ${cleanStatus(body.status)}` : ''
-      }));
+      }), { strategy: 'full-save' });
       if (mutation.conflict) {
         return respond({
           ok: false,
@@ -698,7 +694,6 @@ export default {
           currentRevision: mutation.currentRevision
         }, 409);
       }
-      if (!mutation.duplicate) await env.FAVORITES.put(key, JSON.stringify(mutation.workflow));
       return respond({
         ...mutation.workflow,
         mutation: { duplicate: mutation.duplicate, operationId: mutation.event?.id || '' }

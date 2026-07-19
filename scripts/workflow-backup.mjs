@@ -5,8 +5,9 @@ import { cleanStoredWorkflow } from '../shared/workflow-schema.mjs';
 
 const endpoint = String(process.env.WORKFLOW_ENDPOINT || '').trim();
 const token = String(process.env.ADMIN_API_TOKEN || '').trim();
-if (!endpoint || !token) {
-  throw new Error('必须显式设置 WORKFLOW_ENDPOINT 和 ADMIN_API_TOKEN');
+const publicRead = process.argv.includes('--public-read');
+if (!endpoint || (!token && !publicRead)) {
+  throw new Error('必须显式设置 WORKFLOW_ENDPOINT 和 ADMIN_API_TOKEN；公开只读环境可改用 --public-read');
 }
 
 const outputDirectory = path.resolve(process.env.WORKFLOW_BACKUP_DIR || 'exports/workflow-backups');
@@ -14,7 +15,10 @@ const controller = new AbortController();
 const timeout = setTimeout(() => controller.abort(), 30000);
 try {
   const response = await fetch(endpoint, {
-    headers: { Accept: 'application/json', Authorization: `Bearer ${token}` },
+    headers: {
+      Accept: 'application/json',
+      ...(token ? { Authorization: `Bearer ${token}` } : {})
+    },
     signal: controller.signal
   });
   const text = await response.text();
