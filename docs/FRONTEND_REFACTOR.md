@@ -77,6 +77,16 @@ Remove inline HTML handlers only after the corresponding page module has executa
 - Desktop and 390px mobile browser checks cover primary navigation, automatic mobile-sidebar close, Favorites, Published Records, manual-word and published-record modals, empty-form validation, settings, image assets, and horizontal overflow.
 - Generation, Cloudflare sync, KV, API routes, localStorage keys, and workflow mutation behavior remain unchanged.
 
+## Completed: Phase 5 — Published Record Share Parsing
+
+- `frontend/published-record-parser.mjs` owns share-text URL extraction, count parsing, publish-time parsing, metadata cleanup, and the published-record autofill payload.
+- Browser and server paths now reuse the same strict Xiaohongshu URL validation: HTTPS only, no embedded credentials or unexpected ports, and only real `xiaohongshu.com` / `xhslink.com` hosts or their subdomains.
+- The published-record share field is now multiline so browser paste behavior cannot remove line breaks and join a valid URL to the following date or metrics.
+- Author, date, URL, content-type, and metric lines are excluded from the note description; only actual descriptive text is retained.
+- The static build copies every shared browser dependency and fails when any relative JavaScript module import is missing from `dist`.
+- Executable tests cover valid share parsing, lookalike-domain and insecure-URL rejection, count/date helpers, multiline markup, and deployment-module integrity.
+- Computer Use browser validation caught and verified both deployment-module loading and multiline paste behavior. The final check rejected a lookalike domain and correctly filled a valid link, title, author, publish time, description, and all five metrics without saving a record.
+
 ## Required Validation
 
 ```bash
@@ -86,4 +96,4 @@ npm test
 npm run build
 ```
 
-Also verify Daily Recommendations, Favorites, and Published Records in a real browser before deployment.
+After every frontend update, use Computer Use to verify the affected workflow on the built site in a real browser. Also verify Daily Recommendations, Favorites, and Published Records before deployment.

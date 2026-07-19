@@ -106,6 +106,7 @@ At minimum, check:
 6. Cloudflare workflow data does not lose `candidatePool`, `aiBatches`, `todaySnapshot`, or `aiCard`.
 7. `npm run build:words` still succeeds.
 8. `npm run test:workflow` still succeeds when schema logic is touched.
+9. After every frontend update, use the Computer Use capability to open the built site in a real browser and verify the affected workflow visually and interactively; automated tests alone are not sufficient.
 
 ## Completion Standard
 

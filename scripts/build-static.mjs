@@ -7,6 +7,7 @@ const output = path.join(root, 'dist');
 const files = ['index.html', 'styles.css', 'app.js', 'words-data.js', 'sync-config.js', '_headers'];
 const directories = ['assets'];
 const moduleDirectories = ['frontend'];
+const sharedModules = ['workflow-schema.mjs', 'published-refresh.mjs'];
 const publicAssetExtensions = new Set(['.avif', '.gif', '.jpeg', '.jpg', '.png', '.svg', '.webp']);
 
 fs.rmSync(output, { recursive: true, force: true });
@@ -30,12 +31,35 @@ for (const directory of moduleDirectories) {
   fs.cpSync(path.join(root, directory), path.join(output, directory), { recursive: true });
 }
 fs.mkdirSync(path.join(output, 'shared'), { recursive: true });
-fs.copyFileSync(
-  path.join(root, 'shared', 'workflow-schema.mjs'),
-  path.join(output, 'shared', 'workflow-schema.mjs')
-);
+for (const moduleName of sharedModules) {
+  fs.copyFileSync(
+    path.join(root, 'shared', moduleName),
+    path.join(output, 'shared', moduleName)
+  );
+}
 fs.mkdirSync(path.join(output, 'data'), { recursive: true });
 fs.copyFileSync(path.join(root, 'data', 'library-review.json'), path.join(output, 'data', 'library-review.json'));
+
+function listJavaScriptFiles(directory) {
+  return fs.readdirSync(directory, { withFileTypes: true }).flatMap(entry => {
+    const absolutePath = path.join(directory, entry.name);
+    if (entry.isDirectory()) return listJavaScriptFiles(absolutePath);
+    return /\.(?:m?js)$/.test(entry.name) ? [absolutePath] : [];
+  });
+}
+
+function assertLocalModuleImportsExist(filePath) {
+  const source = fs.readFileSync(filePath, 'utf8');
+  const importPattern = /(?:import|export)\s+(?:[\s\S]*?\s+from\s+)?['"](\.{1,2}\/[^'"]+)['"]/g;
+  for (const match of source.matchAll(importPattern)) {
+    const targetPath = path.resolve(path.dirname(filePath), match[1]);
+    if (!fs.existsSync(targetPath)) {
+      throw new Error(`Missing deployment module: ${path.relative(output, targetPath)} (imported by ${path.relative(output, filePath)})`);
+    }
+  }
+}
+
+for (const filePath of listJavaScriptFiles(output)) assertLocalModuleImportsExist(filePath);
 
 const forbidden = ['.env', '.git', 'docs', 'scripts', 'worker', 'account-intelligence', 'deleted-words-backup.json'];
 for (const item of forbidden) {

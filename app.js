@@ -18,6 +18,7 @@ import {
 import { createImageFallbackController } from './frontend/image-fallback.mjs';
 import { createManualWordModalController } from './frontend/manual-word-modal.mjs';
 import { createModalActionsController } from './frontend/modal-actions.mjs';
+import { parseXiaohongshuSharePayload } from './frontend/published-record-parser.mjs';
 import {
   buildPublishedPageModel,
   createPublishedPageController,
@@ -9071,7 +9072,7 @@ function openPublishedRecordModal(recordId = '', presetKanji = '') {
         <div class="form-grid two-col">
           <label class="form-field"><span>关联词</span><input class="form-input" id="recordWord" value="${escapeHTML(initialWord)}" placeholder="例如：尊い"></label>
           <label class="form-field"><span>内容类型</span><select class="form-input" id="recordContentType">${CONTENT_TYPE_OPTIONS.map(option => `<option value="${escapeHTML(option)}" ${(record?.contentType || '图文') === option ? 'selected' : ''}>${escapeHTML(option)}</option>`).join('')}</select></label>
-          <label class="form-field"><span>小红书链接 / 分享文案</span><div class="form-inline-actions"><input class="form-input" id="recordLink" value="${escapeHTML(record?.link || '')}" placeholder="粘贴分享链接或整段分享文案"><button class="card-action-btn ghost" type="button" data-modal-action="autofill-published-record">自动识别</button></div></label>
+          <label class="form-field full"><span>小红书链接 / 分享文案</span><div class="form-inline-actions"><textarea class="form-input published-share-input" id="recordLink" rows="3" placeholder="粘贴分享链接或整段分享文案">${escapeHTML(record?.link || '')}</textarea><button class="card-action-btn ghost" type="button" data-modal-action="autofill-published-record">自动识别</button></div></label>
           <label class="form-field"><span>发布时间</span><input class="form-input" id="recordPublishedAt" type="datetime-local" value="${record?.publishedAt ? record.publishedAt.slice(0, 16) : ''}"></label>
           <label class="form-field full"><span>笔记标题</span><input class="form-input" id="recordTitle" value="${escapeHTML(record?.title || '')}" placeholder="小红书标题"></label>
           <label class="form-field full"><span>笔记描述</span><textarea class="form-input form-textarea" id="recordDescription" placeholder="笔记描述 / 备注文案">${escapeHTML(record?.description || '')}</textarea></label>
@@ -9123,85 +9124,6 @@ function readRecordFormStats(prefix = 'latest') {
     shares: document.getElementById(`${prefix}Shares`)?.value,
     views: document.getElementById(`${prefix}Views`)?.value
   });
-}
-
-function extractFirstUrl(text) {
-  const match = String(text || '').match(/https?:\/\/[^\s]+/i);
-  return match ? match[0].replace(/[）)\]}＞>，,。.!！?？]+$/, '') : '';
-}
-
-function normalizeXiaohongshuUrl(url) {
-  const cleanUrl = String(url || '').trim();
-  if (!cleanUrl) return '';
-  try {
-    const parsed = new URL(cleanUrl);
-    if (parsed.hostname.includes('xhslink.com') || parsed.hostname.includes('xiaohongshu.com')) return parsed.toString();
-  } catch (error) {
-    return '';
-  }
-  return '';
-}
-
-function parseCountLikeValue(value) {
-  const raw = String(value || '').trim().replace(/,/g, '');
-  if (!raw) return 0;
-  const match = raw.match(/(\d+(?:\.\d+)?)(万|w|W|k|K)?/);
-  if (!match) return toInt(raw, 0);
-  const number = Number.parseFloat(match[1]);
-  if (!Number.isFinite(number)) return 0;
-  const unit = match[2];
-  if (unit === '万' || unit === 'w' || unit === 'W') return Math.round(number * 10000);
-  if (unit === 'k' || unit === 'K') return Math.round(number * 1000);
-  return Math.round(number);
-}
-
-function extractShareMetric(text, labels = []) {
-  for (const label of labels) {
-    const pattern = new RegExp(`${label}\\s*[:：]?\\s*([\\d.,]+(?:万|w|W|k|K)?)`, 'i');
-    const match = String(text || '').match(pattern);
-    if (match?.[1]) {
-      const parsed = parseCountLikeValue(match[1]);
-      if (parsed > 0) return parsed;
-    }
-  }
-  return 0;
-}
-
-function extractPublishedAtFromShareText(text) {
-  const rawText = String(text || '');
-  const dateMatch = rawText.match(/(20\d{2})[./-](\d{1,2})[./-](\d{1,2})(?:\s+(\d{1,2}):(\d{2}))?/);
-  if (!dateMatch) return '';
-  const [, year, month, day, hour = '00', minute = '00'] = dateMatch;
-  return `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}T${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}`;
-}
-
-function parseXiaohongshuSharePayload(text) {
-  const rawText = String(text || '').trim();
-  const normalizedLines = rawText.split(/\n+/).map(line => line.trim()).filter(Boolean);
-  const url = normalizeXiaohongshuUrl(extractFirstUrl(rawText));
-  const titleLine = normalizedLines.find(line => !line.includes('http') && !/^复制/.test(line) && !/^打开小红书/.test(line) && !line.startsWith('😆') && line.length <= 60 && !/[赞藏评分享浏览曝光]\s*[:：]?\s*\d/.test(line)) || '';
-  const authorMatch = rawText.match(/@([^\s：:，,]+)/);
-  const typeMatch = rawText.match(/(图文|视频|笔记)/);
-  const noteIdMatch = url.match(/(?:explore|discovery\/item)\/([a-zA-Z0-9]+)/i);
-  const stats = cleanPublishedStats({
-    likes: extractShareMetric(rawText, ['点赞', '赞']),
-    favorites: extractShareMetric(rawText, ['收藏']),
-    comments: extractShareMetric(rawText, ['评论']),
-    shares: extractShareMetric(rawText, ['分享', '转发']),
-    views: extractShareMetric(rawText, ['浏览', '曝光', '阅读'])
-  });
-  const publishedAt = extractPublishedAtFromShareText(rawText);
-  const description = normalizedLines.filter(line => line !== titleLine && !line.includes(url) && !/[赞藏评分享浏览曝光]\s*[:：]?\s*\d/.test(line)).join('\n');
-  return {
-    url,
-    noteId: noteIdMatch ? noteIdMatch[1] : '',
-    title: titleLine,
-    description,
-    authorName: authorMatch ? authorMatch[1] : '',
-    contentType: typeMatch ? (typeMatch[1] === '视频' ? '视频' : '图文') : '',
-    publishedAt,
-    latestStats: stats
-  };
 }
 
 function autofillPublishedRecordFromLink() {

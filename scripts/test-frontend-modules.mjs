@@ -21,6 +21,12 @@ import { createImageFallbackController } from '../frontend/image-fallback.mjs';
 import { createManualWordModalController } from '../frontend/manual-word-modal.mjs';
 import { createModalActionsController } from '../frontend/modal-actions.mjs';
 import {
+  extractFirstUrl,
+  extractPublishedAtFromShareText,
+  parseCountLikeValue,
+  parseXiaohongshuSharePayload
+} from '../frontend/published-record-parser.mjs';
+import {
   buildPublishedPageModel,
   createPublishedPageController,
   getPublishedAutoRefreshSummary,
@@ -487,6 +493,46 @@ test('image fallback controller handles source, text, class and removal fallback
   assert.equal(removeImage.removed, true);
   controller.destroy();
   assert.equal(errorListener, null);
+});
+
+test('published record parser extracts a safe Xiaohongshu share payload', () => {
+  const parsed = parseXiaohongshuSharePayload(`
+这个日语词太适合形容下班后的我
+@记忆面包 图文
+https://www.xiaohongshu.com/explore/abc123，
+2026/07/19 18:30
+点赞 1.2万 收藏 345 评论 67 分享 8 浏览 2.5w
+正文里补充一点使用语境
+  `);
+
+  assert.equal(parsed.url, 'https://www.xiaohongshu.com/explore/abc123');
+  assert.equal(parsed.noteId, 'abc123');
+  assert.equal(parsed.title, '这个日语词太适合形容下班后的我');
+  assert.equal(parsed.authorName, '记忆面包');
+  assert.equal(parsed.contentType, '图文');
+  assert.equal(parsed.publishedAt, '2026-07-19T18:30');
+  assert.deepEqual(parsed.latestStats, {
+    likes: 12000,
+    favorites: 345,
+    comments: 67,
+    shares: 8,
+    views: 25000
+  });
+  assert.equal(parsed.description, '正文里补充一点使用语境');
+  assert.doesNotMatch(parsed.description, /https?:\/\//);
+});
+
+test('published record parser rejects lookalike and insecure URLs', () => {
+  const lookalike = parseXiaohongshuSharePayload('测试标题\nhttps://xiaohongshu.com.evil.example/explore/abc');
+  const insecure = parseXiaohongshuSharePayload('测试标题\nhttp://www.xiaohongshu.com/explore/abc');
+
+  assert.equal(lookalike.url, '');
+  assert.equal(lookalike.noteId, '');
+  assert.equal(insecure.url, '');
+  assert.equal(extractFirstUrl('链接：https://xhslink.com/a/abc。'), 'https://xhslink.com/a/abc');
+  assert.equal(parseCountLikeValue('1.5k'), 1500);
+  assert.equal(parseCountLikeValue('not-a-number'), 0);
+  assert.equal(extractPublishedAtFromShareText('发布于 2026-7-9'), '2026-07-09T00:00');
 });
 
 test('favorite conflict reconciles remote state before sending a duplicate mutation', async () => {
@@ -1119,4 +1165,11 @@ test('module migration removes inline handlers and the temporary window compatib
   assert.ok(appSource.includes('data-workflow-action="candidate-state"'));
   assert.ok(appSource.includes('data-modal-action="save-published-record"'));
   assert.ok(appSource.includes('data-image-fallback="fallback-src"'));
+});
+
+test('published record share input preserves multiline text for safe parsing', () => {
+  const appSource = fs.readFileSync(new URL('../app.js', import.meta.url), 'utf8');
+  assert.ok(appSource.includes("from './frontend/published-record-parser.mjs'"));
+  assert.match(appSource, /<textarea[^>]+id="recordLink"[^>]*>/);
+  assert.doesNotMatch(appSource, /<input[^>]+id="recordLink"[^>]*>/);
 });

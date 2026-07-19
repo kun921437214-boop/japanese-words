@@ -3422,6 +3422,11 @@ body::before {
   flex:1;
 }
 
+.published-share-input {
+  min-height:72px;
+  resize:vertical;
+}
+
 .form-field.full {
   grid-column:1 / -1;
 }
