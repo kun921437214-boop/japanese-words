@@ -3531,7 +3531,7 @@ async function loadCloudWorkflow(options = false) {
     refreshCurrentGrid();
 
     if (showMessages) {
-      updateSyncStatus(`团队工作流已同步：今日候选池 ${Object.keys(cleanCandidatePool(candidatePool)).length} 个，选题池 ${getFavoriteWords().length} 个词，已发布 ${getPublishedDisplayItems().length} 条`, '#4caf50');
+      updateSyncStatus(`团队工作流已同步：选题池 ${getFavoriteWords().length} 个词，已发布 ${getPublishedDisplayItems().length} 条`, '#4caf50');
       showToast('工作流已同步');
     }
     return true;
@@ -8708,12 +8708,13 @@ function renderCandidateCard(word) {
 }
 
 function renderCandidatePool() {
+  const grid = document.getElementById('candidateGrid');
+  if (!grid) return;
   const allWords = getCandidatePoolWords();
   pruneCandidateSelection();
   populateSourceFilter('candidate', allWords);
   const visibleWords = getVisibleCandidatePoolWords();
   const count = document.getElementById('candidateCount');
-  const grid = document.getElementById('candidateGrid');
   const empty = document.getElementById('candidateEmpty');
   const stats = document.getElementById('candidateStats');
   const selectionCopy = document.getElementById('candidateSelectionCopy');
@@ -8768,7 +8769,6 @@ function renderCandidatePool() {
     }).join('');
     if (count) count.textContent = `候选池共 ${allWords.length} 个词，当前显示 ${visibleWords.length} 个`;
   }
-  updateCandidateBadge();
 }
 
 function updateTodayBadge() {
@@ -8799,18 +8799,6 @@ function updateFavBadge() {
   }
 }
 
-function updateCandidateBadge() {
-  const badge = document.getElementById('candidateBadge');
-  if (!badge) return;
-  const count = getCandidatePoolWords().filter(word => word.reviewState === 'ready').length;
-  if (count > 0) {
-    badge.style.display = '';
-    badge.textContent = count;
-  } else {
-    badge.style.display = 'none';
-  }
-}
-
 function updatePublishedBadge() {
   const badge = document.getElementById('publishedBadge');
   if (!badge) return;
@@ -8827,7 +8815,6 @@ function updateAllBadges() {
   updateTodayBadge();
   updateHistoryBadge();
   updateFavBadge();
-  updateCandidateBadge();
   updatePublishedBadge();
 }
 
@@ -9480,7 +9467,7 @@ function ensureTodayGridVisible(force = false) {
 
 function switchTab(tab) {
   const normalizedTab = tab === 'history' ? 'today' : tab;
-  const targetTab = ['today', 'favorites', 'candidate', 'published'].includes(normalizedTab) ? normalizedTab : 'today';
+  const targetTab = ['today', 'favorites', 'published'].includes(normalizedTab) ? normalizedTab : 'today';
   document.body.dataset.activeTab = targetTab;
   document.querySelectorAll('.nav-item').forEach(element => element.classList.toggle('active', element.dataset.tab === targetTab));
   document.querySelectorAll('.page').forEach(element => element.classList.toggle('active', element.id === `page-${targetTab}`));
@@ -9489,7 +9476,6 @@ function switchTab(tab) {
     renderToday();
   }
   else if (targetTab === 'favorites') renderFavorites();
-  else if (targetTab === 'candidate') renderCandidatePool();
   else if (targetTab === 'published') renderPublished();
   document.getElementById('sidebar')?.classList.remove('open');
 }
@@ -9498,7 +9484,6 @@ function refreshCurrentGrid() {
   const activeTab = document.querySelector('.nav-item.active')?.dataset.tab;
   if (activeTab === 'today') renderToday();
   else if (activeTab === 'favorites') renderFavorites();
-  else if (activeTab === 'candidate') renderCandidatePool();
   else if (activeTab === 'published') renderPublished();
 }
 
@@ -9683,7 +9668,6 @@ function openSettingsModal() {
       `最近云端同步：${lastCloudSyncAt ? lastCloudSyncAt.slice(0, 19).replace('T', ' ') : '尚未同步'}`,
       `本地缓存：${lastLocalCacheAt ? lastLocalCacheAt.slice(0, 19).replace('T', ' ') : '暂无缓存'}`,
       `团队选题池：${getFavoriteWords().length} 个`,
-      `候选库：${Object.keys(cleanCandidatePool(candidatePool)).length} 个`,
       `已发布记录：${getPublishedDisplayItems().length} 条`,
       `今日快照版本：${snapshot.dateKey || '未生成'} / v${snapshot.version || 0}`,
       cloudWorkflowFailed ? '云端同步失败，当前显示的是本地缓存，可能与队友不一致。' : '云端同步正常。'
@@ -9779,7 +9763,7 @@ async function init() {
   const savedTab = localStorage.getItem(ACTIVE_TAB_STORAGE_KEY);
   const initialTab = savedTab === 'history'
     ? 'today'
-    : (['today', 'favorites', 'candidate', 'published'].includes(savedTab) ? savedTab : 'today');
+    : (['today', 'favorites', 'published'].includes(savedTab) ? savedTab : 'today');
   try {
     switchTab(initialTab);
   } catch (error) {

@@ -91,6 +91,19 @@ test('移动端本地缓存超额不会把成功的云端同步误判为失败',
   assert.equal((workflowCacheSource.match(/localStorage\.setItem\(/g) || []).length, 1);
 });
 
+test('候选池后台从用户界面下线但内部日更数据结构保持不变', () => {
+  const indexSource = fs.readFileSync(new URL('../index.html', import.meta.url), 'utf8');
+  const appSource = fs.readFileSync(new URL('../app.js', import.meta.url), 'utf8');
+  assert.equal(indexSource.includes('data-tab="candidate"'), false);
+  assert.equal(indexSource.includes('id="page-candidate"'), false);
+  assert.equal(indexSource.includes('候选池后台'), false);
+  assert.equal(indexSource.includes('id="candidateGrid"'), false);
+  assert.ok(appSource.includes("['today', 'favorites', 'published'].includes(normalizedTab)"));
+  assert.ok(appSource.includes("(['today', 'favorites', 'published'].includes(savedTab)"));
+  assert.ok(appSource.includes("const grid = document.getElementById('candidateGrid');\n  if (!grid) return;"));
+  assert.ok(appSource.includes('candidatePool: cleanCandidatePool(candidatePool)'));
+});
+
 test('Codex 明日预览保留团队操作和完整词卡详情', () => {
   const appSource = fs.readFileSync(new URL('../app.js', import.meta.url), 'utf8');
   assert.ok(appSource.includes('function toggleCodexDraftFavorite(kanji)'));
