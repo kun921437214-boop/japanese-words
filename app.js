@@ -3643,6 +3643,51 @@ function isRetryableWorkflowReadError(error) {
   return !status || status === 408 || status === 429 || status >= 500;
 }
 
+function isRetryableWorkflowMutationError(error) {
+  if (error?.code === 'REQUEST_ABORTED') return false;
+  if (error?.status === 409 || error?.code === 'REQUEST_TIMEOUT') return true;
+  const status = Number(error?.status) || 0;
+  return !status || status === 408 || status === 429 || status >= 500;
+}
+
+async function requestFavoriteCommand(kanji, action, status = '') {
+  const endpoint = getFavoriteCommandEndpoint(kanji);
+  if (!endpoint) throw new Error('收藏同步接口还没有配置');
+  ensureFavoriteWordsHaveCandidateEntries();
+  const payload = buildFavoriteCommandPayload(kanji, action, status);
+  const operationId = createOperationId(`favorite-${action}`);
+  let lastError = null;
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      const response = await apiFetch(endpoint, {
+        method: 'POST',
+        headers: {
+          Accept: 'application/json',
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify(payload)
+      }, {
+        workflowMutation: true,
+        operationId,
+        operationPrefix: `favorite-${action}`,
+        timeoutMs: 30000
+      });
+      const responseData = await response.json().catch(() => ({}));
+      if (!response.ok) throw createApiError(responseData, response.status);
+      return responseData;
+    } catch (error) {
+      lastError = error;
+      if (attempt > 0 || !isRetryableWorkflowMutationError(error)) break;
+      const reconciled = await loadCloudWorkflow({ mode: 'remote-first', showMessages: false });
+      if (error.status === 409 && !reconciled) break;
+      await new Promise(resolve => {
+        setTimeout(resolve, 250);
+      });
+    }
+  }
+  throw lastError || new Error('收藏同步失败');
+}
+
 async function fetchWorkflowView(endpoint, loadEpoch) {
   let lastError = null;
   for (let attempt = 0; attempt < 2; attempt += 1) {
@@ -3856,56 +3901,32 @@ async function refreshPublishedMetrics(recordId = '') {
 }
 
 async function syncFavoriteChange(kanji, action) {
-  const endpoint = getFavoriteCommandEndpoint(kanji);
-  if (!endpoint) return false;
   try {
-    ensureFavoriteWordsHaveCandidateEntries();
-    const response = await apiFetch(endpoint, {
-      method: 'POST',
-      headers: {
-        Accept: 'application/json',
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify(buildFavoriteCommandPayload(kanji, action))
-    }, { workflowMutation: true, operationPrefix: `favorite-${action}` });
-    const responseData = await response.json().catch(() => ({}));
-    if (!response.ok) throw createApiError(responseData, response.status);
+    const responseData = await requestFavoriteCommand(kanji, action);
     applyFavoriteCommandResponse(responseData, kanji);
     updateAllBadges();
     refreshCurrentGrid();
     return true;
   } catch (error) {
     console.warn('收藏同步失败', error);
-    if (error.status === 409) await loadCloudWorkflow({ mode: 'remote-first', showMessages: false });
-    cloudWorkflowFailed = true;
+    const reconciled = await loadCloudWorkflow({ mode: 'remote-first', showMessages: false });
+    cloudWorkflowFailed = !reconciled;
     showToast('团队同步失败，本次修改未保存到团队后台');
     return false;
   }
 }
 
 async function syncFavoriteStatus(kanji, status) {
-  const endpoint = getFavoriteCommandEndpoint(kanji);
-  if (!endpoint) return false;
   try {
-    ensureFavoriteWordsHaveCandidateEntries();
-    const response = await apiFetch(endpoint, {
-      method: 'POST',
-      headers: {
-        Accept: 'application/json',
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify(buildFavoriteCommandPayload(kanji, 'status', status))
-    }, { workflowMutation: true, operationPrefix: 'favorite-status' });
-    const responseData = await response.json().catch(() => ({}));
-    if (!response.ok) throw createApiError(responseData, response.status);
+    const responseData = await requestFavoriteCommand(kanji, 'status', status);
     applyFavoriteCommandResponse(responseData, kanji);
     updateAllBadges();
     refreshCurrentGrid();
     return true;
   } catch (error) {
     console.warn('状态同步失败', error);
-    if (error.status === 409) await loadCloudWorkflow({ mode: 'remote-first', showMessages: false });
-    cloudWorkflowFailed = true;
+    const reconciled = await loadCloudWorkflow({ mode: 'remote-first', showMessages: false });
+    cloudWorkflowFailed = !reconciled;
     showToast('团队同步失败，本次修改未保存到团队后台');
     return false;
   }
@@ -7435,6 +7456,12 @@ async function submitManualWord() {
 
 async function toggleFavorite(kanji, forceState = null) {
   return runUiOperation(`favorite:${kanji}`, async () => {
+    const previousFavorites = [...favorites];
+    const previousStatuses = { ...favoriteStatuses };
+    const previousTodaySnapshot = cleanTodaySnapshot(todaySnapshot);
+    const previousCandidate = candidatePool[kanji]
+      ? cleanCandidatePoolEntry(kanji, candidatePool[kanji])
+      : null;
     const exists = favorites.includes(kanji);
     const shouldFavorite = forceState === null ? !exists : Boolean(forceState);
     let action = '';
@@ -7456,7 +7483,20 @@ async function toggleFavorite(kanji, forceState = null) {
     updateAllBadges();
     refreshCurrentGrid();
     const synced = await syncFavoriteChange(kanji, action);
-    if (!synced) return false;
+    if (!synced) {
+      if (cloudWorkflowFailed) {
+        favorites = previousFavorites;
+        favoriteStatuses = previousStatuses;
+        todaySnapshot = previousTodaySnapshot;
+        if (previousCandidate) candidatePool[kanji] = previousCandidate;
+        else delete candidatePool[kanji];
+        hydrateTodayWordsFromSnapshot();
+        saveLocalWorkflow();
+        updateAllBadges();
+        refreshCurrentGrid();
+      }
+      return false;
+    }
     showToast(action === 'add' ? '已加入选题池' : '已从选题池移除');
     if (action === 'add' && cleanAiCard(entry?.aiCard || {})?.cardStatus !== 'ready') {
       void generateDeepSeekWordCards([kanji], { force: false, silent: true }).then(savedCount => {
