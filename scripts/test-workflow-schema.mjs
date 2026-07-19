@@ -110,14 +110,22 @@ test('收藏页面显示已收藏并请求精简 app 工作流', () => {
   assert.ok(appSource.includes("none: '已收藏'"));
   assert.ok(indexSource.includes('<option value="none">已收藏</option>'));
   assert.ok(appSource.includes("url.searchParams.set('view', 'app');"));
-  assert.ok(appSource.includes("url.searchParams.set('historyDate', currentDailyHotDateKey);"));
+  assert.ok(appSource.includes("url.searchParams.set('scope', scope);"));
+  assert.ok(appSource.includes("if (historyDate) url.searchParams.set('historyDate', historyDate);"));
   assert.equal(appSource.includes("none: '无'"), false);
 });
 
 test('app 工作流只返回页面所需候选且不改变云端完整候选池', () => {
   const candidatePool = {
     收藏词: { kanji: '收藏词', kana: 'しゅうぞうし', meaning: '收藏测试词', sourceType: 'manual_keep' },
-    今日词: { kanji: '今日词', kana: 'きょうし', meaning: '今日测试词', sourceType: 'deepseek_generated' },
+    今日词: {
+      kanji: '今日词',
+      kana: 'きょうし',
+      meaning: '今日测试词',
+      sourceType: 'deepseek_generated',
+      sourceText: '不应发送到 app view 的生成原文',
+      aiCardHistory: [{ cardStatus: 'ready', summary: '旧词卡' }]
+    },
     发布词: { kanji: '发布词', kana: 'はっぴょうし', meaning: '发布测试词', sourceType: 'deepseek_reviewed' },
     历史词: { kanji: '历史词', kana: 'れきしし', meaning: '历史测试词', sourceType: 'deepseek_generated' },
     无关词: { kanji: '无关词', kana: 'むかんし', meaning: '无关测试词', sourceType: 'deepseek_generated' }
@@ -149,8 +157,42 @@ test('app 工作流只返回页面所需候选且不改变云端完整候选池'
   assert.deepEqual(appView.aiBatches, []);
   const historyView = buildAppWorkflowView(fullWorkflow, { historyDate: '2026-07-18' });
   assert.deepEqual(Object.keys(historyView.candidatePool).sort(), ['今日词', '发布词', '历史词', '收藏词'].sort());
+  const todayScope = buildAppWorkflowView(fullWorkflow, { scope: 'today' });
+  assert.deepEqual(Object.keys(todayScope.candidatePool), ['今日词']);
+  assert.equal(todayScope.appView.scope, 'today');
+  assert.equal(todayScope.appView.partialCandidatePool, true);
+  assert.deepEqual(todayScope.candidatePool['今日词'].aiCardHistory, []);
+  assert.equal(todayScope.candidatePool['今日词'].sourceText, '');
+  const historyScope = buildAppWorkflowView(fullWorkflow, { scope: 'today', historyDate: '2026-07-18' });
+  assert.deepEqual(Object.keys(historyScope.candidatePool), ['历史词']);
+  const favoritesScope = buildAppWorkflowView(fullWorkflow, { scope: 'favorites' });
+  assert.deepEqual(Object.keys(favoritesScope.candidatePool), ['收藏词']);
+  const publishedScope = buildAppWorkflowView(fullWorkflow, { scope: 'published' });
+  assert.deepEqual(Object.keys(publishedScope.candidatePool), ['发布词']);
+  const savedFromCompactCandidate = applyFavoriteAction(fullWorkflow, {
+    action: 'status',
+    word: '今日词',
+    status: 'pending',
+    candidatePool: todayScope.candidatePool
+  });
+  assert.equal(savedFromCompactCandidate.candidatePool['今日词'].sourceText, '不应发送到 app view 的生成原文');
+  assert.equal(savedFromCompactCandidate.candidatePool['今日词'].aiCardHistory.length, 1);
   assert.equal(Object.keys(candidatePool).length, 5);
   assert.ok(candidatePool['无关词']);
+  assert.equal(candidatePool['今日词'].sourceText, '不应发送到 app view 的生成原文');
+  assert.equal(candidatePool['今日词'].aiCardHistory.length, 1);
+});
+
+test('前端按页面加载候选并在收藏数据到齐前禁止渲染', () => {
+  const appSource = fs.readFileSync(new URL('../app.js', import.meta.url), 'utf8');
+  assert.ok(appSource.includes('const loadedWorkflowScopes = new Set();'));
+  assert.ok(appSource.includes('function ensureWorkflowScopeLoaded(scope, options = {})'));
+  assert.ok(appSource.includes("if (!isWorkflowScopeLoaded('favorites'))"));
+  assert.ok(appSource.includes("renderWorkflowScopeState('favorites');"));
+  assert.ok(appSource.includes("scope: cleanScope,"));
+  assert.ok(appSource.includes('mergeCandidatePool: true'));
+  assert.ok(appSource.includes('const nextCandidatePool = options.mergeCandidatePool'));
+  assert.ok(appSource.includes('getUniqueWords(data.words).map(normalizeKanjiSpelling)'));
 });
 
 test('收藏命令只返回小响应且状态操作可补回缺失收藏', () => {
@@ -198,7 +240,7 @@ test('历史日期缺少 aiCard 时安全渲染并按需重新加载词卡', () 
   assert.ok(appSource.includes("if (!card || card.cardStatus !== 'pending') return false;"));
   assert.ok(appSource.includes("const card = cleanAiCard(aiCard || {}) || { cardStatus: 'none' };"));
   assert.ok(appSource.includes('正在加载这一天的词卡内容'));
-  assert.ok(appSource.includes("void loadCloudWorkflow({ mode: 'remote-first', showMessages: false }).then"));
+  assert.ok(appSource.includes("void ensureWorkflowScopeLoaded('today', { historyDate }).then"));
   assert.ok(appSource.includes("console.error('工作流已同步，但页面渲染失败'"));
 });
 
@@ -607,6 +649,7 @@ test('mergeWorkflow 合并 candidatePool 时空字段不覆盖 aiCard/reason/ris
         sourceType: 'deepseek_generated',
         reason: '适合穿搭和审美内容。',
         riskWarning: '不要用于正式商务说明。',
+        sourceText: '完整 DeepSeek 生成原文',
         aiCard: readyCard,
         updatedAt: '2026-05-30T01:00:00.000Z'
       }
@@ -618,6 +661,7 @@ test('mergeWorkflow 合并 candidatePool 时空字段不覆盖 aiCard/reason/ris
         sourceType: 'deepseek_generated',
         reason: '',
         riskWarning: '',
+        sourceText: '',
         aiCard: {},
         updatedAt: '2026-05-31T01:00:00.000Z'
       }
@@ -627,6 +671,7 @@ test('mergeWorkflow 合并 candidatePool 时空字段不覆盖 aiCard/reason/ris
   assert.equal(entry.aiCard.cardStatus, 'ready');
   assert.equal(entry.reason, '适合穿搭和审美内容。');
   assert.equal(entry.riskWarning, '不要用于正式商务说明。');
+  assert.equal(entry.sourceText, '完整 DeepSeek 生成原文');
 });
 
 test('mergeWorkflow 合并 candidatePool 时保留手动添加来源元数据', () => {

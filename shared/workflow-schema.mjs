@@ -1084,6 +1084,7 @@ function mergeCandidateEntry(localEntry = {}, remoteEntry = {}) {
     riskWarning: nonEmptyText(newer.riskWarning, older.riskWarning, 500),
     reviewReason: nonEmptyText(newer.reviewReason, older.reviewReason, 500),
     reason: nonEmptyText(newer.reason, older.reason, 1000),
+    sourceText: nonEmptyText(newer.sourceText, older.sourceText, 12000),
     aiCard: chooseAiCard(local.aiCard, remote.aiCard),
     aiCardHistory: mergeAiCardHistory(local.aiCardHistory, remote.aiCardHistory),
     examples: [...safeArray(local.examples), ...safeArray(remote.examples)].map(cleanAiExample).filter(Boolean).slice(0, 5),

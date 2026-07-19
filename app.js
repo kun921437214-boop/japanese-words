@@ -2028,10 +2028,10 @@ function cleanFeedbackRecord(record) {
   };
 }
 
-function cleanWordFeedback(feedback, pool = candidatePool) {
+function cleanWordFeedback(feedback, pool = candidatePool, options = {}) {
   return Object.entries(feedback || {}).reduce((result, [kanji, record]) => {
     const cleanKanji = String(kanji || '').trim();
-    if (!cleanKanji || (!getWordByKanji(cleanKanji) && !pool?.[cleanKanji])) return result;
+    if (!cleanKanji || (!options.preserveUnknown && !getWordByKanji(cleanKanji) && !pool?.[cleanKanji])) return result;
     result[cleanKanji] = cleanFeedbackRecord(record);
     return result;
   }, {});
@@ -2605,7 +2605,12 @@ function cleanPublishedRecords(records) {
 
 function cleanStoredWorkflow(data = {}) {
   const cleanedCandidatePool = cleanCandidatePool(data.candidatePool);
-  const words = filterKnownFavorites(data.words, cleanedCandidatePool);
+  const words = getUniqueWords(data.words).map(normalizeKanjiSpelling).filter(Boolean).slice(0, 500);
+  const rawScope = cleanShortText(data.appView?.scope, 40);
+  const appViewScope = ['all', 'today', 'favorites', 'published'].includes(rawScope) ? rawScope : 'all';
+  const appViewHistoryDate = /^\d{4}-\d{2}-\d{2}$/.test(String(data.appView?.historyDate || ''))
+    ? String(data.appView.historyDate)
+    : '';
   const statuses = Object.entries(data.statuses || {}).reduce((result, [word, status]) => {
     const cleanWord = String(word || '').trim();
     const cleanStatus = cleanFavoriteStatus(status);
@@ -2615,7 +2620,7 @@ function cleanStoredWorkflow(data = {}) {
   return {
     words,
     statuses,
-    feedback: cleanWordFeedback(data.feedback, cleanedCandidatePool),
+    feedback: cleanWordFeedback(data.feedback, cleanedCandidatePool, { preserveUnknown: true }),
     publishedRecords: cleanPublishedRecords(data.publishedRecords),
     candidatePool: cleanedCandidatePool,
     aiBatches: cleanAiBatches(data.aiBatches),
@@ -2634,6 +2639,12 @@ function cleanStoredWorkflow(data = {}) {
       summary: cleanShortText(event?.summary, 500),
       revision: clamp(toInt(event?.revision, 0), 0, Number.MAX_SAFE_INTEGER)
     })).filter(event => event.id).slice(0, 100),
+    appView: {
+      scope: appViewScope,
+      historyDate: appViewHistoryDate,
+      partialCandidatePool: Boolean(data.appView?.partialCandidatePool),
+      candidateCount: clamp(toInt(data.appView?.candidateCount, Object.keys(cleanedCandidatePool).length), 0, 500)
+    },
     updated: typeof data.updated === 'string' ? data.updated : null,
     schemaVersion: clamp(toInt(data.schemaVersion, 2), 1, 999)
   };
@@ -3301,6 +3312,8 @@ let cloudSaveQueue = Promise.resolve(false);
 let pendingCloudSaveCount = 0;
 let cloudWorkflowLoadEpoch = 0;
 let backgroundSyncPromise = null;
+const loadedWorkflowScopes = new Set();
+const workflowScopeLoads = new Map();
 
 function createOperationId(prefix = 'web') {
   const randomId = globalThis.crypto?.randomUUID?.()
@@ -3381,14 +3394,45 @@ async function runUiOperation(key, operation) {
   }
 }
 
-function getSyncEndpoint() {
+function normalizeWorkflowScope(scope = '') {
+  return ['today', 'favorites', 'published'].includes(scope) ? scope : 'today';
+}
+
+function getPreferredWorkflowScope() {
+  const activeTab = document.body.dataset.activeTab || localStorage.getItem(ACTIVE_TAB_STORAGE_KEY) || 'today';
+  return normalizeWorkflowScope(activeTab === 'history' ? 'today' : activeTab);
+}
+
+function getWorkflowScopeHistoryDate(scope = getPreferredWorkflowScope()) {
+  if (scope !== 'today') return '';
+  const tomorrow = addDaysToDateKey(todayKey(), 1);
+  return /^\d{4}-\d{2}-\d{2}$/.test(currentDailyHotDateKey) && currentDailyHotDateKey !== tomorrow
+    ? currentDailyHotDateKey
+    : '';
+}
+
+function getWorkflowScopeKey(scope = getPreferredWorkflowScope(), historyDate = getWorkflowScopeHistoryDate(scope)) {
+  const cleanScope = normalizeWorkflowScope(scope);
+  return cleanScope === 'today' ? `today:${historyDate || 'today'}` : cleanScope;
+}
+
+function isWorkflowScopeLoaded(scope = getPreferredWorkflowScope(), historyDate = getWorkflowScopeHistoryDate(scope)) {
+  return loadedWorkflowScopes.has('all') || loadedWorkflowScopes.has(getWorkflowScopeKey(scope, historyDate));
+}
+
+function markWorkflowScopeLoaded(scope = 'today', historyDate = '') {
+  if (scope === 'all') loadedWorkflowScopes.add('all');
+  else loadedWorkflowScopes.add(getWorkflowScopeKey(scope, historyDate));
+}
+
+function getSyncEndpoint(options = {}) {
   if (!SYNC_API_URL) return '';
   const url = new URL(`${SYNC_API_URL}/favorites`, window.location.origin);
   url.searchParams.set('view', 'app');
-  const tomorrow = addDaysToDateKey(todayKey(), 1);
-  if (/^\d{4}-\d{2}-\d{2}$/.test(currentDailyHotDateKey) && currentDailyHotDateKey !== tomorrow) {
-    url.searchParams.set('historyDate', currentDailyHotDateKey);
-  }
+  const scope = normalizeWorkflowScope(options.scope || getPreferredWorkflowScope());
+  const historyDate = cleanShortText(options.historyDate || getWorkflowScopeHistoryDate(scope), 20);
+  url.searchParams.set('scope', scope);
+  if (historyDate) url.searchParams.set('historyDate', historyDate);
   return url.toString();
 }
 
@@ -3520,11 +3564,14 @@ function applyRemoteWorkflowState(remoteData, options = {}) {
     return { applied: false, stale: true, data };
   }
 
-  favorites = filterKnownFavorites(data.words, data.candidatePool);
+  const nextCandidatePool = options.mergeCandidatePool
+    ? cleanCandidatePool({ ...candidatePool, ...data.candidatePool })
+    : data.candidatePool;
+  favorites = getUniqueWords(data.words).map(normalizeKanjiSpelling).filter(Boolean);
   favoriteStatuses = data.statuses;
   wordFeedback = data.feedback;
   publishedRecords = data.publishedRecords;
-  candidatePool = data.candidatePool;
+  candidatePool = nextCandidatePool;
   aiBatches = data.aiBatches;
   aiPreview = data.aiPreview || {};
   syncAiPreviewGlobalsFromWorkflow();
@@ -3605,8 +3652,11 @@ async function fetchWorkflowView(endpoint, loadEpoch) {
 }
 
 async function loadCloudWorkflow(options = false) {
-  const showMessages = typeof options === 'boolean' ? options : Boolean(options.showMessages);
-  const endpoint = getSyncEndpoint();
+  const config = typeof options === 'boolean' ? { showMessages: options } : (options || {});
+  const showMessages = Boolean(config.showMessages);
+  const scope = normalizeWorkflowScope(config.scope || getPreferredWorkflowScope());
+  const historyDate = cleanShortText(config.historyDate || getWorkflowScopeHistoryDate(scope), 20);
+  const endpoint = getSyncEndpoint({ scope, historyDate });
   const loadEpoch = ++cloudWorkflowLoadEpoch;
   if (!endpoint) {
     if (showMessages) showToast('云端后端还没有配置');
@@ -3618,12 +3668,17 @@ async function loadCloudWorkflow(options = false) {
     if (showMessages) updateSyncStatus('正在同步工作流数据...');
     const responseData = await fetchWorkflowView(endpoint, loadEpoch);
     if (loadEpoch !== cloudWorkflowLoadEpoch) return false;
-    const applied = applyRemoteWorkflowState(responseData);
+    const applied = applyRemoteWorkflowState(responseData, {
+      mergeCandidatePool: Boolean(config.mergeCandidatePool || loadedWorkflowScopes.size)
+    });
     if (!applied.applied) {
       cloudWorkflowFailed = false;
       if (showMessages) showToast('已保留页面中的较新数据');
       return true;
     }
+    const responseScope = applied.data.appView?.scope || scope;
+    const responseHistoryDate = applied.data.appView?.historyDate || historyDate;
+    markWorkflowScopeLoaded(responseScope, responseHistoryDate);
     archiveStaleTodaySnapshot();
     verifyDeepSeekLibraryAuditCoverage();
     try {
@@ -3701,7 +3756,7 @@ async function performCloudWorkflowSave(showMessages, payload, queuedEpoch) {
     }, { workflowMutation: true, operationPrefix: 'workflow-save', timeoutMs: 30000 });
     const responseData = await response.json().catch(() => payload);
     if (!response.ok) throw createApiError(responseData, response.status);
-    applyRemoteWorkflowState(responseData);
+    applyRemoteWorkflowState(responseData, { mergeCandidatePool: true });
     if (showMessages) {
       updateSyncStatus('已保存到云端', '#4caf50');
       showToast('已保存到云端');
@@ -4390,11 +4445,18 @@ function setDailyHotDate(dateKeyValue) {
   closeDailyManageMenu();
   if (isViewingTomorrowDailyHot()) void loadCodexTomorrowDraft({ notifyOnError: true });
   const selectedHistoryDate = currentDailyHotDateKey;
-  if (/^\d{4}-\d{2}-\d{2}$/.test(selectedHistoryDate) && !isViewingTomorrowDailyHot()) {
+  if (!isViewingTomorrowDailyHot()) {
+    const historyDate = /^\d{4}-\d{2}-\d{2}$/.test(selectedHistoryDate) ? selectedHistoryDate : '';
+    if (isWorkflowScopeLoaded('today', historyDate)) {
+      renderDailyHot();
+      return;
+    }
     const grid = document.getElementById('todayGrid');
-    if (grid) grid.innerHTML = '<div class="empty-state inline-empty"><div class="empty-title">正在读取历史推荐</div><div class="empty-desc">正在加载这一天的词卡内容…</div></div>';
-    void loadCloudWorkflow({ mode: 'remote-first', showMessages: false }).then(loaded => {
-      if (!loaded && currentDailyHotDateKey === selectedHistoryDate) renderDailyHot();
+    if (grid) grid.innerHTML = `<div class="empty-state inline-empty"><div class="empty-title">${historyDate ? '正在读取历史推荐' : '正在读取今日推荐'}</div><div class="empty-desc">正在加载这一天的词卡内容…</div></div>`;
+    void ensureWorkflowScopeLoaded('today', { historyDate }).then(loaded => {
+      if (currentDailyHotDateKey !== selectedHistoryDate) return;
+      if (loaded) renderDailyHot();
+      else renderWorkflowScopeState('today', 'error');
     });
     return;
   }
@@ -8072,6 +8134,10 @@ function renderPublishedCard(item) {
 }
 
 function renderPublished() {
+  if (!isWorkflowScopeLoaded('published')) {
+    renderWorkflowScopeState('published');
+    return;
+  }
   const items = getPublishedDisplayItems();
   const grid = document.getElementById('publishedGrid');
   const empty = document.getElementById('publishedEmpty');
@@ -8538,6 +8604,10 @@ function renderHistory() {
 }
 
 function renderFavorites() {
+  if (!isWorkflowScopeLoaded('favorites')) {
+    renderWorkflowScopeState('favorites');
+    return;
+  }
   const allFavWords = getFavoriteWords();
   populateSourceFilter('favorites', allFavWords);
   const statusSelect = document.getElementById('favoritesStatusFilter');
@@ -8821,7 +8891,7 @@ function updateTodayBadge() {
   const badge = document.getElementById('todayBadge');
   if (!badge) return;
   badge.textContent = currentDailyHotDateKey === 'today'
-    ? todayWords.length
+    ? cleanTodaySnapshot(todaySnapshot).words.length
     : getCurrentHistoryWords().length;
 }
 
@@ -8836,7 +8906,7 @@ function updateHistoryBadge() {
 function updateFavBadge() {
   const badge = document.getElementById('favBadge');
   if (!badge) return;
-  const count = getFavoriteWords().length;
+  const count = getUniqueWords(favorites).filter(kanji => getFavoriteStatus(kanji) !== 'published').length;
   if (count > 0) {
     badge.style.display = '';
     badge.textContent = count;
@@ -9511,6 +9581,48 @@ function ensureTodayGridVisible(force = false) {
   }
 }
 
+function renderWorkflowScopeState(tab, state = 'loading') {
+  const config = {
+    today: { gridId: 'todayGrid', emptyId: '', countId: '', title: '每日热门' },
+    favorites: { gridId: 'favGrid', emptyId: 'favEmpty', countId: 'favCount', title: '收藏 / 选题池' },
+    published: { gridId: 'publishedGrid', emptyId: 'publishedEmpty', countId: 'publishedCount', title: '已发布记录' }
+  }[normalizeWorkflowScope(tab)];
+  if (!config) return;
+  const failed = state === 'error';
+  const grid = document.getElementById(config.gridId);
+  if (grid) {
+    grid.innerHTML = `<div class="empty-state inline-empty"><div class="empty-title">${failed ? `${config.title}加载失败` : `正在加载${config.title}`}</div><div class="empty-desc">${failed ? '请点击刷新后重试，当前没有改动云端数据。' : '只读取当前页面需要的词卡，减少手机流量。'}</div></div>`;
+  }
+  const empty = config.emptyId ? document.getElementById(config.emptyId) : null;
+  if (empty) empty.style.display = 'none';
+  const count = config.countId ? document.getElementById(config.countId) : null;
+  if (count) count.textContent = failed ? '云端读取失败' : '正在读取云端数据…';
+}
+
+function ensureWorkflowScopeLoaded(scope, options = {}) {
+  const cleanScope = normalizeWorkflowScope(scope);
+  const historyDate = cleanShortText(options.historyDate || getWorkflowScopeHistoryDate(cleanScope), 20);
+  const scopeKey = getWorkflowScopeKey(cleanScope, historyDate);
+  if (isWorkflowScopeLoaded(cleanScope, historyDate)) return Promise.resolve(true);
+  if (workflowScopeLoads.has(scopeKey)) return workflowScopeLoads.get(scopeKey);
+  const request = loadCloudWorkflow({
+    mode: 'remote-first',
+    showMessages: false,
+    scope: cleanScope,
+    historyDate,
+    mergeCandidatePool: true
+  }).then(loaded => {
+    if (!loaded && getPreferredWorkflowScope() === cleanScope && !isWorkflowScopeLoaded(cleanScope, historyDate)) {
+      renderWorkflowScopeState(cleanScope, 'error');
+    }
+    return loaded;
+  }).finally(() => {
+    if (workflowScopeLoads.get(scopeKey) === request) workflowScopeLoads.delete(scopeKey);
+  });
+  workflowScopeLoads.set(scopeKey, request);
+  return request;
+}
+
 function switchTab(tab) {
   const normalizedTab = tab === 'history' ? 'today' : tab;
   const targetTab = ['today', 'favorites', 'published'].includes(normalizedTab) ? normalizedTab : 'today';
@@ -9518,6 +9630,13 @@ function switchTab(tab) {
   document.querySelectorAll('.nav-item').forEach(element => element.classList.toggle('active', element.dataset.tab === targetTab));
   document.querySelectorAll('.page').forEach(element => element.classList.toggle('active', element.id === `page-${targetTab}`));
   localStorage.setItem(ACTIVE_TAB_STORAGE_KEY, targetTab);
+  const historyDate = getWorkflowScopeHistoryDate(targetTab);
+  if (!isWorkflowScopeLoaded(targetTab, historyDate)) {
+    renderWorkflowScopeState(targetTab);
+    void ensureWorkflowScopeLoaded(targetTab, { historyDate });
+    document.getElementById('sidebar')?.classList.remove('open');
+    return;
+  }
   if (targetTab === 'today') {
     renderToday();
   }
@@ -9528,6 +9647,11 @@ function switchTab(tab) {
 
 function refreshCurrentGrid() {
   const activeTab = document.querySelector('.nav-item.active')?.dataset.tab;
+  const historyDate = getWorkflowScopeHistoryDate(activeTab);
+  if (!isWorkflowScopeLoaded(activeTab, historyDate)) {
+    renderWorkflowScopeState(activeTab || 'today');
+    return;
+  }
   if (activeTab === 'today') renderToday();
   else if (activeTab === 'favorites') renderFavorites();
   else if (activeTab === 'published') renderPublished();
