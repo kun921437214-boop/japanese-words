@@ -3213,12 +3213,51 @@ function saveLocalWorkflow() {
     updated: nowIso(),
     schemaVersion: 2
   };
-  localStorage.setItem(FAVORITES_STORAGE_KEY, JSON.stringify(favorites));
-  localStorage.setItem(FAVORITE_STATUSES_STORAGE_KEY, JSON.stringify(favoriteStatuses));
-  localStorage.setItem(WORKFLOW_STORAGE_KEY, JSON.stringify(payload));
-  localStorage.setItem(AI_PREVIEW_STORAGE_KEY, JSON.stringify(aiPreview));
-  localStorage.setItem(TODAY_DISMISSED_STORAGE_KEY, JSON.stringify(todayDismissed));
-  lastLocalCacheAt = payload.updated;
+  if (writeLocalWorkflowCache(payload)) lastLocalCacheAt = payload.updated;
+}
+
+const LOCAL_WORKFLOW_CACHE_CANDIDATE_LIMIT = 120;
+
+function buildLocalWorkflowCachePayload(payload = {}) {
+  const cleanPayload = cleanStoredWorkflow(payload);
+  const prioritizedWords = [
+    ...safeArray(cleanPayload.todaySnapshot?.words),
+    ...safeArray(cleanPayload.words)
+  ];
+  const cachedCandidateWords = [...new Set(prioritizedWords
+    .map(word => String(word || '').trim())
+    .filter(Boolean))]
+    .slice(0, LOCAL_WORKFLOW_CACHE_CANDIDATE_LIMIT);
+  const compactCandidatePool = cachedCandidateWords.reduce((result, word) => {
+    if (cleanPayload.candidatePool[word]) result[word] = cleanPayload.candidatePool[word];
+    return result;
+  }, {});
+
+  return {
+    ...cleanPayload,
+    candidatePool: compactCandidatePool,
+    aiBatches: []
+  };
+}
+
+function setLocalStorageItemSafely(key, value) {
+  try {
+    localStorage.setItem(key, value);
+    return true;
+  } catch (error) {
+    console.warn('本地缓存写入失败，已保留当前云端数据', key, error?.name || 'Error');
+    return false;
+  }
+}
+
+function writeLocalWorkflowCache(payload = {}) {
+  const cachePayload = buildLocalWorkflowCachePayload(payload);
+  const workflowCached = setLocalStorageItemSafely(WORKFLOW_STORAGE_KEY, JSON.stringify(cachePayload));
+  setLocalStorageItemSafely(FAVORITES_STORAGE_KEY, JSON.stringify(cachePayload.words));
+  setLocalStorageItemSafely(FAVORITE_STATUSES_STORAGE_KEY, JSON.stringify(cachePayload.statuses));
+  setLocalStorageItemSafely(AI_PREVIEW_STORAGE_KEY, JSON.stringify(cachePayload.aiPreview));
+  setLocalStorageItemSafely(TODAY_DISMISSED_STORAGE_KEY, JSON.stringify(cachePayload.todayDismissed));
+  return workflowCached;
 }
 
 function cacheCurrentWorkflow(updatedAt = nowIso()) {
@@ -3247,14 +3286,10 @@ function cacheCurrentWorkflow(updatedAt = nowIso()) {
     updated: updatedAt,
     schemaVersion: 2
   });
-  localStorage.setItem(FAVORITES_STORAGE_KEY, JSON.stringify(payload.words));
-  localStorage.setItem(FAVORITE_STATUSES_STORAGE_KEY, JSON.stringify(payload.statuses));
-  localStorage.setItem(WORKFLOW_STORAGE_KEY, JSON.stringify(payload));
-  localStorage.setItem(AI_PREVIEW_STORAGE_KEY, JSON.stringify(payload.aiPreview));
-  localStorage.setItem(TODAY_DISMISSED_STORAGE_KEY, JSON.stringify(payload.todayDismissed));
+  const workflowCached = writeLocalWorkflowCache(payload);
   workflowRevision = payload.revision;
   workflowAuditLog = payload.auditLog;
-  lastLocalCacheAt = payload.updated || updatedAt;
+  if (workflowCached) lastLocalCacheAt = payload.updated || updatedAt;
   return payload;
 }
 

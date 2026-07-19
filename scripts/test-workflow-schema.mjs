@@ -74,6 +74,23 @@ test('首次 pageshow 不会取消手机端初始化同步，BFCache 恢复时�
   assert.ok(appSource.includes('void syncRemoteDataInBackground();'));
 });
 
+test('移动端本地缓存超额不会把成功的云端同步误判为失败', () => {
+  const appSource = fs.readFileSync(new URL('../app.js', import.meta.url), 'utf8');
+  assert.ok(appSource.includes('const LOCAL_WORKFLOW_CACHE_CANDIDATE_LIMIT = 120;'));
+  assert.ok(appSource.includes('function buildLocalWorkflowCachePayload(payload = {})'));
+  assert.ok(appSource.includes('...safeArray(cleanPayload.todaySnapshot?.words)'));
+  assert.ok(appSource.includes('candidatePool: compactCandidatePool'));
+  assert.ok(appSource.includes('aiBatches: []'));
+  assert.ok(appSource.includes('function setLocalStorageItemSafely(key, value)'));
+  assert.ok(appSource.includes("console.warn('本地缓存写入失败，已保留当前云端数据'"));
+  assert.ok(appSource.includes('const workflowCached = writeLocalWorkflowCache(payload);'));
+  const workflowCacheSource = appSource.slice(
+    appSource.indexOf('function saveLocalWorkflow()'),
+    appSource.indexOf('const activeApiControllers')
+  );
+  assert.equal((workflowCacheSource.match(/localStorage\.setItem\(/g) || []).length, 1);
+});
+
 test('Codex 明日预览保留团队操作和完整词卡详情', () => {
   const appSource = fs.readFileSync(new URL('../app.js', import.meta.url), 'utf8');
   assert.ok(appSource.includes('function toggleCodexDraftFavorite(kanji)'));
