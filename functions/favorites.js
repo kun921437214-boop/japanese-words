@@ -434,6 +434,13 @@ function cleanStoredData(data) {
 const APP_CANDIDATE_LIMIT = 240;
 const APP_VIEW_SCOPES = new Set(['all', 'today', 'favorites', 'published']);
 
+function compactSnapshotForApp(snapshot = {}, includeAudit = false) {
+  return {
+    ...snapshot,
+    recommendationAudit: includeAudit ? snapshot.recommendationAudit : {}
+  };
+}
+
 export function buildAppWorkflowView(data = {}, options = {}) {
   const workflow = cleanStoredData(data);
   const requestedScope = String(options.scope || 'all');
@@ -475,10 +482,28 @@ export function buildAppWorkflowView(data = {}, options = {}) {
     }
     return result;
   }, {});
+  const historySnapshots = scope === 'all'
+    ? workflow.historySnapshots
+    : (scope === 'today'
+      ? Object.entries(workflow.historySnapshots).reduce((result, [dateKey, snapshot]) => {
+        result[dateKey] = compactSnapshotForApp(snapshot, dateKey === historyDate);
+        return result;
+      }, {})
+      : {});
+  if (scope === 'today' && historyDate && requestedHistory.words?.length && !historySnapshots[historyDate]) {
+    historySnapshots[historyDate] = compactSnapshotForApp(requestedHistory, true);
+  }
+  const todaySnapshotHistory = scope === 'all'
+    ? workflow.todaySnapshotHistory
+    : (scope === 'today'
+      ? workflow.todaySnapshotHistory.map(snapshot => compactSnapshotForApp(snapshot, snapshot.dateKey === historyDate))
+      : []);
   return {
     ...workflow,
     candidatePool,
     aiBatches: [],
+    historySnapshots,
+    todaySnapshotHistory,
     appView: {
       scope,
       historyDate,
