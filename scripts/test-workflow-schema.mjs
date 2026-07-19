@@ -247,6 +247,14 @@ test('前端收藏使用小命令响应并防止旧同步覆盖新版本', () =>
   assert.equal(commandSource.includes('aiPreview'), false);
   assert.ok(appSource.includes('data.revision < workflowRevision'));
   assert.ok(appSource.includes("error?.code === 'REQUEST_ABORTED'"));
+  assert.ok(appSource.includes('function isRetryableWorkflowMutationError(error)'));
+  assert.ok(appSource.includes('async function requestFavoriteCommand(kanji, action, status = \'\')'));
+  assert.ok(appSource.includes('for (let attempt = 0; attempt < 2; attempt += 1)'));
+  assert.ok(appSource.includes('operationId,'));
+  assert.ok(appSource.includes('timeoutMs: 30000'));
+  assert.ok(appSource.includes("if (error.status === 409 && !reconciled) break;"));
+  assert.ok(appSource.includes('const previousFavorites = [...favorites];'));
+  assert.ok(appSource.includes('if (cloudWorkflowFailed) {'));
   assert.ok(appSource.includes("window.addEventListener('online', () =>"));
 });
 
