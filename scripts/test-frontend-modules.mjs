@@ -55,6 +55,7 @@ import {
   buildPublishedMetricRows,
   buildPublishedPageModel,
   createPublishedPageController,
+  extractPublishedMeaningFromDescription,
   getPublishedContentSubLabel,
   getPublishedCoverCandidates,
   getPublishedPerformanceScore,
@@ -1431,6 +1432,49 @@ test('published card sublabel never exposes internal workflow reasons as word me
   assert.equal(getPublishedContentSubLabel({ contentCategory: 'non_word' }), '宣传、活动或其他自选内容');
 });
 
+test('published card sublabel recovers the author-published meaning from locked body text', () => {
+  const baseRecord = {
+    word: 'ぎゅん',
+    contentCategory: 'word_card',
+    contentLocked: true,
+    description: `⬇️⬇️⬇️
+🍞ぎゅん
+(Gyu n) ⓪
+令人窒息地心动；
+身体某处猛烈抽痛
+🍞俺のウィンクで君のハートをギュンとさせようとした。`
+  };
+  assert.equal(
+    extractPublishedMeaningFromDescription(baseRecord),
+    '令人窒息地心动； 身体某处猛烈抽痛'
+  );
+  assert.equal(
+    getPublishedContentSubLabel(baseRecord, { meaning: '' }),
+    '令人窒息地心动； 身体某处猛烈抽痛'
+  );
+  assert.equal(
+    getPublishedContentSubLabel(baseRecord, { meaning: '正式候选释义' }),
+    '正式候选释义'
+  );
+});
+
+test('published meaning recovery skips body metadata and never reads unlocked content', () => {
+  const lockedRecord = {
+    word: 'まじオワ',
+    contentCategory: 'word_card',
+    contentLocked: true,
+    description: `🍞まじオワ
+(Ma ji o wa• まじおわ) ⓪
+=まじで終わった(ma ji de o wa tta)
+真完了；真是芭比Q了
+🍞土砂降りになりそうなのに、傘を電車に忘れた。`
+  };
+  assert.equal(extractPublishedMeaningFromDescription(lockedRecord), '真完了；真是芭比Q了');
+  assert.equal(extractPublishedMeaningFromDescription({ ...lockedRecord, contentLocked: false }), '');
+  assert.equal(extractPublishedMeaningFromDescription({ ...lockedRecord, contentCategory: 'non_word' }), '');
+  assert.equal(extractPublishedMeaningFromDescription({ ...lockedRecord, word: '別の単語' }), '');
+});
+
 test('published page controller routes detail, refresh and render actions', () => {
   const listeners = new Map();
   const root = {
@@ -1592,6 +1636,8 @@ test('module migration removes inline handlers and the temporary window compatib
   assert.equal(appSource.includes('data-workflow-action="ai-preview-selection"'), false);
   assert.ok(indexSource.includes('id="publishedInsightsSummary"'));
   assert.ok(appSource.includes('buildPublishedMetricRows'));
+  assert.match(appSource, /const publishedMeaning = getPublishedContentSubLabel\(record,/);
+  assert.match(appSource, /published-detail-word[\s\S]*publishedMeaning/);
   const publishedCoverSource = appSource.match(/function getPublishedCover\(record\) \{[\s\S]*?\n\}/)?.[0] || '';
   assert.match(publishedCoverSource, /getPublishedCoverCandidates\(record\.coverUrl\)/);
   assert.doesNotMatch(publishedCoverSource, /candidatePool|referenceImage|word\.imageUrl/);

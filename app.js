@@ -8076,6 +8076,9 @@ function openPublishedDetail(recordId) {
   const coverSrc = coverUrls[0] || coverFallback;
   const coverFallbacks = coverUrls.length ? [...coverUrls.slice(1), coverFallback] : [];
   const noteLink = normalizeXiaohongshuUrl(record.link);
+  const publishedMeaning = getPublishedContentSubLabel(record, {
+    meaning: candidatePool[record.word]?.meaning || getWordByKanji(record.word)?.meaning || word.meaning || ''
+  });
   const views = metrics.views || 0;
   const allMetrics = [
     ['曝光', formatPublishedNumber(metrics.impressions), '内容被展示的累计次数'],
@@ -8124,7 +8127,7 @@ function openPublishedDetail(recordId) {
             <h3>${escapeHTML(record.title || '未获取到标题')}</h3>
             <p class="published-detail-word">${escapeHTML(record.contentCategory === 'non_word'
               ? '非单词内容 · 自选'
-              : `${word.reading || ''}${word.meaning ? ` · ${word.meaning}` : ''}`)}</p>
+              : `${word.reading || ''}${publishedMeaning ? ` · ${publishedMeaning}` : ''}`)}</p>
             <dl class="published-detail-meta">
               <div><dt>发布时间</dt><dd>${formatPublishedDate(record.publishedAt, true)}</dd></div>
               <div><dt>数据采集</dt><dd>${formatPublishedDate(record.lastMetricsImportedAt, true)}</dd></div>
