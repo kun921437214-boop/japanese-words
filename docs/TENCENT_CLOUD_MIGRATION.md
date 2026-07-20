@@ -51,6 +51,7 @@ node server/import-cloudflare-backup.mjs /path/to/workflow.json \
 ```
 
 The workflow is written only after every requested reference image has copied successfully. Existing image keys are skipped, so repeating the import is safe.
+When the production data directory is imported as `root`, the importer automatically restores ownership to the `japanese-words` service account before it exits. Use `--owner=<service-user>` only when a non-default service account is intentional.
 
 ## Pre-Cutover Validation
 
@@ -74,7 +75,7 @@ Before DNS changes:
 ## Cutover
 
 1. Point `@` and `www` at the Lighthouse public IPv4 address with a low TTL.
-2. Install the Tencent SSL certificate and switch Nginx to `server/nginx/japanese-words-https.conf`.
+2. Issue one certificate for `bijinihaitan.cn` and `www.bijinihaitan.cn` through the dedicated ACME webroot, then switch Nginx to `server/nginx/japanese-words-https.conf`. Keep the ACME location active so renewals do not depend on application routes.
 3. Set `DISABLE_SCHEDULER=false`, `SITE_URL=https://bijinihaitan.cn`, and the matching allowed origins.
 4. Update `.env.codex-daily` so the 14:00/16:00/17:00 Codex task submits to `https://bijinihaitan.cn`.
 5. Restart the application and run `SITE_URL=https://bijinihaitan.cn npm run smoke:production`.

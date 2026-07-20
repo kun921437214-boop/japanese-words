@@ -17,6 +17,7 @@ cd "${repo_root}"
 id japanese-words >/dev/null 2>&1 || useradd --system --home-dir /var/lib/japanese-words --shell /sbin/nologin japanese-words
 install -d -m 0700 -o japanese-words -g japanese-words /var/lib/japanese-words /var/backups/japanese-words
 install -d -m 0755 /etc/nginx/conf.d
+install -d -m 0755 /var/lib/letsencrypt/.well-known/acme-challenge
 
 if [[ ! -f /etc/japanese-words.env ]]; then
   install -m 0600 server/tencent.env.example /etc/japanese-words.env

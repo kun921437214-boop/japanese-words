@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { chown, lchown, mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { cleanStoredWorkflow, workflowDateKey } from '../shared/workflow-schema.mjs';
 import { FileKV } from './file-kv.mjs';
@@ -9,12 +9,45 @@ function parseArgs(argv) {
     if (!value.startsWith('--') && !result.file) result.file = value;
     if (value.startsWith('--data-dir=')) result.dataDirectory = value.slice('--data-dir='.length);
     if (value.startsWith('--images-origin=')) result.imagesOrigin = value.slice('--images-origin='.length);
+    if (value.startsWith('--owner=')) result.owner = value.slice('--owner='.length);
     if (value === '--copy-images') result.copyImages = true;
     if (value === '--apply') result.apply = true;
     if (value === '--confirm=IMPORT') result.confirmed = true;
     result.index = index;
     return result;
   }, {});
+}
+
+async function resolveSystemOwner(ownerName) {
+  if (!/^[a-z_][a-z0-9_-]*$/i.test(ownerName)) throw new Error(`无效的数据目录用户：${ownerName}`);
+  const passwd = await readFile('/etc/passwd', 'utf8');
+  const entry = passwd.split('\n').find(line => line.split(':', 1)[0] === ownerName);
+  if (!entry) throw new Error(`系统用户不存在：${ownerName}`);
+  const fields = entry.split(':');
+  const uid = Number.parseInt(fields[2], 10);
+  const gid = Number.parseInt(fields[3], 10);
+  if (!Number.isInteger(uid) || !Number.isInteger(gid)) throw new Error(`无法解析系统用户：${ownerName}`);
+  return { uid, gid };
+}
+
+async function setTreeOwner(directory, ownerName) {
+  const { uid, gid } = await resolveSystemOwner(ownerName);
+  const directories = [directory];
+  for (let index = 0; index < directories.length; index += 1) {
+    const current = directories[index];
+    const entries = await readdir(current, { withFileTypes: true });
+    for (const entry of entries) {
+      const target = path.join(current, entry.name);
+      if (entry.isDirectory()) {
+        directories.push(target);
+      } else if (entry.isSymbolicLink()) {
+        await lchown(target, uid, gid);
+      } else {
+        await chown(target, uid, gid);
+      }
+    }
+  }
+  for (const directoryPath of directories.reverse()) await chown(directoryPath, uid, gid);
 }
 
 function collectReferenceImages(workflow) {
@@ -79,6 +112,11 @@ const sourceFile = path.resolve(args.file);
 const workflow = cleanStoredWorkflow(JSON.parse(await readFile(sourceFile, 'utf8')));
 const images = collectReferenceImages(workflow);
 const dataDirectory = path.resolve(args.dataDirectory || process.env.JAPANESE_WORDS_DATA_DIR || '/var/lib/japanese-words');
+const dataOwner = String(args.owner || process.env.JAPANESE_WORDS_DATA_OWNER || (
+  typeof process.getuid === 'function' && process.getuid() === 0 && dataDirectory === path.resolve('/var/lib/japanese-words')
+    ? 'japanese-words'
+    : ''
+)).trim();
 const summary = {
   mode: args.apply ? 'apply' : 'dry-run',
   sourceFile,
@@ -88,7 +126,8 @@ const summary = {
   candidates: Object.keys(workflow.candidatePool).length,
   published: workflow.publishedRecords.length,
   referenceImages: images.length,
-  copyImages: Boolean(args.copyImages)
+  copyImages: Boolean(args.copyImages),
+  dataOwner: dataOwner || 'current-user'
 };
 console.log(JSON.stringify(summary, null, 2));
 
@@ -124,10 +163,12 @@ await writeFile(path.join(dataDirectory, 'imports', `cloudflare-r${workflow.revi
   copiedImages: imageResult.filter(item => item.state === 'copied').length,
   existingImages: imageResult.filter(item => item.state === 'existing').length
 }, null, 2)}\n`, { mode: 0o600 });
+if (dataOwner) await setTreeOwner(dataDirectory, dataOwner);
 console.log(JSON.stringify({
   ok: true,
   revision: workflow.revision,
   sha256: digest,
   copiedImages: imageResult.filter(item => item.state === 'copied').length,
-  existingImages: imageResult.filter(item => item.state === 'existing').length
+  existingImages: imageResult.filter(item => item.state === 'existing').length,
+  dataOwner: dataOwner || 'current-user'
 }, null, 2));

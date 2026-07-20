@@ -84,4 +84,30 @@ test('Tencent installer changes into the resolved repository before relative ins
   assert.ok(changeDirectoryAt > 0);
   assert.ok(changeDirectoryAt < installer.indexOf('install -m 0600 server/tencent.env.example'));
   assert.ok(changeDirectoryAt < installer.indexOf('npm ci'));
+  assert.match(installer, /\/var\/lib\/letsencrypt\/\.well-known\/acme-challenge/);
+});
+
+test('production import restores the runtime data owner after a root import', async () => {
+  const importer = await readFile(new URL('../server/import-cloudflare-backup.mjs', import.meta.url), 'utf8');
+  assert.match(importer, /JAPANESE_WORDS_DATA_OWNER/);
+  assert.match(importer, /dataDirectory === path\.resolve\('\/var\/lib\/japanese-words'\)/);
+  assert.match(importer, /if \(dataOwner\) await setTreeOwner\(dataDirectory, dataOwner\)/);
+});
+
+test('Nginx keeps the ACME challenge reachable before and after HTTPS cutover', async () => {
+  const httpConfig = await readFile(new URL('../server/nginx/japanese-words-http.conf', import.meta.url), 'utf8');
+  const httpsConfig = await readFile(new URL('../server/nginx/japanese-words-https.conf', import.meta.url), 'utf8');
+  for (const config of [httpConfig, httpsConfig]) {
+    assert.match(config, /location \^~ \/\.well-known\/acme-challenge\//);
+    assert.match(config, /root \/var\/lib\/letsencrypt/);
+  }
+});
+
+test('Nginx serves browser modules with a JavaScript MIME type', async () => {
+  const httpConfig = await readFile(new URL('../server/nginx/japanese-words-http.conf', import.meta.url), 'utf8');
+  const httpsConfig = await readFile(new URL('../server/nginx/japanese-words-https.conf', import.meta.url), 'utf8');
+  for (const config of [httpConfig, httpsConfig]) {
+    assert.match(config, /location ~\* \\.mjs\$/);
+    assert.match(config, /default_type application\/javascript/);
+  }
 });
