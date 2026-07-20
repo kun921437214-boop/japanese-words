@@ -62,6 +62,7 @@ import { createWorkflowStore } from '../frontend/workflow-store.mjs';
 import { createWorkflowSync } from '../frontend/workflow-sync.mjs';
 import { buildWordCardViewModel, WORD_CARD_STATUS_LABELS } from '../frontend/word-card-view.mjs';
 import { createWorkflowActionsController } from '../frontend/workflow-actions.mjs';
+import { summarizeFavoriteCandidateCoverage } from './smoke-production-model.mjs';
 import {
   MAX_WORKFLOW_BACKUP_BYTES,
   buildWorkflowBackup,
@@ -1167,6 +1168,31 @@ test('favorites page model applies source and status filters without changing th
   assert.deepEqual(model.autoGenerateWords, ['立て直す']);
   assert.equal(normalizeFavoriteStatusFilter('published'), 'all');
   assert.equal(words.length, 3);
+});
+
+test('production smoke coverage ignores published history but catches missing active favorites', () => {
+  const complete = summarizeFavoriteCandidateCoverage({
+    words: ['活跃收藏', '待发布', '历史发布'],
+    statuses: { 待发布: 'pending', 历史发布: 'published' },
+    candidatePool: {
+      活跃收藏: { kanji: '活跃收藏' },
+      待发布: { kanji: '待发布' }
+    }
+  });
+  assert.deepEqual(complete, {
+    totalFavorites: 3,
+    activeFavorites: 2,
+    publishedFavorites: 1,
+    candidateCount: 2,
+    missingActiveWords: []
+  });
+
+  const incomplete = summarizeFavoriteCandidateCoverage({
+    words: ['活跃收藏', '历史发布'],
+    statuses: { 历史发布: 'published' },
+    candidatePool: {}
+  });
+  assert.deepEqual(incomplete.missingActiveWords, ['活跃收藏']);
 });
 
 test('favorite transitions are immutable and clear stale status when removing a word', () => {
