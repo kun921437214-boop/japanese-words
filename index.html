@@ -164,24 +164,24 @@
           </div>
           <div class="page-actions">
             <div class="page-actions-deco" aria-hidden="true">✦</div>
-            <button class="btn btn-ghost" data-published-action="add-record">➕ 添加已发布记录</button>
-            <button class="btn btn-ghost" data-published-action="refresh">🛰 更新数据</button>
-            <button class="btn btn-primary" data-published-action="render">🔄 刷新列表</button>
+            <span class="published-schedule-pill">每天 14:30 更新</span>
+            <button class="btn btn-primary" data-published-action="render">刷新云端数据</button>
           </div>
         </div>
       </div>
+      <section class="published-insights-summary" id="publishedInsightsSummary" aria-label="最近三十天表现中位数"></section>
       <div class="published-grid" id="publishedGrid"></div>
       <div class="page-scene">
         <div class="scene-assets" aria-hidden="true">
           <img class="design-asset design-asset-scene-medium" src="assets/illustrations/time-machine.png" alt="" data-image-fallback="remove">
           <img class="design-asset design-asset-scene-small" src="assets/illustrations/propeller.png" alt="" data-image-fallback="remove">
         </div>
-        <div class="scene-bubble">每条发布记录都可以补 1h / 2h / 4h / 24h / 72h 数据；系统也会在每天早上 9 点自动尝试更新一次。</div>
+        <div class="scene-bubble">新帖子从「笔记管理」点封面读取一次，内容固定保存；数据每天 14:30 更新，发布超过 15 天后自动定格。</div>
       </div>
       <div class="empty-state" id="publishedEmpty" style="display:none">
         <div class="empty-icon">📝</div>
         <div class="empty-title">还没有已发布记录</div>
-        <div class="empty-desc">发布小红书后，把链接和数据补进来，系统后面就能更聪明</div>
+        <div class="empty-desc">首次导入小红书创作者平台的官方内容数据后，这里会自动生成内容卡片</div>
       </div>
     </div>
   </main>

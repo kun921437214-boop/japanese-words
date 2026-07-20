@@ -350,10 +350,12 @@ test('scheduled Worker 分离日更和 aiCard 批量 cron', () => {
   const workerSource = fs.readFileSync(new URL('../worker/favorites-worker.js', import.meta.url), 'utf8');
 
   assert.ok(workerConfig.includes('"0 16 * * *"'));
+  assert.ok(workerConfig.includes('"30 6 * * *"'));
   assert.ok(workerConfig.includes('"5,25,45 * * * *"'));
   assert.ok(workerConfig.includes('"10,20,30,40,50 16 * * *"'));
   assert.ok(workerConfig.includes('"0 17 * * *"'));
   assert.ok(workerSource.includes("const DAILY_REFRESH_CRON = '0 16 * * *';"));
+  assert.ok(workerSource.includes("const PUBLISHED_REFRESH_CRON = '30 6 * * *';"));
   assert.ok(workerSource.includes("const CODEX_LATE_PROMOTION_CRON = '5,25,45 * * * *';"));
   assert.ok(workerSource.includes("const AI_CARD_BATCH_MAX_WORDS = 5;"));
   assert.ok(workerSource.includes("new URL(`${siteUrl}/codex-daily`)"));
@@ -370,7 +372,7 @@ test('scheduled Worker 分离日更和 aiCard 批量 cron', () => {
   assert.ok(workerSource.includes('retryFailed: plan.retryFailed'));
   assert.ok(workerSource.includes('words: plan.targetWords'));
   assert.ok(workerSource.includes('if (!plan.shouldRun)'));
-  assert.ok(workerSource.includes('cron !== DAILY_REFRESH_CRON'));
+  assert.ok(workerSource.includes('cron !== PUBLISHED_REFRESH_CRON'));
   assert.ok(workerSource.includes('triggerCodexPromotionIfAvailable(env)'));
   assert.equal(workerSource.includes('force: true'), false);
 });
@@ -564,7 +566,7 @@ test('cleanStoredWorkflow 补齐缺失字段', () => {
   assert.deepEqual(cleaned.candidatePool, {});
   assert.deepEqual(cleaned.aiBatches, []);
   assert.deepEqual(cleaned.todaySnapshot.words, []);
-  assert.equal(cleaned.schemaVersion, 2);
+  assert.equal(cleaned.schemaVersion, 3);
   assert.equal(cleaned.revision, 0);
   assert.deepEqual(cleaned.auditLog, []);
 });
@@ -747,30 +749,60 @@ test('mergeWorkflow 合并 candidatePool 时保留手动添加来源元数据', 
   assert.ok(entry.sourceTags.includes('手动添加'));
 });
 
-test('mergeWorkflow 合并 publishedRecords 时新 updatedAt 胜出但不丢备注', () => {
+test('mergeWorkflow 合并 publishedRecords 时更新指标但不覆盖已锁定内容', () => {
   const merged = mergeWorkflow({
     publishedRecords: [{
       id: 'record-1',
       word: 'こなれ',
       title: '旧标题',
-      remarks: '人工复盘备注',
-      performanceNote: '标题可以更生活化',
-      latestStats: { likes: 1, favorites: 2, comments: 0, shares: 0, views: 100 },
+      description: '首次保存的帖子正文',
+      coverUrl: 'https://example.com/first.jpg',
+      contentLocked: true,
+      contentImportedAt: '2026-05-30T01:00:00.000Z',
+      latestMetrics: { likes: 1, favorites: 2, comments: 0, shares: 0, views: 100 },
+      lastMetricsImportedAt: '2026-05-30T01:00:00.000Z',
       updatedAt: '2026-05-30T01:00:00.000Z'
     }]
   }, {
     publishedRecords: [{
       id: 'record-1',
       word: 'こなれ',
-      latestStats: { likes: 10, favorites: 5, comments: 1, shares: 0, views: 1000 },
+      description: '后续不应覆盖的正文',
+      latestMetrics: { likes: 10, favorites: 5, comments: 1, shares: 0, views: 1000 },
+      lastMetricsImportedAt: '2026-05-31T01:00:00.000Z',
       updatedAt: '2026-05-31T01:00:00.000Z'
     }]
   });
   const record = merged.publishedRecords[0];
-  assert.equal(record.remarks, '人工复盘备注');
-  assert.equal(record.performanceNote, '标题可以更生活化');
+  assert.equal(record.description, '首次保存的帖子正文');
+  assert.equal(record.coverUrl, 'https://example.com/first.jpg');
   assert.equal(record.latestStats.views, 1000);
   assert.equal(record.updatedAt, '2026-05-31T01:00:00.000Z');
+});
+
+test('mergeWorkflow 保留已锁定发布内容的非单词分类', () => {
+  const merged = mergeWorkflow({
+    publishedRecords: [{
+      id: 'promo-1',
+      title: '书籍宣传',
+      contentCategory: 'non_word',
+      description: '首次保存的宣传正文',
+      contentLocked: true,
+      contentImportedAt: '2026-05-30T01:00:00.000Z',
+      updatedAt: '2026-05-30T01:00:00.000Z'
+    }]
+  }, {
+    publishedRecords: [{
+      id: 'promo-1',
+      title: '书籍宣传',
+      latestMetrics: { views: 1000 },
+      lastMetricsImportedAt: '2026-05-31T01:00:00.000Z',
+      updatedAt: '2026-05-31T01:00:00.000Z'
+    }]
+  });
+  assert.equal(merged.publishedRecords[0].contentCategory, 'non_word');
+  assert.equal(merged.publishedRecords[0].word, '');
+  assert.equal(merged.publishedRecords[0].description, '首次保存的宣传正文');
 });
 
 test('mergeWorkflow 合并 todaySnapshot 时同一天 version 高者优先', () => {
@@ -797,14 +829,14 @@ test('published-refresh 类写回不会导致 aiBatches/todaySnapshot 丢失', (
   const current = cleanStoredWorkflow({
     aiBatches: [{ id: 'batch-a', action: 'wild_ideas', createdAt: '2026-05-31T01:00:00.000Z' }],
     todaySnapshot: { dateKey: '2026-05-31', words: ['こなれ'], generatedAt: '2026-05-31T01:00:00.000Z', version: 1 },
-    publishedRecords: [{ id: 'record-1', word: 'こなれ', remarks: '保留备注', updatedAt: '2026-05-30T01:00:00.000Z' }]
+    publishedRecords: [{ id: 'record-1', word: 'こなれ', description: '保留正文', contentLocked: true, contentImportedAt: '2026-05-30T01:00:00.000Z', updatedAt: '2026-05-30T01:00:00.000Z' }]
   });
   const saved = mergeWorkflow(current, {
-    publishedRecords: [{ id: 'record-1', word: 'こなれ', latestStats: { likes: 3 }, updatedAt: '2026-05-31T01:00:00.000Z' }]
+    publishedRecords: [{ id: 'record-1', word: 'こなれ', latestMetrics: { likes: 3 }, lastMetricsImportedAt: '2026-05-31T01:00:00.000Z', updatedAt: '2026-05-31T01:00:00.000Z' }]
   });
   assert.equal(saved.aiBatches[0].id, 'batch-a');
   assert.deepEqual(saved.todaySnapshot.words, ['こなれ']);
-  assert.equal(saved.publishedRecords[0].remarks, '保留备注');
+  assert.equal(saved.publishedRecords[0].description, '保留正文');
 });
 
 test('worker PUT 类保存不会导致 aiBatches/todaySnapshot 丢失', () => {
