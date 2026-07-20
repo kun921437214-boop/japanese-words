@@ -16,10 +16,6 @@ export function normalizePublishedCoverUrl(value) {
     const hostname = parsed.hostname.toLowerCase();
     const isXhsImageHost = hostname === 'xhscdn.com' || hostname.endsWith('.xhscdn.com');
     if (isXhsImageHost) {
-      const assetMatch = parsed.pathname.match(/\/([a-z0-9_-]{30,160})(?:![^/]*)?$/i);
-      if (assetMatch) {
-        return `https://sns-na-i6.xhscdn.com/notes_pre_post/${assetMatch[1]}?imageView2/2/w/1080/format/jpg&origin=0`;
-      }
       parsed.protocol = 'https:';
       parsed.port = '';
       return parsed.href;
@@ -27,6 +23,23 @@ export function normalizePublishedCoverUrl(value) {
     return parsed.protocol === 'https:' ? parsed.href : '';
   } catch {
     return '';
+  }
+}
+
+export function getPublishedCoverCandidates(value) {
+  const primaryUrl = normalizePublishedCoverUrl(value);
+  if (!primaryUrl) return [];
+  try {
+    const parsed = new URL(primaryUrl);
+    const hostname = parsed.hostname.toLowerCase();
+    const isXhsImageHost = hostname === 'xhscdn.com' || hostname.endsWith('.xhscdn.com');
+    if (!isXhsImageHost) return [primaryUrl];
+    const assetMatch = parsed.pathname.match(/\/([a-z0-9_-]{30,160})(?:![^/]*)?$/i);
+    if (!assetMatch) return [primaryUrl];
+    const stableUrl = `https://sns-na-i6.xhscdn.com/notes_pre_post/${assetMatch[1]}?imageView2/2/w/1080/format/jpg&origin=0`;
+    return [...new Set([primaryUrl, stableUrl])];
+  } catch {
+    return [];
   }
 }
 

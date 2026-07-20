@@ -30,9 +30,9 @@ function request(url = 'https://jiyimianbao.pages.dev/favorites', options = {}) 
   return new Request(url, options);
 }
 
-test('Pages CSP allows only the stable Xiaohongshu cover CDN image host', () => {
+test('Pages CSP allows Xiaohongshu image hosts without widening script or API access', () => {
   const headers = readFileSync(new URL('../_headers', import.meta.url), 'utf8');
-  assert.match(headers, /img-src[^;]*https:\/\/sns-na-i6\.xhscdn\.com/);
+  assert.match(headers, /img-src[^;]*https:\/\/\*\.xhscdn\.com/);
   assert.doesNotMatch(headers, /script-src[^;]*xhscdn\.com/);
   assert.doesNotMatch(headers, /connect-src[^;]*xhscdn\.com/);
 });

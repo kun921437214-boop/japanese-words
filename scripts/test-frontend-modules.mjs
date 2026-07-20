@@ -52,6 +52,7 @@ import {
   buildPublishedPageModel,
   createPublishedPageController,
   getPublishedContentSubLabel,
+  getPublishedCoverCandidates,
   getPublishedPerformanceScore,
   getPublishedUpdateState,
   getRecentPublishedAverage,
@@ -794,6 +795,18 @@ test('image fallback controller handles source, text, class and removal fallback
   errorListener({ target: sourceImage });
   assert.equal(sourceImage.removed, true);
 
+  const queuedImage = {
+    dataset: { imageFallback: 'fallback-list', fallbackList: JSON.stringify(['stable.jpg', 'fallback.svg']) },
+    src: 'signed.jpg',
+    remove() { this.removed = true; }
+  };
+  errorListener({ target: queuedImage });
+  assert.equal(queuedImage.src, 'stable.jpg');
+  errorListener({ target: queuedImage });
+  assert.equal(queuedImage.src, 'fallback.svg');
+  errorListener({ target: queuedImage });
+  assert.equal(queuedImage.removed, true);
+
   const textParent = { textContent: '' };
   errorListener({ target: { dataset: { imageFallback: 'parent-text', fallbackText: '🍞' }, parentElement: textParent } });
   assert.equal(textParent.textContent, '🍞');
@@ -1315,9 +1328,13 @@ test('published cover URLs recover stable Xiaohongshu assets and reject unsafe s
   const key = '1040g3k0322q8fokun2105obdjf8gjbkpcttk3vo';
   const expiringUrl = `https://sns-webpic-qc.xhscdn.com/202607201442/example/notes_pre_post/${key}!nd_dft_wlteh_webp_3`;
   const stableUrl = `https://sns-na-i6.xhscdn.com/notes_pre_post/${key}?imageView2/2/w/1080/format/jpg&origin=0`;
-  assert.equal(normalizePublishedCoverUrl(expiringUrl), stableUrl);
-  assert.equal(normalizePublishedCoverUrl(`https://sns-webpic-qc.xhscdn.com/202607201442/hash/${key}!nd_dft_wlteh_webp_3`), stableUrl);
-  assert.equal(normalizePublishedCoverUrl(`http://sns-na-i6.xhscdn.com/notes_pre_post/${key}?old=1`), stableUrl);
+  assert.equal(normalizePublishedCoverUrl(expiringUrl), expiringUrl);
+  const signedUrl = `https://sns-webpic-qc.xhscdn.com/202607201442/hash/${key}!nd_dft_wlteh_webp_3`;
+  assert.deepEqual(getPublishedCoverCandidates(signedUrl), [signedUrl, stableUrl]);
+  assert.deepEqual(getPublishedCoverCandidates(`http://sns-na-i6.xhscdn.com/notes_pre_post/${key}?old=1`), [
+    `https://sns-na-i6.xhscdn.com/notes_pre_post/${key}?old=1`,
+    stableUrl
+  ]);
   assert.equal(normalizePublishedCoverUrl('https://images.example.com/cover.jpg'), 'https://images.example.com/cover.jpg');
   assert.equal(normalizePublishedCoverUrl('javascript:alert(1)'), '');
   assert.equal(normalizePublishedCoverUrl('https://user:pass@images.example.com/cover.jpg'), '');
@@ -1507,6 +1524,10 @@ test('module migration removes inline handlers and the temporary window compatib
   assert.equal(appSource.includes('data-workflow-action="ai-preview-selection"'), false);
   assert.ok(indexSource.includes('id="publishedInsightsSummary"'));
   assert.ok(appSource.includes('buildPublishedMetricRows'));
+  const publishedCoverSource = appSource.match(/function getPublishedCover\(record\) \{[\s\S]*?\n\}/)?.[0] || '';
+  assert.match(publishedCoverSource, /getPublishedCoverCandidates\(record\.coverUrl\)/);
+  assert.doesNotMatch(publishedCoverSource, /candidatePool|referenceImage|word\.imageUrl/);
+  assert.ok(appSource.includes('data-cover-source="published-record"'));
   assert.equal(appSource.includes('data-modal-action="save-published-record"'), false);
   assert.ok(appSource.includes('data-image-fallback="fallback-src"'));
 });

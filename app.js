@@ -42,9 +42,9 @@ import {
   buildPublishedPageModel,
   createPublishedPageController,
   getPublishedContentSubLabel,
+  getPublishedCoverCandidates,
   getPublishedSourceLabel,
   getPublishedUpdateState,
-  normalizePublishedCoverUrl,
   ratePublishedRecord
 } from './frontend/published-page.mjs';
 import { buildWordCardViewModel } from './frontend/word-card-view.mjs';
@@ -7053,12 +7053,8 @@ function formatPublishedDate(value, includeTime = false) {
   }).replace(/\//g, '-');
 }
 
-function getPublishedCover(record, word = {}) {
-  return [
-    record.coverUrl,
-    candidatePool[record.word]?.aiCard?.referenceImage?.url,
-    word.imageUrl
-  ].map(normalizePublishedCoverUrl).find(Boolean) || '';
+function getPublishedCover(record) {
+  return getPublishedCoverCandidates(record.coverUrl);
 }
 
 function buildPublishedCoverFallback(label = '') {
@@ -7110,16 +7106,17 @@ function renderPublishedCard(item, medians) {
   const word = item.word || getDisplayWordByKanji(record.word) || { kanji: record.word, reading: '', meaning: '' };
   const metricRows = buildPublishedMetricRows(record, medians);
   const updateState = getPublishedUpdateState(record);
-  const coverUrl = getPublishedCover(record, word);
+  const coverUrls = getPublishedCover(record);
   const sourceType = String(record.selectionSource?.type || 'unknown').replace(/[^a-z_]/g, '');
   const safeRecordId = escapeHTML(record.id);
   const contentLabel = getPublishedContentLabel(record, word);
   const coverFallback = buildPublishedCoverFallback(contentLabel);
-  const coverSrc = coverUrl || coverFallback;
+  const coverSrc = coverUrls[0] || coverFallback;
+  const coverFallbacks = coverUrls.length ? [...coverUrls.slice(1), coverFallback] : [];
   return `
     <article class="published-card" data-published-action="open-detail" data-record-id="${safeRecordId}" tabindex="0" aria-label="查看 ${escapeHTML(record.title || record.word || '已发布内容')} 的详情">
       <div class="published-cover">
-        <img src="${escapeHTML(coverSrc)}" alt="${escapeHTML(record.title || record.word || '笔记封面')}" loading="lazy" data-image-fallback="fallback-src" data-fallback-src="${escapeHTML(coverFallback)}" />
+        <img src="${escapeHTML(coverSrc)}" alt="${escapeHTML(record.title || record.word || '笔记封面')}" loading="lazy" referrerpolicy="no-referrer" data-cover-source="published-record" data-image-fallback="fallback-list" data-fallback-list="${escapeHTML(JSON.stringify(coverFallbacks))}" />
         <div class="published-cover-overlay">
           <span class="published-source source-${sourceType}">${escapeHTML(getPublishedSourceLabel(record))}</span>
           <span class="published-type">${escapeHTML(record.contentType || '图文')}</span>
@@ -7952,10 +7949,11 @@ function openPublishedDetail(recordId) {
   const metrics = cleanPublishedMetrics(record.latestMetrics);
   const medians = buildPublishedPageModel(getPublishedDisplayItems()).medians;
   const updateState = getPublishedUpdateState(record);
-  const coverUrl = getPublishedCover(record, word);
+  const coverUrls = getPublishedCover(record);
   const contentLabel = getPublishedContentLabel(record, word);
   const coverFallback = buildPublishedCoverFallback(contentLabel);
-  const coverSrc = coverUrl || coverFallback;
+  const coverSrc = coverUrls[0] || coverFallback;
+  const coverFallbacks = coverUrls.length ? [...coverUrls.slice(1), coverFallback] : [];
   const noteLink = normalizeXiaohongshuUrl(record.link);
   const views = metrics.views || 0;
   const allMetrics = [
@@ -7995,7 +7993,7 @@ function openPublishedDetail(recordId) {
       <div class="modal-body published-detail-body">
         <section class="published-detail-hero">
           <div class="published-detail-cover">
-            <img src="${escapeHTML(coverSrc)}" alt="${escapeHTML(record.title || record.word || '笔记封面')}" data-image-fallback="fallback-src" data-fallback-src="${escapeHTML(coverFallback)}" />
+            <img src="${escapeHTML(coverSrc)}" alt="${escapeHTML(record.title || record.word || '笔记封面')}" referrerpolicy="no-referrer" data-cover-source="published-record" data-image-fallback="fallback-list" data-fallback-list="${escapeHTML(JSON.stringify(coverFallbacks))}" />
           </div>
           <div class="published-detail-intro">
             <div class="published-detail-badges">
