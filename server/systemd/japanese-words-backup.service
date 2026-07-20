@@ -1,0 +1,17 @@
+[Unit]
+Description=Backup Japanese Words workflow
+After=japanese-words.service
+
+[Service]
+Type=oneshot
+User=japanese-words
+Group=japanese-words
+WorkingDirectory=/opt/japanese-words/app
+EnvironmentFile=/etc/japanese-words.env
+ExecStart=/usr/bin/node server/tencent-backup.mjs
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/japanese-words /var/backups/japanese-words
+UMask=0077

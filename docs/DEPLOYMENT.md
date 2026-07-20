@@ -12,7 +12,7 @@ npm run build
 
 The production static artifact is written to `dist/`. It contains an explicit allowlist of public files, so source data, scripts, and operational documentation are not uploaded with the site.
 
-## Production
+## Current Cloudflare Production
 
 Production is deployed to Cloudflare Pages:
 
@@ -44,6 +44,18 @@ Run the read-only production smoke check after deployment:
 ```bash
 npm run smoke:production
 ```
+
+## Tencent Cloud Runtime
+
+The zero-downtime Tencent Cloud migration keeps the existing frontend, API paths, Function handlers, workflow schema, and scheduled Worker behavior. The Tencent runtime, import safeguards, Nginx configuration, systemd units, and rollback order are documented in `docs/TENCENT_CLOUD_MIGRATION.md`.
+
+Use an explicit site URL when smoke-testing the Tencent copy:
+
+```bash
+SITE_URL=https://bijinihaitan.cn npm run smoke:production
+```
+
+Do not remove the Cloudflare site, Worker, coordinator, or KV namespaces during the migration rollback window.
 
 The smoke check does not write workflow or KV data. It verifies the Pages bindings (including the workflow coordinator), current Daily Hot snapshot, card/image readiness, compact app response size, and continuity between the current revision and latest mutation audit record.
 
