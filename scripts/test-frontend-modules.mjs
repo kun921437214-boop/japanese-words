@@ -48,10 +48,11 @@ import {
   parseXiaohongshuSharePayload
 } from '../frontend/published-record-parser.mjs';
 import {
+  buildPublishedMetricRows,
   buildPublishedPageModel,
   createPublishedPageController,
-  getPublishedAutoRefreshSummary,
   getPublishedPerformanceScore,
+  getPublishedUpdateState,
   getRecentPublishedAverage,
   ratePublishedRecord
 } from '../frontend/published-page.mjs';
@@ -1255,83 +1256,51 @@ test('favorites page controller delegates card and filter actions without window
   assert.equal(listeners.size, 0);
 });
 
-test('published performance score weights saves and deeper engagement above likes', () => {
-  const score = getPublishedPerformanceScore({
-    latestStats: { likes: 10, favorites: 5, comments: 2, shares: 1, views: 1000 }
+test('published compatibility score prioritizes save, share and follow efficiency', () => {
+  const saveHeavy = getPublishedPerformanceScore({
+    latestMetrics: { likes: 10, favorites: 50, comments: 2, shares: 10, follows: 5, views: 1000 }
   });
-  assert.equal(score, 29);
-  assert.equal(getRecentPublishedAverage([
-    { sourceStatus: 'placeholder', latestStats: { likes: 999 } },
-    { publishedAt: '2026-07-18', latestStats: { likes: 20 } },
-    { publishedAt: '2026-07-17', latestStats: { favorites: 10 } }
-  ]), 20);
+  const likeHeavy = getPublishedPerformanceScore({
+    latestMetrics: { likes: 100, favorites: 0, comments: 0, shares: 0, follows: 0, views: 1000 }
+  });
+  assert.ok(saveHeavy > likeHeavy);
+  assert.ok(getRecentPublishedAverage([
+    { sourceStatus: 'placeholder', latestMetrics: { likes: 999, views: 1000 } },
+    { publishedAt: '2026-07-18', latestMetrics: { likes: 20, favorites: 10, views: 1000 } },
+    { publishedAt: '2026-07-17', latestMetrics: { favorites: 20, shares: 5, views: 1000 } }
+  ]) > 0);
 });
 
-test('published rating keeps high-save low-exposure content from penalizing the word', () => {
+test('published rating remains a derived compatibility signal instead of a stored product field', () => {
   const rating = ratePublishedRecord({
     publishedAt: '2026-07-15T12:00:00.000Z',
-    latestStats: { likes: 10, favorites: 50, comments: 2, shares: 1, views: 1000 }
+    latestMetrics: { likes: 10, favorites: 50, comments: 2, shares: 1, follows: 2, views: 1000 }
   }, {
     now: Date.parse('2026-07-19T12:00:00.000Z'),
-    recentAverage: 300
+    recentAverage: 20
   });
 
-  assert.equal(rating.performanceScore, 119);
   assert.equal(rating.saveRate, 0.05);
-  assert.equal(rating.level, '正常');
-  assert.match(rating.reason, /流量不足/);
+  assert.match(rating.reason, /收藏、分享、涨粉/);
 });
 
-test('published rating waits 72 hours and flags high-exposure low-engagement content', () => {
-  const recent = ratePublishedRecord({
-    publishedAt: '2026-07-19T00:00:00.000Z',
-    latestStats: { likes: 100, favorites: 30, comments: 10, shares: 2, views: 1000 }
-  }, {
-    now: Date.parse('2026-07-19T12:00:00.000Z'),
-    recentAverage: 100
-  });
-  assert.equal(recent.level, '待评估');
-
-  const weak = ratePublishedRecord({
-    publishedAt: '2026-07-15T00:00:00.000Z',
-    latestStats: { likes: 2, favorites: 2, comments: 1, shares: 0, views: 5000 }
-  }, {
-    now: Date.parse('2026-07-19T12:00:00.000Z'),
-    recentAverage: 5
-  });
-  assert.equal(weak.level, '偏弱');
-  assert.match(weak.reason, /有一定曝光但互动偏低/);
+test('published page model exposes 30-day medians, 15-day state and red-card comparisons', () => {
+  const empty = buildPublishedPageModel([]);
+  assert.equal(empty.count, 0);
+  assert.equal(empty.isEmpty, true);
+  assert.equal(empty.countText, '等待首次导入小红书官方内容数据');
+  const record = {
+    publishedAt: '2026-07-19T09:00:00+08:00',
+    latestMetrics: { impressions: 1000, views: 100, coverClickRate: 0.1, comments: 2, favorites: 4, shares: 1, follows: 1 }
+  };
+  const model = buildPublishedPageModel([{ type: 'record', record }], { now: new Date('2026-07-20T14:30:00+08:00') });
+  assert.equal(model.activeCount, 1);
+  assert.equal(model.medians.impressions, 1000);
+  assert.equal(getPublishedUpdateState(record, new Date('2026-07-20T14:30:00+08:00')).active, true);
+  assert.equal(buildPublishedMetricRows(record, { ...model.medians, impressions: 2000 })[0].belowMedian, true);
 });
 
-test('published page model and refresh summary provide stable empty and status copy', () => {
-  assert.deepEqual(buildPublishedPageModel([]), {
-    items: [],
-    count: 0,
-    isEmpty: true,
-    countText: '管理已经发到小红书的内容和表现'
-  });
-  const model = buildPublishedPageModel([{ type: 'record' }, { type: 'placeholder' }]);
-  assert.equal(model.countText, '当前共 2 条已发布记录 / 占位项');
-  const summary = getPublishedAutoRefreshSummary({
-    autoRefresh: {
-      status: 'success',
-      source: 'remote',
-      lastMessage: '已更新',
-      lastAttemptAt: '2026-07-19T09:10:00.000Z'
-    }
-  }, {
-    statusLabels: { idle: '待更新', success: '更新成功' },
-    sourceLabels: { remote: '页面识别' }
-  });
-  assert.deepEqual(summary, {
-    label: '更新成功',
-    message: '已更新',
-    sourceLabel: '页面识别',
-    timeLabel: '2026-07-19 09:10'
-  });
-});
-
-test('published page controller routes cards, placeholders and actions without opening stopped links', () => {
+test('published page controller routes detail, refresh and render actions', () => {
   const listeners = new Map();
   const root = {
     addEventListener: (type, listener) => listeners.set(type, listener),
@@ -1342,33 +1311,23 @@ test('published page controller routes cards, placeholders and actions without o
   const controller = createPublishedPageController({
     root,
     onOpenDetail: recordId => calls.push(['detail', recordId]),
-    onEditRecord: (recordId, presetKanji) => calls.push(['edit', recordId, presetKanji]),
     onRefresh: recordId => calls.push(['refresh', recordId]),
     onRender: () => calls.push(['render'])
   });
-  const dispatch = (actionElement, stopContains = null) => {
-    let stopped = false;
-    const stopElement = stopContains === null ? null : { contains: () => stopContains };
+  const dispatch = actionElement => {
     listeners.get('click')({
       target: {
-        closest: selector => selector === '[data-published-action]' ? actionElement : stopElement
+        closest: selector => selector === '[data-published-action]' ? actionElement : null
       },
-      stopPropagation: () => { stopped = true; },
       preventDefault() {}
     });
-    return stopped;
   };
 
   dispatch({ dataset: { publishedAction: 'open-detail', recordId: 'record-1' } });
-  dispatch({ dataset: { publishedAction: 'edit-record', recordId: '', presetKanji: '詰めが甘い' } });
-  assert.equal(dispatch({ dataset: { publishedAction: 'refresh', recordId: 'record-1' } }, true), true);
+  dispatch({ dataset: { publishedAction: 'refresh', recordId: 'record-1' } });
   dispatch({ dataset: { publishedAction: 'render' } });
-  const beforeStoppedLink = calls.length;
-  assert.equal(dispatch({ dataset: { publishedAction: 'open-detail', recordId: 'record-1' } }, false), true);
-  assert.equal(calls.length, beforeStoppedLink);
   assert.deepEqual(calls, [
     ['detail', 'record-1'],
-    ['edit', '', '詰めが甘い'],
     ['refresh', 'record-1'],
     ['render']
   ]);
@@ -1500,13 +1459,15 @@ test('module migration removes inline handlers and the temporary window compatib
   assert.ok(appSource.includes('data-workflow-action="generate-deepseek-card"'));
   assert.equal(appSource.includes('data-workflow-action="candidate-state"'), false);
   assert.equal(appSource.includes('data-workflow-action="ai-preview-selection"'), false);
-  assert.ok(appSource.includes('data-modal-action="save-published-record"'));
+  assert.ok(indexSource.includes('id="publishedInsightsSummary"'));
+  assert.ok(appSource.includes('buildPublishedMetricRows'));
+  assert.equal(appSource.includes('data-modal-action="save-published-record"'), false);
   assert.ok(appSource.includes('data-image-fallback="fallback-src"'));
 });
 
-test('published record share input preserves multiline text for safe parsing', () => {
+test('published page no longer exposes the legacy manual record form', () => {
   const appSource = fs.readFileSync(new URL('../app.js', import.meta.url), 'utf8');
-  assert.ok(appSource.includes("from './frontend/published-record-parser.mjs'"));
-  assert.match(appSource, /<textarea[^>]+id="recordLink"[^>]*>/);
-  assert.doesNotMatch(appSource, /<input[^>]+id="recordLink"[^>]*>/);
+  assert.equal(appSource.includes("from './frontend/published-record-parser.mjs'"), false);
+  assert.doesNotMatch(appSource, /id="recordLink"/);
+  assert.doesNotMatch(appSource, /1h \/ 2h \/ 4h \/ 24h \/ 72h/);
 });

@@ -19,7 +19,7 @@
   "candidatePool": {},
   "aiBatches": [],
   "todaySnapshot": {},
-  "schemaVersion": 1
+  "schemaVersion": 3
 }
 ```
 
@@ -28,7 +28,7 @@
 - `words`：Favorites / Topic Pool words selected by humans.
 - `statuses`：favorite status: `none`, `pending`, `published`.
 - `feedback`：team negative feedback and skip reasons.
-- `publishedRecords`：Xiaohongshu published posts, performance snapshots, review notes.
+- `publishedRecords`：Xiaohongshu published posts, one-time content capture, daily cumulative metric snapshots, and recommendation-source attribution.
 - `candidatePool`：all active candidate words and DeepSeek metadata.
 - `aiBatches`：DeepSeek generation/review batch records.
 - `todaySnapshot`：current fixed Daily Hot recommendation list.
@@ -106,6 +106,19 @@ Without a ready card, show only basic information and a "generate DeepSeek word 
 - Do not export local template content as a formal word card.
 - Full workflow backup must include `candidatePool`, `aiBatches`, `todaySnapshot`, and `publishedRecords`.
 - Do not upload real private user data, API keys, large videos, or private export files to GitHub.
+
+## Published Records Rules
+
+- The official Xiaohongshu creator export is the primary metrics source.
+- Keep exposure (`impressions`) and views (`views`) separate. Never write both into `latestStats.views`.
+- `latestMetrics` stores the latest cumulative values: impressions, views, cover click rate, likes, comments, favorites, follows, shares, average watch seconds, and danmaku.
+- `metricSnapshots` stores at most one cumulative snapshot per day and keeps the latest 16 days.
+- Import must preview first, match idempotently, and stop on ambiguous duplicate title + publish-time identities.
+- Post content (`description`, `coverUrl`) may be captured once. After `contentLocked` becomes true, later imports must not overwrite it.
+- Metrics update once per day at 14:30 Asia/Shanghai while the post is no more than 15 days old. Older posts keep their final snapshot and do not update again.
+- `selectionSource` distinguishes Daily Hot (Codex / DeepSeek / unknown provider), self-selected, and unmapped/unknown records.
+- `latestStats` is only a derived compatibility mirror for existing ranking code. It is not the Published page source of truth.
+- Legacy 1h / 2h / 4h / 24h / 72h snapshots, manual ratings, performance reasons, and auto-refresh fields are not part of the new Published product model.
 
 ## Easy Mistakes
 

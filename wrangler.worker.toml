@@ -8,7 +8,7 @@ preview_urls = false
 SITE_URL = "https://jiyimianbao.pages.dev"
 
 [triggers]
-crons = ["0 16 * * *", "5,25,45 * * * *", "10,20,30,40,50 16 * * *", "0 17 * * *"]
+crons = ["30 6 * * *", "0 16 * * *", "5,25,45 * * * *", "10,20,30,40,50 16 * * *", "0 17 * * *"]
 
 [[kv_namespaces]]
 binding = "FAVORITES"

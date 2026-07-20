@@ -37,11 +37,12 @@ import {
 import { createImageFallbackController } from './frontend/image-fallback.mjs';
 import { createManualWordModalController } from './frontend/manual-word-modal.mjs';
 import { createModalActionsController } from './frontend/modal-actions.mjs';
-import { parseXiaohongshuSharePayload } from './frontend/published-record-parser.mjs';
 import {
+  buildPublishedMetricRows,
   buildPublishedPageModel,
   createPublishedPageController,
-  getPublishedAutoRefreshSummary,
+  getPublishedSourceLabel,
+  getPublishedUpdateState,
   ratePublishedRecord
 } from './frontend/published-page.mjs';
 import { buildWordCardViewModel } from './frontend/word-card-view.mjs';
@@ -60,12 +61,17 @@ import { createWorkflowSync } from './frontend/workflow-sync.mjs';
 import {
   cleanHistorySnapshot as cleanSharedHistorySnapshot,
   cleanHistorySnapshots as cleanSharedHistorySnapshots,
+  cleanPublishedRecord as cleanSharedPublishedRecord,
+  cleanPublishedRecords as cleanSharedPublishedRecords,
   cleanTodaySnapshot as cleanSharedTodaySnapshot,
   cleanTodaySnapshotHistory as cleanSharedTodaySnapshotHistory,
   mergeHistorySnapshots as mergeSharedHistorySnapshots,
+  mergePublishedRecords as mergeSharedPublishedRecords,
   mergeTodaySnapshot as mergeSharedTodaySnapshot,
   mergeTodaySnapshotHistory as mergeSharedTodaySnapshotHistory
 } from './shared/workflow-schema.mjs';
+import { cleanPublishedMetrics } from './shared/published-import.mjs';
+import { normalizeXiaohongshuUrl } from './shared/published-refresh.mjs';
 import { DAILY_WORD_COUNT } from './shared/daily-config.mjs';
 
 /* ═══════════════════════════════════════════
@@ -502,17 +508,6 @@ const CANDIDATE_SOURCE_FILTER_LABELS = {
   manual_keep: '手动保留词'
 };
 const MANUAL_DISCOVERY_SOURCE_OPTIONS = ['小红书', '日剧 / 动漫', 'YouTube', 'Instagram', 'X / Twitter', '朋友聊天', '日语资料', '其他'];
-const PERFORMANCE_REASON_LABELS = {
-  wordMismatch: '词不适合',
-  titleProblem: '标题问题',
-  coverProblem: '封面问题',
-  contentProblem: '内容表达问题',
-  timingProblem: '发布时间问题',
-  lowExposure: '曝光不足',
-  dataAbnormal: '数据异常',
-  observing: '待观察'
-};
-
 function getAccountLearningSummary() {
   return {
     version: 'xhs-account-learning-v1',
@@ -548,18 +543,6 @@ function getAccountLearningSummary() {
   };
 }
 
-const SNAPSHOT_NODE_ORDER = ['1h', '2h', '4h', '24h', '72h'];
-const CONTENT_TYPE_OPTIONS = ['图文', '视频', '其他'];
-const AUTO_REFRESH_STATUS_LABELS = {
-  idle: '待自动更新',
-  success: '自动更新成功',
-  partial: '部分更新',
-  failed: '自动更新失败'
-};
-const AUTO_REFRESH_SOURCE_LABELS = {
-  remote: '页面识别',
-  text: '分享文案'
-};
 const CANDIDATE_REVIEW_STATE_LABELS = {
   ready: '可直接上首页',
   watch: '值得继续观察',
@@ -2285,72 +2268,12 @@ function migrateOriginalWordsAfterAudit() {
   return candidatePool;
 }
 
-function cleanPublishedStats(stats) {
-  return {
-    likes: clamp(toInt(stats?.likes, 0), 0, 99999999),
-    favorites: clamp(toInt(stats?.favorites, 0), 0, 99999999),
-    comments: clamp(toInt(stats?.comments, 0), 0, 99999999),
-    shares: clamp(toInt(stats?.shares, 0), 0, 99999999),
-    views: clamp(toInt(stats?.views, 0), 0, 999999999)
-  };
-}
-
-function cleanAutoRefreshState(state) {
-  return {
-    status: ['idle', 'success', 'failed', 'partial'].includes(state?.status) ? state.status : 'idle',
-    lastAttemptAt: typeof state?.lastAttemptAt === 'string' ? state.lastAttemptAt : '',
-    lastSuccessAt: typeof state?.lastSuccessAt === 'string' ? state.lastSuccessAt : '',
-    lastMessage: String(state?.lastMessage || '').trim().slice(0, 1000),
-    source: ['remote', 'text'].includes(state?.source) ? state.source : '',
-    updatedFields: Array.isArray(state?.updatedFields)
-      ? [...new Set(state.updatedFields.map(item => String(item || '').trim()).filter(Boolean))].slice(0, 20)
-      : []
-  };
-}
-
-function cleanSnapshot(snapshot, fallbackNodeType = '1h') {
-  const nodeType = SNAPSHOT_NODE_ORDER.includes(snapshot?.nodeType) ? snapshot.nodeType : fallbackNodeType;
-  return {
-    nodeType,
-    ...cleanPublishedStats(snapshot),
-    capturedAt: typeof snapshot?.capturedAt === 'string' ? snapshot.capturedAt : '',
-    source: snapshot?.source === 'auto' ? 'auto' : 'manual'
-  };
-}
-
 function cleanPublishedRecord(record, index = 0) {
-  const word = String(record?.word || '').trim();
-  const recordId = String(record?.id || `record_${word || 'unknown'}_${index}`).trim();
-  const latestStats = cleanPublishedStats(record?.latestStats || record?.metrics || record);
-  const snapshots = SNAPSHOT_NODE_ORDER.map(nodeType => {
-    const matched = safeArray(record?.snapshots).find(item => item?.nodeType === nodeType);
-    return cleanSnapshot(matched || { nodeType }, nodeType);
-  });
-  return {
-    id: recordId,
-    word,
-    link: String(record?.link || '').trim(),
-    title: String(record?.title || '').trim(),
-    description: String(record?.description || '').trim(),
-    contentType: CONTENT_TYPE_OPTIONS.includes(record?.contentType) ? record.contentType : '图文',
-    authorName: String(record?.authorName || '').trim(),
-    publishedAt: String(record?.publishedAt || '').trim(),
-    latestStats,
-    snapshots,
-    updatedAt: typeof record?.updatedAt === 'string' ? record.updatedAt : nowIso(),
-    rating: String(record?.rating || '').trim(),
-    performanceReason: safeArray(record?.performanceReason).filter(item => PERFORMANCE_REASON_LABELS[item]),
-    performanceNote: String(record?.performanceNote || '').trim(),
-    remarks: String(record?.remarks || '').trim(),
-    sourceStatus: record?.sourceStatus === 'placeholder' ? 'placeholder' : 'record',
-    autoRefresh: cleanAutoRefreshState(record?.autoRefresh)
-  };
+  return cleanSharedPublishedRecord(record, index);
 }
 
 function cleanPublishedRecords(records) {
-  return safeArray(records)
-    .map((record, index) => cleanPublishedRecord(record, index))
-    .filter(record => record.word || record.link || record.title);
+  return cleanSharedPublishedRecords(records);
 }
 
 function cleanStoredWorkflow(data = {}) {
@@ -2498,72 +2421,7 @@ function mergeFeedback(localFeedback, remoteFeedback) {
 }
 
 function mergePublishedRecords(localRecords, remoteRecords) {
-  const nonEmpty = (preferred, fallback) => String(preferred || '').trim() || String(fallback || '').trim();
-  const mergeStats = (older = {}, newer = {}) => {
-    const cleanOlder = cleanPublishedStats(older);
-    const cleanNewer = cleanPublishedStats(newer);
-    return Object.keys(cleanOlder).reduce((result, key) => {
-      result[key] = cleanNewer[key] > 0 || cleanOlder[key] === 0 ? cleanNewer[key] : cleanOlder[key];
-      return result;
-    }, {});
-  };
-  const mergeSnapshots = (olderSnapshots = [], newerSnapshots = []) => {
-    const mergedSnapshots = new Map();
-    [...safeArray(olderSnapshots), ...safeArray(newerSnapshots)].forEach(snapshot => {
-      const cleaned = cleanSnapshot(snapshot, snapshot?.nodeType || '');
-      if (!cleaned.nodeType) return;
-      const current = mergedSnapshots.get(cleaned.nodeType);
-      if (!current || String(cleaned.capturedAt || '') >= String(current.capturedAt || '')) {
-        mergedSnapshots.set(cleaned.nodeType, {
-          ...current,
-          ...cleaned,
-          ...mergeStats(current || {}, cleaned),
-          capturedAt: [current?.capturedAt, cleaned.capturedAt].filter(Boolean).sort().pop() || ''
-        });
-      }
-    });
-    return SNAPSHOT_NODE_ORDER.map(nodeType => cleanSnapshot(mergedSnapshots.get(nodeType) || { nodeType }, nodeType));
-  };
-  const mergeRecord = (current, incoming) => {
-    const incomingIsNewer = String(incoming.updatedAt || '') >= String(current.updatedAt || '');
-    const newer = incomingIsNewer ? incoming : current;
-    const older = incomingIsNewer ? current : incoming;
-    return cleanPublishedRecord({
-      ...older,
-      ...newer,
-      id: newer.id || older.id,
-      word: nonEmpty(newer.word, older.word),
-      link: nonEmpty(newer.link, older.link),
-      title: nonEmpty(newer.title, older.title),
-      description: nonEmpty(newer.description, older.description),
-      authorName: nonEmpty(newer.authorName, older.authorName),
-      publishedAt: newer.publishedAt || older.publishedAt,
-      latestStats: mergeStats(older.latestStats, newer.latestStats),
-      snapshots: mergeSnapshots(older.snapshots, newer.snapshots),
-      rating: nonEmpty(newer.rating, older.rating),
-      performanceReason: getUniqueWords([...(older.performanceReason || []), ...(newer.performanceReason || [])]).filter(item => PERFORMANCE_REASON_LABELS[item]).slice(0, 8),
-      performanceNote: nonEmpty(newer.performanceNote, older.performanceNote),
-      remarks: nonEmpty(newer.remarks, older.remarks),
-      autoRefresh: {
-        ...(older.autoRefresh || {}),
-        ...(newer.autoRefresh || {}),
-        lastAttemptAt: [older.autoRefresh?.lastAttemptAt, newer.autoRefresh?.lastAttemptAt].filter(Boolean).sort().pop() || '',
-        lastSuccessAt: [older.autoRefresh?.lastSuccessAt, newer.autoRefresh?.lastSuccessAt].filter(Boolean).sort().pop() || ''
-      },
-      updatedAt: [current.updatedAt, incoming.updatedAt].filter(Boolean).sort().pop() || null
-    });
-  };
-  const merged = new Map();
-  [...cleanPublishedRecords(localRecords), ...cleanPublishedRecords(remoteRecords)].forEach(record => {
-    const key = record.id;
-    const current = merged.get(key);
-    if (!current) {
-      merged.set(key, record);
-      return;
-    }
-    merged.set(key, mergeRecord(current, record));
-  });
-  return [...merged.values()].sort((left, right) => String(right.publishedAt || right.updatedAt).localeCompare(String(left.publishedAt || left.updatedAt)));
+  return mergeSharedPublishedRecords(localRecords, remoteRecords);
 }
 
 function mergeAiBatches(localBatches, remoteBatches) {
@@ -2835,7 +2693,7 @@ function applyWorkflowData(workflow = {}) {
 
 function loadLocalWorkflow(options = {}) {
   const includeLegacyLocal = Boolean(options.includeLegacyLocal);
-  let workflow = { words: [], statuses: {}, feedback: {}, publishedRecords: [], candidatePool: {}, aiBatches: [], aiPreview: {}, todaySnapshot: {}, todayDismissed: {}, historySnapshots: {}, todaySnapshotHistory: [], revision: 0, auditLog: [], schemaVersion: 2 };
+  let workflow = { words: [], statuses: {}, feedback: {}, publishedRecords: [], candidatePool: {}, aiBatches: [], aiPreview: {}, todaySnapshot: {}, todayDismissed: {}, historySnapshots: {}, todaySnapshotHistory: [], revision: 0, auditLog: [], schemaVersion: 3 };
   try {
     const storedWorkflow = localStorage.getItem(WORKFLOW_STORAGE_KEY);
     if (storedWorkflow) {
@@ -3170,7 +3028,7 @@ function buildReconciledFavoriteCommandResponse(kanji) {
     revision: workflowStore.getRevision(),
     auditEvent: null,
     updated: lastCloudSyncAt,
-    schemaVersion: 2
+    schemaVersion: 3
   };
 }
 
@@ -4056,34 +3914,12 @@ function getPublishedRecordsForWord(kanji) {
   return cleanPublishedRecords(publishedRecords).filter(record => record.word === kanji && record.sourceStatus !== 'placeholder');
 }
 
-function getPlaceholderPublishedWords() {
-  const statusPublishedWords = favorites.filter(kanji => getFavoriteStatus(kanji) === 'published');
-  const recordWords = new Set(cleanPublishedRecords(publishedRecords).map(record => record.word));
-  return statusPublishedWords.filter(kanji => !recordWords.has(kanji));
-}
-
 function getPublishedDisplayItems() {
-  const items = cleanPublishedRecords(publishedRecords).map(record => ({
+  return cleanPublishedRecords(publishedRecords).map(record => ({
     type: 'record',
     record,
     word: getDisplayWordByKanji(record.word) || findWord(record.word)
-  }));
-  const placeholders = getPlaceholderPublishedWords().map(kanji => ({
-    type: 'placeholder',
-    record: cleanPublishedRecord({
-      id: `placeholder_${kanji}`,
-      word: kanji,
-      title: '',
-      description: '',
-      link: '',
-      contentType: '图文',
-      sourceStatus: 'placeholder',
-      performanceReason: ['observing'],
-      performanceNote: '这个词已经被标记为已发布，但还没有补充小红书链接和数据。'
-    }),
-    word: getDisplayWordByKanji(kanji) || findWord(kanji)
-  }));
-  return [...items, ...placeholders].sort((left, right) => String(right.record.publishedAt || right.record.updatedAt || '').localeCompare(String(left.record.publishedAt || left.record.updatedAt || '')));
+  })).sort((left, right) => String(right.record.publishedAt || right.record.updatedAt || '').localeCompare(String(left.record.publishedAt || left.record.updatedAt || '')));
 }
 
 function daysBetweenIso(isoLeft, isoRight = nowIso()) {
@@ -7190,62 +7026,114 @@ function renderFavoritesGrid(words) {
   grid.innerHTML = words.length ? words.map(renderFavoriteCard).join('') : '';
 }
 
-function getAutoRefreshSummary(record) {
-  return getPublishedAutoRefreshSummary(cleanAutoRefreshState(record?.autoRefresh), {
-    statusLabels: AUTO_REFRESH_STATUS_LABELS,
-    sourceLabels: AUTO_REFRESH_SOURCE_LABELS
-  });
+function formatPublishedNumber(value) {
+  const number = Number(value || 0);
+  return Number.isFinite(number) ? new Intl.NumberFormat('zh-CN').format(Math.round(number)) : '—';
 }
 
-function renderPublishedCard(item) {
+function formatPublishedRate(value) {
+  const number = Number(value || 0);
+  if (!Number.isFinite(number)) return '—';
+  return `${(number * 100).toFixed(2).replace(/\.00$/, '')}%`;
+}
+
+function formatPublishedMetric(value, kind = 'number') {
+  return kind === 'rate' ? formatPublishedRate(value) : formatPublishedNumber(value);
+}
+
+function formatPublishedDate(value, includeTime = false) {
+  if (!value) return '—';
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return escapeHTML(String(value));
+  return parsed.toLocaleString('zh-CN', {
+    timeZone: 'Asia/Shanghai',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    ...(includeTime ? { hour: '2-digit', minute: '2-digit', hour12: false } : {})
+  }).replace(/\//g, '-');
+}
+
+function getPublishedCover(record, word = {}) {
+  return record.coverUrl
+    || candidatePool[record.word]?.aiCard?.referenceImage?.url
+    || word.imageUrl
+    || '';
+}
+
+function renderPublishedMedianSummary(medians = {}) {
+  const root = document.getElementById('publishedInsightsSummary');
+  if (!root) return;
+  const items = [
+    ['曝光', medians.impressions, 'number'],
+    ['观看量', medians.views, 'number'],
+    ['封面点击率', medians.coverClickRate, 'rate'],
+    ['评论', medians.comments, 'number'],
+    ['收藏率', medians.favoriteRate, 'rate'],
+    ['分享率', medians.shareRate, 'rate'],
+    ['涨粉率', medians.followRate, 'rate']
+  ];
+  root.innerHTML = `
+    <div class="published-insights-heading">
+      <div>
+        <span class="published-eyebrow">最近 30 天</span>
+        <h2>账号表现中位数</h2>
+      </div>
+      <span class="published-sample">${medians.sampleSize ? `${medians.sampleSize} 篇样本` : '等待样本'}</span>
+    </div>
+    <div class="published-median-grid">
+      ${items.map(([label, value, kind]) => `
+        <div class="published-median-item">
+          <span>${label}</span>
+          <strong>${medians.sampleSize ? formatPublishedMetric(value, kind) : '—'}</strong>
+        </div>`).join('')}
+    </div>
+    <p class="published-insights-note">卡片中低于对应中位数的数据会显示浅红底，方便快速定位需要复盘的内容。</p>`;
+}
+
+function renderPublishedCard(item, medians) {
   const record = item.record;
   const word = item.word || getDisplayWordByKanji(record.word) || { kanji: record.word, reading: '', meaning: '' };
-  const latestStats = cleanPublishedStats(record.latestStats);
-  const rating = getRecordRating(record);
-  const refreshMeta = getAutoRefreshSummary(record);
+  const metricRows = buildPublishedMetricRows(record, medians);
+  const updateState = getPublishedUpdateState(record);
+  const coverUrl = getPublishedCover(record, word);
+  const sourceType = String(record.selectionSource?.type || 'unknown').replace(/[^a-z_]/g, '');
   const safeRecordId = escapeHTML(record.id);
-  const safeKanji = escapeHTML(word.kanji || record.word || '');
-  const openAction = item.type === 'placeholder' ? 'edit-record' : 'open-detail';
   return `
-    <div class="published-card" data-published-action="${openAction}" data-record-id="${item.type === 'placeholder' ? '' : safeRecordId}" data-preset-kanji="${item.type === 'placeholder' ? safeKanji : ''}">
-      <div class="published-head">
-        <div>
-          <div class="published-word">${escapeHTML(word.kanji || '未关联词')}</div>
-          <div class="published-title line-2">${escapeHTML(record.title || '还没填写笔记标题')}</div>
-          <div class="published-sub">${escapeHTML(word.meaning || record.word || '')}</div>
+    <article class="published-card" data-published-action="open-detail" data-record-id="${safeRecordId}" tabindex="0" aria-label="查看 ${escapeHTML(record.title || record.word || '已发布内容')} 的详情">
+      <div class="published-cover ${coverUrl ? '' : 'is-placeholder'}">
+        ${coverUrl
+          ? `<img src="${escapeHTML(coverUrl)}" alt="${escapeHTML(record.title || record.word || '笔记封面')}" loading="lazy" data-image-fallback="parent-text" data-fallback-text="${escapeHTML(record.word || '日语词')}" />`
+          : `<span>${escapeHTML(record.word || '待补封面')}</span>`}
+        <div class="published-cover-overlay">
+          <span class="published-source source-${sourceType}">${escapeHTML(getPublishedSourceLabel(record))}</span>
+          <span class="published-type">${escapeHTML(record.contentType || '图文')}</span>
         </div>
-        <div class="published-rating rating-${escapeHTML(rating.level)}">${escapeHTML(rating.level)}</div>
       </div>
-      <div class="published-meta">${record.link ? `<a class="published-link" href="${escapeHTML(record.link)}" target="_blank" rel="noopener" data-published-stop>查看链接 ↗</a>` : '<span class="published-link muted">待补充链接</span>'}</div>
-      <div class="published-mini-stats">
-        <span class="published-mini-chip">👍 ${latestStats.likes}</span>
-        <span class="published-mini-chip">⭐ ${latestStats.favorites}</span>
-        <span class="published-mini-chip">💬 ${latestStats.comments}</span>
-        <span class="published-mini-chip strong">表现分 ${rating.performanceScore}</span>
+      <div class="published-card-body">
+        <div class="published-card-heading">
+          <div>
+            <div class="published-word">${escapeHTML(word.kanji || record.word || '待映射')}</div>
+            <h3 class="published-title line-2">${escapeHTML(record.title || '未获取到标题')}</h3>
+          </div>
+          <time>${formatPublishedDate(record.publishedAt)}</time>
+        </div>
+        <div class="published-sub">${escapeHTML(word.meaning || (record.word ? '已关联日语词' : '中文标题待人工映射日语词'))}</div>
+        <div class="published-metric-grid">
+          ${metricRows.map(metric => `
+            <div class="published-metric ${metric.belowMedian ? 'is-below-median' : ''}">
+              <span>${metric.label}</span>
+              <strong>${formatPublishedMetric(metric.value, metric.kind)}</strong>
+              ${metric.belowMedian ? '<small>低于中位数</small>' : '<small>　</small>'}
+            </div>`).join('')}
+        </div>
+        <div class="published-card-footer">
+          <span class="published-update-state ${updateState.active ? 'is-active' : 'is-frozen'}"><i></i>${escapeHTML(updateState.label)}</span>
+          <span>${escapeHTML(updateState.description)}</span>
+          <b aria-hidden="true">查看详情 →</b>
+        </div>
       </div>
-      <div class="tag-list">
-        ${safeArray(record.performanceReason).map(item => `<span class="reason-chip">${escapeHTML(PERFORMANCE_REASON_LABELS[item])}</span>`).join('') || '<span class="reason-chip">待观察</span>'}
-      </div>
-      <div class="published-info-grid">
-        <div><span>发布时间</span><strong>${escapeHTML(record.publishedAt || '待填写')}</strong></div>
-        <div><span>内容类型</span><strong>${escapeHTML(record.contentType || '图文')}</strong></div>
-        <div><span>点赞</span><strong>${latestStats.likes}</strong></div>
-        <div><span>收藏</span><strong>${latestStats.favorites}</strong></div>
-        <div><span>评论</span><strong>${latestStats.comments}</strong></div>
-        <div><span>分享</span><strong>${latestStats.shares}</strong></div>
-        <div><span>曝光/浏览</span><strong>${latestStats.views || '—'}</strong></div>
-        <div><span>更新时间</span><strong>${escapeHTML(record.updatedAt ? record.updatedAt.slice(0, 16).replace('T', ' ') : '待更新')}</strong></div>
-      </div>
-      <div class="published-refresh-note">
-        <strong>${escapeHTML(refreshMeta.label)}</strong>
-        <span>${escapeHTML(refreshMeta.message)}</span>
-      </div>
-      <div class="published-reason line-2">${escapeHTML(record.performanceNote || rating.reason)}</div>
-      <div class="published-actions" data-published-stop>
-        ${item.type === 'placeholder' ? '' : `<button class="card-action-btn ghost" data-published-action="refresh" data-record-id="${safeRecordId}">尝试更新</button>`}
-        <button class="card-action-btn ghost" data-published-action="edit-record" data-record-id="${item.type === 'placeholder' ? '' : safeRecordId}" data-preset-kanji="${item.type === 'placeholder' ? safeKanji : ''}">编辑记录</button>
-      </div>
-    </div>`;
+    </article>`;
 }
 
 function renderPublished() {
@@ -7258,16 +7146,26 @@ function renderPublished() {
   const grid = document.getElementById('publishedGrid');
   const empty = document.getElementById('publishedEmpty');
   const count = document.getElementById('publishedCount');
+  renderPublishedMedianSummary(pageModel.medians);
   if (!items.length) {
     grid.innerHTML = '';
     empty.style.display = 'flex';
     count.textContent = pageModel.countText;
   } else {
     empty.style.display = 'none';
-    grid.innerHTML = items.map(renderPublishedCard).join('');
+    grid.innerHTML = items.map(item => renderPublishedCard(item, pageModel.medians)).join('');
     count.textContent = pageModel.countText;
   }
   updatePublishedBadge();
+}
+
+async function refreshPublishedPageFromCloud() {
+  await loadCloudWorkflow({
+    mode: 'remote-first',
+    showMessages: true,
+    scope: 'published',
+    mergeCandidatePool: true
+  });
 }
 
 function buildHistoryArchivedWord(kanji, dateKeyValue, index) {
@@ -7965,7 +7863,6 @@ function openDetail(idOrKanji) {
       </div>
       <div class="modal-footer-actions">
         <button class="btn btn-primary" data-modal-action="mark-pending" data-kanji="${safeKanjiAction}">标记待发布</button>
-        <button class="btn btn-ghost" data-modal-action="open-published-record" data-preset-kanji="${safeKanjiAction}">添加已发布记录</button>
         ${renderAiCardActionButton(word.kanji, aiCard, 'btn btn-ghost')}
       </div>
     </div>`;
@@ -8051,258 +7948,121 @@ function openLibraryCleanupModal() {
   document.body.style.overflow = 'hidden';
 }
 
-function openPublishedRecordModal(recordId = '', presetKanji = '') {
-  hasUnsavedFormChanges = false;
-  const record = recordId ? cleanPublishedRecords(publishedRecords).find(item => item.id === recordId) : null;
-  currentPublishedRecordId = record?.id || null;
-  const initialWord = record?.word || presetKanji || '';
-  const snapshotRows = SNAPSHOT_NODE_ORDER.map(nodeType => {
-    const snapshot = record?.snapshots?.find(item => item.nodeType === nodeType) || cleanSnapshot({ nodeType }, nodeType);
-    return `
-      <div class="snapshot-form-row">
-        <div class="snapshot-node">${nodeType}</div>
-        <input class="form-input" data-snapshot="${nodeType}" data-field="likes" type="number" min="0" value="${snapshot.likes || ''}" placeholder="点赞">
-        <input class="form-input" data-snapshot="${nodeType}" data-field="favorites" type="number" min="0" value="${snapshot.favorites || ''}" placeholder="收藏">
-        <input class="form-input" data-snapshot="${nodeType}" data-field="comments" type="number" min="0" value="${snapshot.comments || ''}" placeholder="评论">
-        <input class="form-input" data-snapshot="${nodeType}" data-field="shares" type="number" min="0" value="${snapshot.shares || ''}" placeholder="分享">
-        <input class="form-input" data-snapshot="${nodeType}" data-field="views" type="number" min="0" value="${snapshot.views || ''}" placeholder="曝光/浏览">
-        <input class="form-input" data-snapshot="${nodeType}" data-field="capturedAt" type="datetime-local" value="${snapshot.capturedAt ? snapshot.capturedAt.slice(0, 16) : ''}">
-        <select class="form-input" data-snapshot="${nodeType}" data-field="source"><option value="manual" ${snapshot.source !== 'auto' ? 'selected' : ''}>手动填写</option><option value="auto" ${snapshot.source === 'auto' ? 'selected' : ''}>自动读取</option></select>
-      </div>`;
-  }).join('');
-
-  const reasonCheckboxes = Object.entries(PERFORMANCE_REASON_LABELS).map(([key, label]) => `
-    <label class="tag-check"><input type="checkbox" name="performanceReason" value="${escapeHTML(key)}" ${safeArray(record?.performanceReason).includes(key) ? 'checked' : ''}><span>${escapeHTML(label)}</span></label>`).join('');
-
-  document.getElementById('modalContainer').innerHTML = `
-    <div class="modal-shell record-shell">
-      <div class="modal-header settings-header">
-        <h2 class="modal-title">${record ? '编辑已发布记录' : '添加已发布记录'}</h2>
-        <button class="modal-close" data-modal-action="close">×</button>
-      </div>
-      <div class="modal-body form-modal-body">
-        <div class="form-grid two-col">
-          <label class="form-field"><span>关联词</span><input class="form-input" id="recordWord" value="${escapeHTML(initialWord)}" placeholder="例如：尊い"></label>
-          <label class="form-field"><span>内容类型</span><select class="form-input" id="recordContentType">${CONTENT_TYPE_OPTIONS.map(option => `<option value="${escapeHTML(option)}" ${(record?.contentType || '图文') === option ? 'selected' : ''}>${escapeHTML(option)}</option>`).join('')}</select></label>
-          <label class="form-field full"><span>小红书链接 / 分享文案</span><div class="form-inline-actions"><textarea class="form-input published-share-input" id="recordLink" rows="3" placeholder="粘贴分享链接或整段分享文案">${escapeHTML(record?.link || '')}</textarea><button class="card-action-btn ghost" type="button" data-modal-action="autofill-published-record">自动识别</button></div></label>
-          <label class="form-field"><span>发布时间</span><input class="form-input" id="recordPublishedAt" type="datetime-local" value="${record?.publishedAt ? record.publishedAt.slice(0, 16) : ''}"></label>
-          <label class="form-field full"><span>笔记标题</span><input class="form-input" id="recordTitle" value="${escapeHTML(record?.title || '')}" placeholder="小红书标题"></label>
-          <label class="form-field full"><span>笔记描述</span><textarea class="form-input form-textarea" id="recordDescription" placeholder="笔记描述 / 备注文案">${escapeHTML(record?.description || '')}</textarea></label>
-          <label class="form-field"><span>作者昵称</span><input class="form-input" id="recordAuthorName" value="${escapeHTML(record?.authorName || '')}" placeholder="如可获取"></label>
-          <label class="form-field"><span>数据更新时间</span><input class="form-input" id="recordUpdatedAt" type="datetime-local" value="${record?.updatedAt ? record.updatedAt.slice(0, 16) : nowIso().slice(0, 16)}"></label>
-        </div>
-
-        <div class="modal-section compact-section">
-          <div class="modal-section-title">📊 最新数据快照</div>
-          <div class="form-grid metrics-grid">
-            <label class="form-field"><span>点赞数</span><input class="form-input" id="latestLikes" type="number" min="0" value="${record?.latestStats?.likes || ''}"></label>
-            <label class="form-field"><span>收藏数</span><input class="form-input" id="latestFavorites" type="number" min="0" value="${record?.latestStats?.favorites || ''}"></label>
-            <label class="form-field"><span>评论数</span><input class="form-input" id="latestComments" type="number" min="0" value="${record?.latestStats?.comments || ''}"></label>
-            <label class="form-field"><span>分享数</span><input class="form-input" id="latestShares" type="number" min="0" value="${record?.latestStats?.shares || ''}"></label>
-            <label class="form-field full"><span>曝光 / 浏览量</span><input class="form-input" id="latestViews" type="number" min="0" value="${record?.latestStats?.views || ''}"></label>
-          </div>
-        </div>
-
-        <div class="modal-section compact-section">
-          <div class="modal-section-title">⏱ 分时数据（手动记录）</div>
-          <div class="snapshot-form-table">
-            <div class="snapshot-form-row snapshot-form-head"><div>节点</div><div>赞</div><div>藏</div><div>评</div><div>转</div><div>曝光</div><div>采集时间</div><div>来源</div></div>
-            ${snapshotRows}
-          </div>
-        </div>
-
-        <div class="modal-section compact-section">
-          <div class="modal-section-title">🏷 表现原因</div>
-          <div class="tag-check-group">${reasonCheckboxes}</div>
-          <label class="form-field full"><span>表现原因说明</span><textarea class="form-input form-textarea" id="recordPerformanceNote" placeholder="例如：词很好，但封面不够抓人">${escapeHTML(record?.performanceNote || '')}</textarea></label>
-          <label class="form-field full"><span>备注</span><textarea class="form-input form-textarea" id="recordRemarks" placeholder="手动补充说明">${escapeHTML(record?.remarks || '')}</textarea></label>
-        </div>
-
-        <div class="modal-footer-actions form-actions">
-          <button class="btn btn-primary" data-modal-action="save-published-record">保存记录</button>
-          ${record ? `<button class="btn btn-ghost" data-modal-action="open-published-detail" data-record-id="${escapeHTML(record.id)}">返回详情</button>` : ''}
-        </div>
-      </div>
-    </div>`;
-  document.getElementById('modalOverlay').classList.add('open');
-  document.body.style.overflow = 'hidden';
-}
-
-function readRecordFormStats(prefix = 'latest') {
-  return cleanPublishedStats({
-    likes: document.getElementById(`${prefix}Likes`)?.value,
-    favorites: document.getElementById(`${prefix}Favorites`)?.value,
-    comments: document.getElementById(`${prefix}Comments`)?.value,
-    shares: document.getElementById(`${prefix}Shares`)?.value,
-    views: document.getElementById(`${prefix}Views`)?.value
-  });
-}
-
-function autofillPublishedRecordFromLink() {
-  const input = document.getElementById('recordLink');
-  if (!input) return;
-  const parsed = parseXiaohongshuSharePayload(input.value);
-  if (!parsed.url && !parsed.title && !parsed.authorName) {
-    showToast('暂时没识别出可用信息，可以先手动填写');
-    return;
-  }
-
-  if (parsed.url) input.value = parsed.url;
-  const titleInput = document.getElementById('recordTitle');
-  const descriptionInput = document.getElementById('recordDescription');
-  const authorInput = document.getElementById('recordAuthorName');
-  const contentTypeInput = document.getElementById('recordContentType');
-  const publishedAtInput = document.getElementById('recordPublishedAt');
-  const remarksInput = document.getElementById('recordRemarks');
-  const latestLikes = document.getElementById('latestLikes');
-  const latestFavorites = document.getElementById('latestFavorites');
-  const latestComments = document.getElementById('latestComments');
-  const latestShares = document.getElementById('latestShares');
-  const latestViews = document.getElementById('latestViews');
-
-  if (titleInput && !titleInput.value.trim() && parsed.title) titleInput.value = parsed.title;
-  if (descriptionInput && !descriptionInput.value.trim() && parsed.description) descriptionInput.value = parsed.description;
-  if (authorInput && !authorInput.value.trim() && parsed.authorName) authorInput.value = parsed.authorName;
-  if (contentTypeInput && parsed.contentType) contentTypeInput.value = parsed.contentType;
-  if (publishedAtInput && !publishedAtInput.value && parsed.publishedAt) publishedAtInput.value = parsed.publishedAt;
-  if (latestLikes && !latestLikes.value && parsed.latestStats.likes) latestLikes.value = parsed.latestStats.likes;
-  if (latestFavorites && !latestFavorites.value && parsed.latestStats.favorites) latestFavorites.value = parsed.latestStats.favorites;
-  if (latestComments && !latestComments.value && parsed.latestStats.comments) latestComments.value = parsed.latestStats.comments;
-  if (latestShares && !latestShares.value && parsed.latestStats.shares) latestShares.value = parsed.latestStats.shares;
-  if (latestViews && !latestViews.value && parsed.latestStats.views) latestViews.value = parsed.latestStats.views;
-  if (remarksInput && parsed.noteId) {
-    const existing = remarksInput.value.trim();
-    if (!existing.includes(parsed.noteId)) remarksInput.value = existing ? `${existing}\n识别到 noteId：${parsed.noteId}` : `识别到 noteId：${parsed.noteId}`;
-  }
-
-  showToast(parsed.url ? '已自动识别链接并预填字段，能识别到的数据也一起带上了' : '已从分享文案提取标题、作者和可识别数据');
-}
-
-function savePublishedRecord() {
-  const word = String(document.getElementById('recordWord')?.value || '').trim();
-  if (!word) {
-    showToast('请先填写关联词');
-    return;
-  }
-  hasUnsavedFormChanges = false;
-  ensureFavoriteWord(word);
-  const existingRecord = currentPublishedRecordId
-    ? cleanPublishedRecords(publishedRecords).find(item => item.id === currentPublishedRecordId)
-    : cleanPublishedRecords(publishedRecords).find(item => item.word === word && item.sourceStatus !== 'placeholder');
-  const snapshots = SNAPSHOT_NODE_ORDER.map(nodeType => cleanSnapshot({
-    nodeType,
-    likes: document.querySelector(`[data-snapshot="${nodeType}"][data-field="likes"]`)?.value,
-    favorites: document.querySelector(`[data-snapshot="${nodeType}"][data-field="favorites"]`)?.value,
-    comments: document.querySelector(`[data-snapshot="${nodeType}"][data-field="comments"]`)?.value,
-    shares: document.querySelector(`[data-snapshot="${nodeType}"][data-field="shares"]`)?.value,
-    views: document.querySelector(`[data-snapshot="${nodeType}"][data-field="views"]`)?.value,
-    capturedAt: document.querySelector(`[data-snapshot="${nodeType}"][data-field="capturedAt"]`)?.value,
-    source: document.querySelector(`[data-snapshot="${nodeType}"][data-field="source"]`)?.value
-  }, nodeType));
-
-  const record = cleanPublishedRecord({
-    id: currentPublishedRecordId || `record_${word}_${Date.now()}`,
-    word,
-    link: document.getElementById('recordLink')?.value,
-    title: document.getElementById('recordTitle')?.value,
-    description: document.getElementById('recordDescription')?.value,
-    contentType: document.getElementById('recordContentType')?.value,
-    authorName: document.getElementById('recordAuthorName')?.value,
-    publishedAt: document.getElementById('recordPublishedAt')?.value,
-    latestStats: readRecordFormStats('latest'),
-    snapshots,
-    updatedAt: document.getElementById('recordUpdatedAt')?.value || nowIso(),
-    performanceReason: [...document.querySelectorAll('input[name="performanceReason"]:checked')].map(item => item.value),
-    performanceNote: document.getElementById('recordPerformanceNote')?.value,
-    remarks: document.getElementById('recordRemarks')?.value,
-    sourceStatus: 'record',
-    autoRefresh: existingRecord?.autoRefresh
-  });
-
-  publishedRecords = cleanPublishedRecords([
-    ...publishedRecords.filter(item => item.id !== record.id && !(item.sourceStatus === 'placeholder' && item.word === word)),
-    record
-  ]);
-  favoriteStatuses[word] = 'published';
-  removeWordFromTodaySnapshot(word);
-  currentPublishedRecordId = record.id;
-  saveLocalWorkflow();
-  updateAllBadges();
-  renderPublished();
-  refreshCurrentGrid();
-  saveCloudWorkflow(false);
-  showToast('已保存发布记录');
-  openPublishedDetail(record.id);
-}
-
 function openPublishedDetail(recordId) {
   const record = cleanPublishedRecords(publishedRecords).find(item => item.id === recordId);
   if (!record) return;
   currentPublishedRecordId = record.id;
-  const word = findWord(record.word) || getDisplayWordByKanji(record.word) || { kanji: record.word, reading: '', meaning: '' };
-  const rating = getRecordRating(record);
-  const latestStats = cleanPublishedStats(record.latestStats);
-  const refreshMeta = getAutoRefreshSummary(record);
-  const snapshotRows = SNAPSHOT_NODE_ORDER.map(nodeType => {
-    const snapshot = record.snapshots.find(item => item.nodeType === nodeType) || cleanSnapshot({ nodeType }, nodeType);
-    return `
-      <div class="timeline-card">
-        <div class="timeline-title">${nodeType}</div>
-        <div class="timeline-metrics">
-          <span>赞 ${snapshot.likes || '—'}</span>
-          <span>藏 ${snapshot.favorites || '—'}</span>
-          <span>评 ${snapshot.comments || '—'}</span>
-          <span>转 ${snapshot.shares || '—'}</span>
-          <span>曝光 ${snapshot.views || '—'}</span>
-        </div>
-        <div class="timeline-meta">${snapshot.capturedAt ? snapshot.capturedAt.replace('T', ' ').slice(0, 16) : '待补录'} · ${snapshot.source === 'auto' ? '自动读取' : '手动填写'}</div>
-      </div>`;
-  }).join('');
+  const word = findWord(record.word) || getDisplayWordByKanji(record.word) || {
+    kanji: record.word,
+    reading: '',
+    meaning: ''
+  };
+  const metrics = cleanPublishedMetrics(record.latestMetrics);
+  const medians = buildPublishedPageModel(getPublishedDisplayItems()).medians;
+  const updateState = getPublishedUpdateState(record);
+  const coverUrl = getPublishedCover(record, word);
+  const noteLink = normalizeXiaohongshuUrl(record.link);
+  const views = metrics.views || 0;
+  const allMetrics = [
+    ['曝光', formatPublishedNumber(metrics.impressions), '内容被展示的累计次数'],
+    ['观看量', formatPublishedNumber(metrics.views), '进入并观看笔记的累计次数'],
+    ['封面点击率', formatPublishedRate(metrics.coverClickRate), '封面与标题的点击表现'],
+    ['点赞', formatPublishedNumber(metrics.likes), `点赞率 ${formatPublishedRate(views ? metrics.likes / views : 0)}`],
+    ['评论', formatPublishedNumber(metrics.comments), `评论率 ${formatPublishedRate(views ? metrics.comments / views : 0)}`],
+    ['收藏', formatPublishedNumber(metrics.favorites), `收藏率 ${formatPublishedRate(views ? metrics.favorites / views : 0)}`],
+    ['涨粉', formatPublishedNumber(metrics.follows), `涨粉率 ${formatPublishedRate(views ? metrics.follows / views : 0)}`],
+    ['分享', formatPublishedNumber(metrics.shares), `分享率 ${formatPublishedRate(views ? metrics.shares / views : 0)}`],
+    ['人均观看时长', `${formatPublishedNumber(metrics.avgWatchSeconds)} 秒`, '平台累计快照'],
+    ['弹幕', formatPublishedNumber(metrics.danmaku), '平台累计快照']
+  ];
+  const comparisonRows = buildPublishedMetricRows(record, medians);
+  const snapshotRows = safeArray(record.metricSnapshots).map(snapshot => `
+    <tr>
+      <td>${escapeHTML(snapshot.dateKey || formatPublishedDate(snapshot.capturedAt))}</td>
+      <td>${formatPublishedNumber(snapshot.impressions)}</td>
+      <td>${formatPublishedNumber(snapshot.views)}</td>
+      <td>${formatPublishedRate(snapshot.coverClickRate)}</td>
+      <td>${formatPublishedNumber(snapshot.comments)}</td>
+      <td>${formatPublishedNumber(snapshot.favorites)}</td>
+      <td>${formatPublishedNumber(snapshot.shares)}</td>
+      <td>${formatPublishedNumber(snapshot.follows)}</td>
+    </tr>`).join('');
 
   document.getElementById('modalContainer').innerHTML = `
-    <div class="modal-shell record-shell">
+    <div class="modal-shell published-detail-shell">
       <div class="modal-header settings-header">
-        <h2 class="modal-title">已发布详情</h2>
-        <button class="modal-close" data-modal-action="close">×</button>
+        <div>
+          <span class="published-eyebrow">已发布详情</span>
+          <h2 class="modal-title">${escapeHTML(record.word || '待映射日语词')}</h2>
+        </div>
+        <button class="modal-close" data-modal-action="close" aria-label="关闭">×</button>
       </div>
-      <div class="modal-body form-modal-body">
-        <div class="published-detail-head">
-          <div>
-            <div class="published-word">${escapeHTML(word.kanji || '未关联词')}</div>
-            <div class="published-title">${escapeHTML(record.title || '还没填写笔记标题')}</div>
-            <div class="published-detail-sub">${escapeHTML(word.meaning || '')}</div>
+      <div class="modal-body published-detail-body">
+        <section class="published-detail-hero">
+          <div class="published-detail-cover ${coverUrl ? '' : 'is-placeholder'}">
+            ${coverUrl
+              ? `<img src="${escapeHTML(coverUrl)}" alt="${escapeHTML(record.title || record.word || '笔记封面')}" data-image-fallback="parent-text" data-fallback-text="${escapeHTML(record.word || '日语词')}" />`
+              : `<span>${escapeHTML(record.word || '待补封面')}</span>`}
           </div>
-          <div class="published-rating rating-${escapeHTML(rating.level)}">${escapeHTML(rating.level)}</div>
-        </div>
-        <div class="published-detail-hero-card">
-          <div class="published-mini-stats">
-            <span class="published-mini-chip">👍 ${latestStats.likes}</span>
-            <span class="published-mini-chip">⭐ ${latestStats.favorites}</span>
-            <span class="published-mini-chip">💬 ${latestStats.comments}</span>
-            <span class="published-mini-chip">📤 ${latestStats.shares}</span>
-            <span class="published-mini-chip strong">表现分 ${rating.performanceScore}</span>
+          <div class="published-detail-intro">
+            <div class="published-detail-badges">
+              <span class="published-source">${escapeHTML(getPublishedSourceLabel(record))}</span>
+              <span class="published-update-state ${updateState.active ? 'is-active' : 'is-frozen'}"><i></i>${escapeHTML(updateState.label)}</span>
+            </div>
+            <h3>${escapeHTML(record.title || '未获取到标题')}</h3>
+            <p class="published-detail-word">${escapeHTML(word.reading || '')}${word.meaning ? ` · ${escapeHTML(word.meaning)}` : ''}</p>
+            <dl class="published-detail-meta">
+              <div><dt>发布时间</dt><dd>${formatPublishedDate(record.publishedAt, true)}</dd></div>
+              <div><dt>数据采集</dt><dd>${formatPublishedDate(record.lastMetricsImportedAt, true)}</dd></div>
+              <div><dt>内容状态</dt><dd>${record.contentLocked ? '已保存，不再覆盖' : '等待首次获取'}</dd></div>
+              <div><dt>数据更新</dt><dd>${escapeHTML(updateState.description)}</dd></div>
+            </dl>
+            ${noteLink ? `<a class="btn btn-ghost published-open-link" href="${escapeHTML(noteLink)}" target="_blank" rel="noopener">打开小红书笔记 ↗</a>` : ''}
           </div>
-          <div class="tag-list">
-            ${safeArray(record.performanceReason).map(item => `<span class="reason-chip">${escapeHTML(PERFORMANCE_REASON_LABELS[item])}</span>`).join('') || '<span class="reason-chip">待观察</span>'}
+        </section>
+
+        <section class="published-detail-section">
+          <div class="published-detail-section-heading">
+            <div><span class="published-eyebrow">完整数据</span><h3>本次累计快照</h3></div>
+            <span>最近 30 天中位数样本 ${medians.sampleSize} 篇</span>
           </div>
+          <div class="published-detail-metrics">
+            ${allMetrics.map(([label, value, note]) => `
+              <div><span>${label}</span><strong>${value}</strong><small>${note}</small></div>`).join('')}
+          </div>
+          <div class="published-comparison-strip">
+            ${comparisonRows.map(metric => `
+              <div class="${metric.belowMedian ? 'is-below-median' : ''}">
+                <span>${metric.label}</span>
+                <strong>${formatPublishedMetric(metric.value, metric.kind)}</strong>
+                <small>${metric.belowMedian ? '低于中位数' : '达到或高于中位数'}</small>
+              </div>`).join('')}
+          </div>
+        </section>
+
+        <section class="published-detail-section">
+          <div class="published-detail-section-heading">
+            <div><span class="published-eyebrow">帖子内容</span><h3>${record.contentLocked ? '首次获取后已锁定' : '等待首次获取'}</h3></div>
+          </div>
+          <div class="published-content-copy ${record.description ? '' : 'is-empty'}">${record.description ? renderMultiline(record.description) : '当前官方 Excel 不包含正文与封面。系统会在首次成功获取帖子内容后保存一次，之后只更新数据，不再覆盖正文。'}</div>
+        </section>
+
+        <section class="published-detail-section">
+          <div class="published-detail-section-heading">
+            <div><span class="published-eyebrow">每日记录</span><h3>累计数据快照</h3></div>
+            <span>最多保留最近 16 次</span>
+          </div>
+          <div class="published-snapshot-table-wrap">
+            <table class="published-snapshot-table">
+              <thead><tr><th>日期</th><th>曝光</th><th>观看</th><th>点击率</th><th>评论</th><th>收藏</th><th>分享</th><th>涨粉</th></tr></thead>
+              <tbody>${snapshotRows || '<tr><td colspan="8">暂无历史快照</td></tr>'}</tbody>
+            </table>
+          </div>
+        </section>
+
+        <div class="published-detail-actions">
+          <button class="btn btn-primary" data-modal-action="close">返回已发布</button>
         </div>
-        <div class="detail-grid two-col">
-          <div class="detail-item"><span>小红书链接</span><strong>${record.link ? `<a href="${escapeHTML(record.link)}" target="_blank" rel="noopener">打开链接 ↗</a>` : '待填写'}</strong></div>
-          <div class="detail-item"><span>内容类型</span><strong>${escapeHTML(record.contentType)}</strong></div>
-          <div class="detail-item"><span>作者信息</span><strong>${escapeHTML(record.authorName || '待填写')}</strong></div>
-          <div class="detail-item"><span>发布时间</span><strong>${escapeHTML(record.publishedAt || '待填写')}</strong></div>
-          <div class="detail-item"><span>数据更新时间</span><strong>${escapeHTML(record.updatedAt ? record.updatedAt.slice(0, 16).replace('T', ' ') : '待更新')}</strong></div>
-          <div class="detail-item"><span>数据评级</span><strong>${escapeHTML(rating.level)}</strong></div>
-          <div class="detail-item"><span>自动更新状态</span><strong>${escapeHTML(refreshMeta.label)}</strong></div>
-          <div class="detail-item"><span>最近尝试时间</span><strong>${escapeHTML(refreshMeta.timeLabel)}</strong></div>
-        </div>
-        <div class="modal-section compact-section"><div class="modal-section-title">📊 当前最新数据</div><div class="score-grid published-stats-grid"><div class="score-card"><span>点赞</span><strong>${latestStats.likes}</strong></div><div class="score-card"><span>收藏</span><strong>${latestStats.favorites}</strong></div><div class="score-card"><span>评论</span><strong>${latestStats.comments}</strong></div><div class="score-card"><span>分享</span><strong>${latestStats.shares}</strong></div><div class="score-card"><span>曝光/浏览</span><strong>${latestStats.views || '—'}</strong></div><div class="score-card"><span>表现分</span><strong>${rating.performanceScore}</strong></div></div></div>
-        <div class="modal-section compact-section"><div class="modal-section-title">🔄 自动更新说明</div><div class="modal-section-content">${escapeHTML(refreshMeta.message)}</div>${refreshMeta.sourceLabel ? `<div class="modal-section-subtle">最近成功来源：${escapeHTML(refreshMeta.sourceLabel)}</div>` : ''}</div>
-        <div class="modal-section compact-section"><div class="modal-section-title">🧠 表现原因</div><div class="modal-section-content">${escapeHTML(record.performanceNote || rating.reason)}</div></div>
-        <div class="modal-section compact-section"><div class="modal-section-title">📝 笔记描述</div><div class="modal-section-content">${escapeHTML(record.description || '待填写')}</div></div>
-        <div class="modal-section compact-section"><div class="modal-section-title">📒 备注</div><div class="modal-section-content">${escapeHTML(record.remarks || '暂无')}</div></div>
-        <div class="modal-section compact-section"><div class="modal-section-title">⏱ 分时数据节点</div><div class="timeline-grid">${snapshotRows}</div></div>
-        <div class="modal-footer-actions form-actions"><button class="btn btn-ghost" data-modal-action="refresh-published-record" data-record-id="${escapeHTML(record.id)}">尝试自动更新</button><button class="btn btn-primary" data-modal-action="open-published-record" data-record-id="${escapeHTML(record.id)}">编辑这条记录</button></div>
       </div>
     </div>`;
   document.getElementById('modalOverlay').classList.add('open');
@@ -8495,7 +8255,7 @@ function exportWorkflowBackup() {
     revision: workflowStore.getRevision(),
     auditLog: workflowStore.getAuditLog(),
     updated: nowIso(),
-    schemaVersion: 2
+    schemaVersion: 3
   }, { cleanWorkflow: cleanStoredWorkflow });
   downloadTextFile(
     getWorkflowBackupFilename(todayKey()),
@@ -8751,11 +8511,7 @@ createModalActionsController({
   onToggleCodexFavorite: toggleCodexDraftFavorite,
   onExportRecommendationAudit: exportTodayRecommendationAudit,
   onMarkPending: markPending,
-  onOpenPublishedRecord: openPublishedRecordModal,
   onCopyLibraryCleanup: copyLibraryCleanupCommand,
-  onAutofillPublishedRecord: autofillPublishedRecordFromLink,
-  onSavePublishedRecord: savePublishedRecord,
-  onOpenPublishedDetail: openPublishedDetail,
   onRefreshPublishedRecord: refreshPublishedMetrics,
   onError: error => {
     console.warn('弹窗操作失败', error);
@@ -8808,10 +8564,8 @@ createFavoritesPageController({
 createPublishedPageController({
   root: document.getElementById('page-published'),
   onOpenDetail: openPublishedDetail,
-  onEditRecord: openPublishedRecordModal,
-  onAddRecord: openPublishedRecordModal,
   onRefresh: refreshPublishedMetrics,
-  onRender: renderPublished,
+  onRender: refreshPublishedPageFromCloud,
   onError: error => {
     console.warn('已发布页面操作失败', error);
     showToast('已发布页面操作失败，请刷新后重试');

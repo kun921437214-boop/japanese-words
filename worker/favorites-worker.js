@@ -8,6 +8,7 @@ import {
 import { isStoredDailyWordCount } from '../shared/daily-config.mjs';
 import { refreshPublishedRecords } from '../shared/published-refresh.mjs';
 import {
+  cleanPublishedRecords as cleanWorkflowPublishedRecords,
   cleanStoredWorkflow,
   mergeWorkflow,
   mergeWorkflowForFullSave
@@ -30,6 +31,7 @@ import {
 import { commitWorkflowMutation } from '../shared/workflow-coordinator.mjs';
 
 const DAILY_REFRESH_CRON = '0 16 * * *';
+const PUBLISHED_REFRESH_CRON = '30 6 * * *';
 const CODEX_LATE_PROMOTION_CRON = '5,25,45 * * * *';
 const AI_CARD_BATCH_CRONS = new Set([
   '10,20,30,40,50 16 * * *',
@@ -450,7 +452,7 @@ async function refreshWorkflowPublishedData(env, key, data, options = {}) {
     now: new Date()
   });
   const nextData = mergeWorkflow(data, {
-    publishedRecords: cleanPublishedRecords(result.records),
+    publishedRecords: cleanWorkflowPublishedRecords(result.records),
     updated: new Date().toISOString()
   });
   const mutation = await commitWorkflowMutation(env, key, nextData, options.mutationMetadata || {
@@ -587,7 +589,7 @@ export default {
         });
       }
       const workingRecords = Array.isArray(body?.publishedRecords) && body.publishedRecords.length
-        ? cleanPublishedRecords(body.publishedRecords)
+        ? cleanWorkflowPublishedRecords(body.publishedRecords)
         : current.publishedRecords;
       const refreshed = await refreshWorkflowPublishedData(env, key, {
         ...current,
@@ -734,7 +736,7 @@ export default {
       );
     }
 
-    if (!env.FAVORITES || cron !== DAILY_REFRESH_CRON) return;
+    if (!env.FAVORITES || cron !== PUBLISHED_REFRESH_CRON) return;
     let cursor;
     do {
       const listed = await env.FAVORITES.list({ prefix: 'favorites:', cursor });

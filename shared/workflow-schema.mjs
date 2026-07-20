@@ -1,4 +1,11 @@
-const SCHEMA_VERSION = 2;
+import {
+  cleanPublishedMetricSnapshots,
+  cleanPublishedMetrics,
+  cleanSelectionSource,
+  mergePublishedMetricSnapshots
+} from './published-import.mjs';
+
+const SCHEMA_VERSION = 3;
 const WORDS_LIMIT = 500;
 const PUBLISHED_RECORDS_LIMIT = 1000;
 const AI_BATCHES_LIMIT = 100;
@@ -33,7 +40,6 @@ const NEGATIVE_FEEDBACK_REASONS = [
   'notMyTone'
 ];
 const CONTENT_TYPE_OPTIONS = ['图文', '视频', '其他'];
-const PERFORMANCE_REASON_OPTIONS = ['wordMismatch', 'titleProblem', 'coverProblem', 'contentProblem', 'timingProblem', 'lowExposure', 'dataAbnormal', 'observing'];
 const SNAPSHOT_NODE_ORDER = ['1h', '2h', '4h', '24h', '72h'];
 const CANDIDATE_TYPE_OPTIONS = ['稳定候选', '新鲜梗词', '审美氛围词', '美妆穿搭词', '追星兴趣词', '生活方式词', '网络口语词', '圈层词', '高风险话题词'];
 const FRESHNESS_OPTIONS = ['长期', '中期', '短期', '需要尽快判断'];
@@ -216,25 +222,63 @@ export function cleanSnapshots(snapshots = []) {
 
 export function cleanPublishedRecord(record = {}, index = 0) {
   const id = cleanText(record?.id || `record_${cleanText(record?.word, 80) || 'unknown'}_${index}`, 120);
+  const legacyStats = cleanStats(record?.latestStats || record);
+  const explicitMetrics = cleanPublishedMetrics(record?.latestMetrics || {});
+  const hasExplicitMetrics = Object.values(explicitMetrics).some(value => value > 0);
+  const latestMetrics = hasExplicitMetrics
+    ? explicitMetrics
+    : cleanPublishedMetrics({
+        views: legacyStats.views,
+        likes: legacyStats.likes,
+        comments: legacyStats.comments,
+        favorites: legacyStats.favorites,
+        shares: legacyStats.shares
+      });
+  const syncStatus = ['idle', 'success', 'failed', 'frozen'].includes(record?.syncState?.status)
+    ? record.syncState.status
+    : (record?.metricsFrozen ? 'frozen' : 'idle');
   return {
-    ...record,
     id,
+    sourceKey: cleanText(record?.sourceKey, 160),
     word: cleanText(record?.word, 80),
+    noteId: cleanText(record?.noteId, 120),
     link: cleanText(record?.link, 1000),
     title: cleanText(record?.title, 200),
-    description: cleanText(record?.description, 4000),
+    description: cleanText(record?.description, 12000),
+    coverUrl: cleanText(record?.coverUrl, 1000),
     contentType: cleanEnum(record?.contentType, CONTENT_TYPE_OPTIONS, '图文'),
     authorName: cleanText(record?.authorName, 120),
     publishedAt: isIsoLike(record?.publishedAt) ? record.publishedAt : '',
-    latestStats: cleanStats(record?.latestStats || record),
-    snapshots: cleanSnapshots(record?.snapshots),
+    contentStatus: cleanEnum(record?.contentStatus, ['pending', 'complete'], record?.contentLocked ? 'complete' : 'pending'),
+    contentLocked: Boolean(record?.contentLocked || record?.contentImportedAt),
+    contentImportedAt: isIsoLike(record?.contentImportedAt) ? record.contentImportedAt : '',
+    contentSource: cleanText(record?.contentSource, 80),
+    latestMetrics,
+    latestStats: cleanStats({
+      likes: latestMetrics.likes,
+      favorites: latestMetrics.favorites,
+      comments: latestMetrics.comments,
+      shares: latestMetrics.shares,
+      views: latestMetrics.views
+    }),
+    metricSnapshots: cleanPublishedMetricSnapshots(record?.metricSnapshots),
+    metricsUpdateUntil: isIsoLike(record?.metricsUpdateUntil) ? record.metricsUpdateUntil : '',
+    metricsFrozen: Boolean(record?.metricsFrozen),
+    firstImportedAt: isIsoLike(record?.firstImportedAt) ? record.firstImportedAt : '',
+    lastMetricsImportedAt: isIsoLike(record?.lastMetricsImportedAt) ? record.lastMetricsImportedAt : '',
+    importBatchIds: uniqueStrings(record?.importBatchIds, 120, 20),
+    importSource: cleanText(record?.importSource, 80),
+    sourceFileName: cleanText(record?.sourceFileName, 240),
+    selectionSource: cleanSelectionSource(record?.selectionSource || {}),
+    syncState: {
+      status: syncStatus,
+      lastAttemptAt: isIsoLike(record?.syncState?.lastAttemptAt) ? record.syncState.lastAttemptAt : '',
+      lastSuccessAt: isIsoLike(record?.syncState?.lastSuccessAt) ? record.syncState.lastSuccessAt : '',
+      lastMessage: cleanText(record?.syncState?.lastMessage, 1000),
+      source: cleanText(record?.syncState?.source, 80)
+    },
     updatedAt: isIsoLike(record?.updatedAt) ? record.updatedAt : null,
-    rating: cleanText(record?.rating, 40),
-    performanceReason: uniqueStrings(safeArray(record?.performanceReason).filter(item => PERFORMANCE_REASON_OPTIONS.includes(item)), 80, 8),
-    performanceNote: cleanText(record?.performanceNote, 1000),
-    remarks: cleanText(record?.remarks, 2000),
-    sourceStatus: record?.sourceStatus === 'placeholder' ? 'placeholder' : 'record',
-    autoRefresh: cleanAutoRefreshState(record?.autoRefresh)
+    sourceStatus: record?.sourceStatus === 'placeholder' ? 'placeholder' : 'record'
   };
 }
 
@@ -962,60 +1006,48 @@ function mergeFeedback(localFeedback = {}, remoteFeedback = {}) {
   return cleanFeedback(merged);
 }
 
-function mergeStats(left = {}, right = {}) {
-  const cleanLeft = cleanStats(left);
-  const cleanRight = cleanStats(right);
-  return Object.keys(cleanLeft).reduce((result, key) => {
-    result[key] = cleanRight[key] > 0 || cleanLeft[key] === 0 ? cleanRight[key] : cleanLeft[key];
-    return result;
-  }, {});
-}
-
-function mergeSnapshots(leftSnapshots = [], rightSnapshots = []) {
-  const merged = new Map();
-  [...cleanSnapshots(leftSnapshots), ...cleanSnapshots(rightSnapshots)].forEach(snapshot => {
-    const current = merged.get(snapshot.nodeType);
-    if (!current) {
-      merged.set(snapshot.nodeType, snapshot);
-      return;
-    }
-    const winner = newerByDate(current, snapshot, 'capturedAt');
-    merged.set(snapshot.nodeType, {
-      ...current,
-      ...winner,
-      ...mergeStats(current, winner),
-      capturedAt: latestString(current.capturedAt, snapshot.capturedAt) || ''
-    });
-  });
-  return SNAPSHOT_NODE_ORDER.map(nodeType => merged.get(nodeType) || cleanSnapshot({ nodeType }, nodeType));
-}
-
 function mergePublishedRecord(localRecord = {}, remoteRecord = {}) {
   const local = cleanPublishedRecord(localRecord);
   const remote = cleanPublishedRecord(remoteRecord);
   const winner = newerByDate(local, remote, 'updatedAt');
   const fallback = winner === remote ? local : remote;
+  const lockedCandidates = [local, remote]
+    .filter(record => record.contentLocked)
+    .sort((left, right) => cleanText(left.contentImportedAt, 80).localeCompare(cleanText(right.contentImportedAt, 80)));
+  const contentWinner = lockedCandidates[0] || winner;
+  const metricSource = cleanText(remote.lastMetricsImportedAt, 80) >= cleanText(local.lastMetricsImportedAt, 80) ? remote : local;
   return cleanPublishedRecord({
     ...fallback,
     ...winner,
     id: winner.id || fallback.id,
+    sourceKey: nonEmptyText(winner.sourceKey, fallback.sourceKey, 160),
     word: nonEmptyText(winner.word, fallback.word, 80),
+    noteId: nonEmptyText(winner.noteId, fallback.noteId, 120),
     link: nonEmptyText(winner.link, fallback.link, 1000),
-    title: nonEmptyText(winner.title, fallback.title, 200),
-    description: nonEmptyText(winner.description, fallback.description, 4000),
+    title: contentWinner.title || nonEmptyText(winner.title, fallback.title, 200),
+    description: contentWinner.description || nonEmptyText(winner.description, fallback.description, 12000),
+    coverUrl: contentWinner.coverUrl || nonEmptyText(winner.coverUrl, fallback.coverUrl, 1000),
     authorName: nonEmptyText(winner.authorName, fallback.authorName, 120),
     publishedAt: winner.publishedAt || fallback.publishedAt,
-    latestStats: mergeStats(fallback.latestStats, winner.latestStats),
-    snapshots: mergeSnapshots(fallback.snapshots, winner.snapshots),
-    rating: nonEmptyText(winner.rating, fallback.rating, 40),
-    performanceReason: uniqueStrings([...(fallback.performanceReason || []), ...(winner.performanceReason || [])], 80, 8),
-    performanceNote: nonEmptyText(winner.performanceNote, fallback.performanceNote, 1000),
-    remarks: nonEmptyText(winner.remarks, fallback.remarks, 2000),
-    autoRefresh: {
-      ...fallback.autoRefresh,
-      ...winner.autoRefresh,
-      lastAttemptAt: latestString(fallback.autoRefresh?.lastAttemptAt, winner.autoRefresh?.lastAttemptAt) || '',
-      lastSuccessAt: latestString(fallback.autoRefresh?.lastSuccessAt, winner.autoRefresh?.lastSuccessAt) || ''
+    contentStatus: contentWinner.contentStatus,
+    contentLocked: contentWinner.contentLocked,
+    contentImportedAt: contentWinner.contentImportedAt,
+    contentSource: contentWinner.contentSource,
+    latestMetrics: metricSource.latestMetrics,
+    metricSnapshots: mergePublishedMetricSnapshots(local.metricSnapshots, remote.metricSnapshots),
+    metricsUpdateUntil: metricSource.metricsUpdateUntil || winner.metricsUpdateUntil,
+    metricsFrozen: Boolean(local.metricsFrozen || remote.metricsFrozen),
+    firstImportedAt: earliestString(local.firstImportedAt, remote.firstImportedAt) || '',
+    lastMetricsImportedAt: latestString(local.lastMetricsImportedAt, remote.lastMetricsImportedAt) || '',
+    importBatchIds: uniqueStrings([...(local.importBatchIds || []), ...(remote.importBatchIds || [])], 120, 20),
+    importSource: nonEmptyText(metricSource.importSource, winner.importSource, 80),
+    sourceFileName: nonEmptyText(metricSource.sourceFileName, winner.sourceFileName, 240),
+    selectionSource: winner.selectionSource?.type !== 'unknown' ? winner.selectionSource : fallback.selectionSource,
+    syncState: {
+      ...fallback.syncState,
+      ...winner.syncState,
+      lastAttemptAt: latestString(fallback.syncState?.lastAttemptAt, winner.syncState?.lastAttemptAt) || '',
+      lastSuccessAt: latestString(fallback.syncState?.lastSuccessAt, winner.syncState?.lastSuccessAt) || ''
     },
     updatedAt: latestString(local.updatedAt, remote.updatedAt)
   });
@@ -1304,6 +1336,7 @@ export {
   SOURCE_PROMPT_OPTIONS,
   PROMPT_VERSION_BY_ACTION,
   mergeHistorySnapshots,
+  mergePublishedRecords,
   mergeTodaySnapshotHistory,
   chooseTodaySnapshot as mergeTodaySnapshot
 };

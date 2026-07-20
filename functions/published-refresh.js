@@ -1,5 +1,9 @@
 import { refreshPublishedRecords } from '../shared/published-refresh.mjs';
-import { cleanStoredWorkflow, mergeWorkflow } from '../shared/workflow-schema.mjs';
+import {
+  cleanPublishedRecords as cleanWorkflowPublishedRecords,
+  cleanStoredWorkflow,
+  mergeWorkflow
+} from '../shared/workflow-schema.mjs';
 import {
   API_LIMITS,
   authorizeRequest,
@@ -237,7 +241,7 @@ export async function onRequest({ request, env }) {
     });
   }
   const workingRecords = Array.isArray(body?.publishedRecords) && body.publishedRecords.length
-    ? cleanPublishedRecords(body.publishedRecords)
+    ? cleanWorkflowPublishedRecords(body.publishedRecords)
     : current.publishedRecords;
 
   const result = await refreshPublishedRecords(workingRecords, {
@@ -247,7 +251,7 @@ export async function onRequest({ request, env }) {
   });
 
   const merged = mergeWorkflow(current, {
-    publishedRecords: cleanPublishedRecords(result.records),
+    publishedRecords: cleanWorkflowPublishedRecords(result.records),
     updated: new Date().toISOString()
   });
   const mutation = await commitWorkflowMutation(env, key, merged, {
