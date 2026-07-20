@@ -1,7 +1,5 @@
-import {
-  cleanStoredWorkflow as cleanWorkflowSchema,
-  mergeWorkflowForFullSave
-} from '../shared/workflow-schema.mjs';
+import { cleanStoredWorkflow as cleanWorkflowSchema } from '../shared/workflow-schema.mjs';
+import { applyFavoriteAction } from '../shared/favorite-command.mjs';
 import {
   API_LIMITS,
   authorizeRequest,
@@ -32,18 +30,6 @@ function cleanWords(words) {
 
 function cleanStatus(status) {
   return ['pending', 'published'].includes(status) ? status : 'none';
-}
-
-function cleanStatuses(statuses, words) {
-  const allowedWords = new Set(cleanWords(words));
-  return Object.entries(statuses || {}).reduce((result, [word, status]) => {
-    const cleanWord = String(word || '').trim().slice(0, 80);
-    const cleanStatusValue = cleanStatus(status);
-    if (allowedWords.has(cleanWord) && cleanStatusValue !== 'none') {
-      result[cleanWord] = cleanStatusValue;
-    }
-    return result;
-  }, {});
 }
 
 function cleanFeedback(feedback) {
@@ -543,35 +529,7 @@ function getStorageKey(url) {
   return code.length >= 8 ? `favorites:${code}` : 'favorites:global';
 }
 
-export function applyFavoriteAction(currentWorkflow = {}, body = {}) {
-  const current = cleanStoredData(currentWorkflow);
-  const word = cleanWords([body.word])[0];
-  const currentWords = current.words;
-  let words = currentWords;
-  if (body.action === 'add') words = cleanWords([word, ...currentWords]);
-  if (body.action === 'remove') words = currentWords.filter(item => item !== word);
-  if (body.action === 'status' && !currentWords.includes(word)) words = cleanWords([word, ...currentWords]);
-  const statuses = cleanStatuses(current.statuses, words);
-  if (body.action === 'remove') delete statuses[word];
-  if (body.action === 'status' && words.includes(word)) {
-    const status = cleanStatus(body.status);
-    if (status === 'none') delete statuses[word];
-    else statuses[word] = status;
-  }
-
-  const patch = {
-    words,
-    statuses,
-    updated: new Date().toISOString()
-  };
-  if (body.feedback) patch.feedback = body.feedback;
-  if (body.publishedRecords) patch.publishedRecords = body.publishedRecords;
-  if (body.candidatePool) patch.candidatePool = body.candidatePool;
-  if (body.aiBatches) patch.aiBatches = body.aiBatches;
-  if (body.aiPreview) patch.aiPreview = body.aiPreview;
-
-  return mergeWorkflowForFullSave(current, patch);
-}
+export { applyFavoriteAction };
 
 export async function onRequest({ request, env }) {
   const methods = ['GET', 'POST', 'PUT', 'OPTIONS'];
@@ -637,15 +595,22 @@ export async function onRequest({ request, env }) {
       return fail(400, 'INVALID_ACTION', 'action 必须是 add、remove 或 status');
     }
 
-    const stored = await env.FAVORITES.get(key, 'json');
-    const current = cleanWorkflowSchema(stored);
-    const next = applyFavoriteAction(current, body);
-    const mutation = await commitWorkflowMutation(env, key, next, getWorkflowMutationMetadata(request, body, {
+    const command = {
+      action: body.action,
+      word,
+      status: cleanStatus(body.status),
+      candidatePool: body?.candidatePool?.[word] ? { [word]: body.candidatePool[word] } : {}
+    };
+    const metadata = getWorkflowMutationMetadata(request, body, {
       action: `favorite.${body.action}`,
       actor: authorization.actor,
       target: word,
       summary: body.action === 'status' ? `状态更新为 ${cleanStatus(body.status)}` : ''
-    }), { strategy: 'full-save' });
+    });
+    const mutation = await commitWorkflowMutation(env, key, command, {
+      ...metadata,
+      expectedRevision: null
+    }, { strategy: 'favorite-command' });
     if (mutation.conflict) {
       return respond({
         ok: false,

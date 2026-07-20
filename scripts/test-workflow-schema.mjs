@@ -75,9 +75,10 @@ test('首次 pageshow 不会取消手机端初始化同步，BFCache 恢复时�
   const appSource = fs.readFileSync(new URL('../app.js', import.meta.url), 'utf8');
   const syncSource = fs.readFileSync(new URL('../frontend/workflow-sync.mjs', import.meta.url), 'utf8');
   assert.ok(appSource.includes("window.addEventListener('pageshow', event =>"));
-  assert.ok(appSource.includes('if (!event.persisted) return;'));
+  assert.ok(appSource.includes('if (!event.persisted) {'));
+  assert.ok(appSource.includes('void flushPendingFavoriteIntents();'));
   assert.ok(syncSource.includes('timeoutMs: config.timeoutMs || 45000'));
-  assert.ok(appSource.includes('void syncRemoteDataInBackground();'));
+  assert.ok(appSource.includes('void syncRemoteDataInBackground().finally(() => flushPendingFavoriteIntents());'));
 });
 
 test('移动端本地缓存超额不会把成功的云端同步误判为失败', () => {
@@ -255,7 +256,7 @@ test('前端收藏使用小命令响应并防止旧同步覆盖新版本', () =>
   const storeSource = fs.readFileSync(new URL('../frontend/workflow-store.mjs', import.meta.url), 'utf8');
   const commandSource = appSource.slice(
     appSource.indexOf('function buildFavoriteCommandPayload'),
-    appSource.indexOf('function isFavoriteCommandSatisfied')
+    appSource.indexOf('async function fetchFavoriteCommandState')
   );
   assert.ok(appSource.includes("url.searchParams.set('view', 'command');"));
   assert.ok(appSource.includes('function applyFavoriteCommandResponse(responseData, kanji)'));
@@ -266,16 +267,20 @@ test('前端收藏使用小命令响应并防止旧同步覆盖新版本', () =>
   assert.ok(storeSource.includes('data.revision < revision'));
   assert.ok(syncSource.includes("error?.code === 'REQUEST_ABORTED'"));
   assert.ok(syncSource.includes('function isRetryableWorkflowMutationError(error)'));
-  assert.ok(appSource.includes('async function requestFavoriteCommand(kanji, action, status = \'\')'));
+  assert.ok(appSource.includes("async function requestFavoriteCommand(kanji, action, status = '', operationId = '')"));
   assert.ok(syncSource.includes('for (let attempt = 0; attempt < 2; attempt += 1)'));
-  assert.ok(appSource.includes('operationId,'));
+  assert.ok(appSource.includes('operationId: operationId || createOperationId'));
   assert.ok(syncSource.includes('timeoutMs: config.timeoutMs || 30000'));
-  assert.ok(appSource.includes('function isFavoriteCommandSatisfied(kanji, action, status = \'\')'));
-  assert.ok(appSource.includes('buildReconciledResponse: () => buildReconciledFavoriteCommandResponse(kanji)'));
+  assert.ok(appSource.includes('function isFavoriteCommandDataSatisfied(responseData, kanji, action, status = \'\')'));
+  assert.ok(appSource.includes('reconcile: () => fetchFavoriteCommandState(kanji)'));
+  assert.ok(appSource.includes('buildReconciledResponse: responseData => ({ ...responseData, ok: true, reconciled: true })'));
   assert.ok(syncSource.includes("if (error?.status === 409 && !reconciled) break;"));
-  assert.ok(appSource.includes('const previousFavorites = [...favorites];'));
-  assert.ok(appSource.includes('if (cloudWorkflowFailed) {'));
+  assert.ok(appSource.includes('const favoriteIntentStore = createFavoriteIntentStore({'));
+  assert.ok(appSource.includes('favoriteIntentStore.markWaiting'));
+  assert.ok(appSource.includes('applyPendingFavoriteIntents();'));
+  assert.equal(appSource.includes('favorites = previousFavorites;'), false);
   assert.ok(appSource.includes("window.addEventListener('online', () =>"));
+  assert.ok(appSource.includes("document.addEventListener('visibilitychange', () =>"));
 });
 
 test('历史日期缺少 aiCard 时安全渲染并按需重新加载词卡', () => {

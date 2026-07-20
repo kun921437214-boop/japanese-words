@@ -38,6 +38,10 @@ import {
   transitionFavoriteStatus,
   transitionFavoriteToggle
 } from '../frontend/favorites-page.mjs';
+import {
+  applyFavoriteIntents,
+  createFavoriteIntentStore
+} from '../frontend/favorite-intents.mjs';
 import { createImageFallbackController } from '../frontend/image-fallback.mjs';
 import { createManualWordModalController } from '../frontend/manual-word-modal.mjs';
 import { createModalActionsController } from '../frontend/modal-actions.mjs';
@@ -868,9 +872,8 @@ test('published record parser rejects lookalike and insecure URLs', () => {
   assert.equal(extractPublishedAtFromShareText('发布于 2026-7-9'), '2026-07-09T00:00');
 });
 
-test('favorite conflict reconciles remote state before sending a duplicate mutation', async () => {
+test('favorite retry reconciles the compact remote state before sending a duplicate mutation', async () => {
   let requestCount = 0;
-  let satisfied = false;
   const sync = createWorkflowSync({
     request: async () => {
       requestCount += 1;
@@ -880,10 +883,6 @@ test('favorite conflict reconciles remote state before sending a duplicate mutat
       });
     },
     createError: createApiError,
-    loadRemote: async () => {
-      satisfied = true;
-      return true;
-    },
     delay: async () => {}
   });
 
@@ -891,12 +890,81 @@ test('favorite conflict reconciles remote state before sending a duplicate mutat
     endpoint: '/favorites',
     payload: { action: 'add', word: '思い切って' },
     operationId: 'favorite-add-once',
-    isSatisfied: () => satisfied,
-    buildReconciledResponse: () => ({ ok: true, reconciled: true })
+    reconcile: async () => ({ words: ['思い切って'], statuses: {} }),
+    isSatisfied: remote => remote.words.includes('思い切って'),
+    buildReconciledResponse: remote => ({ ...remote, ok: true, reconciled: true })
   });
 
-  assert.deepEqual(result, { ok: true, reconciled: true });
+  assert.deepEqual(result, { words: ['思い切って'], statuses: {}, ok: true, reconciled: true });
   assert.equal(requestCount, 1);
+});
+
+test('favorite timeout treats an already committed remote command as success without another POST', async () => {
+  let requestCount = 0;
+  const sync = createWorkflowSync({
+    request: async () => {
+      requestCount += 1;
+      const error = new Error('request timed out');
+      error.code = 'REQUEST_TIMEOUT';
+      throw error;
+    },
+    createError: createApiError,
+    delay: async () => {}
+  });
+
+  const result = await sync.mutate({
+    endpoint: '/favorites',
+    payload: { action: 'add', word: '口をつぐむ' },
+    operationId: 'favorite-timeout-once',
+    reconcile: async () => ({ words: ['口をつぐむ'], statuses: {}, revision: 12 }),
+    isSatisfied: remote => remote.words.includes('口をつぐむ'),
+    buildReconciledResponse: remote => ({ ...remote, reconciled: true })
+  });
+
+  assert.equal(result.reconciled, true);
+  assert.equal(result.revision, 12);
+  assert.equal(requestCount, 1);
+});
+
+test('pending favorite intents survive reload, overlay stale cloud data, and clear after acknowledgement', () => {
+  const values = new Map();
+  const storage = {
+    getItem: key => values.get(key) || null,
+    setItem: (key, value) => values.set(key, value),
+    removeItem: key => values.delete(key)
+  };
+  const store = createFavoriteIntentStore({
+    storage,
+    createOperationId: word => `favorite-op-${word}`,
+    now: () => '2026-07-20T09:48:00.000Z'
+  });
+  const intent = store.stage('口をつぐむ', true);
+  assert.equal(intent.operationId, 'favorite-op-口をつぐむ');
+  assert.deepEqual(store.overlay([], {}).words, ['口をつぐむ']);
+
+  const restored = createFavoriteIntentStore({ storage });
+  assert.equal(restored.get('口をつぐむ').desiredFavorite, true);
+  restored.reconcile([], {});
+  assert.ok(restored.get('口をつぐむ'));
+  restored.reconcile(['口をつぐむ'], {});
+  assert.equal(restored.get('口をつぐむ'), null);
+  assert.equal(values.size, 0);
+});
+
+test('pending remove intent keeps a stale cloud favorite hidden until the server confirms removal', () => {
+  const result = applyFavoriteIntents(
+    ['口をつぐむ', '息をのむ'],
+    { '口をつぐむ': 'pending' },
+    [{
+      word: '口をつぐむ',
+      operationId: 'favorite-remove-op',
+      desiredFavorite: false,
+      state: 'waiting',
+      updatedAt: '2026-07-20T09:50:00.000Z'
+    }]
+  );
+  assert.deepEqual(result.words, ['息をのむ']);
+  assert.equal(result.statuses['口をつぐむ'], undefined);
 });
 
 test('workflow reads stop before fetch when a newer scoped load supersedes them', async () => {

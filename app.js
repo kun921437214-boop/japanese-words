@@ -34,6 +34,9 @@ import {
   transitionFavoriteStatus,
   transitionFavoriteToggle
 } from './frontend/favorites-page.mjs';
+import {
+  createFavoriteIntentStore
+} from './frontend/favorite-intents.mjs';
 import { createImageFallbackController } from './frontend/image-fallback.mjs';
 import { createManualWordModalController } from './frontend/manual-word-modal.mjs';
 import { createModalActionsController } from './frontend/modal-actions.mjs';
@@ -2731,6 +2734,7 @@ function loadLocalWorkflow(options = {}) {
 
   applyWorkflowData(workflow);
   workflowStore.replaceMetadata(workflow);
+  applyPendingFavoriteIntents();
   if (!deferLibraryAudit) {
     migrateOriginalWordsAfterAudit();
     ensureReviewedSeedWordsInCandidatePool();
@@ -2814,6 +2818,26 @@ const workflowSync = createWorkflowSync({
   createError: createApiError,
   loadRemote: () => loadCloudWorkflow({ mode: 'remote-first', showMessages: false })
 });
+const favoriteIntentStore = createFavoriteIntentStore({
+  storage: localStorage,
+  createOperationId: () => createOperationId('favorite-intent')
+});
+let favoriteIntentFlushPromise = null;
+let favoriteIntentRetryTimer = null;
+
+function applyPendingFavoriteIntents() {
+  const overlaid = favoriteIntentStore.overlay(favorites, favoriteStatuses);
+  favorites = filterKnownFavorites(overlaid.words, candidatePool);
+  favoriteStatuses = cleanStoredWorkflow({
+    words: favorites,
+    statuses: overlaid.statuses
+  }).statuses;
+  return overlaid;
+}
+
+function getPendingFavoriteIntent(kanji) {
+  return favoriteIntentStore.get(kanji);
+}
 
 async function runUiOperation(key, operation) {
   return apiClient.runExclusive(key, operation, () => showToast('操作正在处理中，请稍候'));
@@ -2987,6 +3011,8 @@ function applyRemoteWorkflowState(remoteData, options = {}) {
   }
 
   applyWorkflowData(prepared.state);
+  favoriteIntentStore.reconcile(prepared.data.words, prepared.data.statuses);
+  applyPendingFavoriteIntents();
   cloudWorkflowFailed = false;
   lastCloudSyncAt = nowIso();
   hydrateTodayWordsFromSnapshot();
@@ -3002,6 +3028,8 @@ function applyFavoriteCommandResponse(responseData, kanji) {
     words: favorites,
     statuses: responseData?.statuses
   }).statuses;
+  favoriteIntentStore.reconcile(responseData?.words, responseData?.statuses);
+  applyPendingFavoriteIntents();
   workflowStore.applyCommandMetadata(responseData);
   cloudWorkflowFailed = false;
   lastCloudSyncAt = nowIso();
@@ -3018,40 +3046,40 @@ function buildFavoriteCommandPayload(kanji, action, status = '') {
   return payload;
 }
 
-function isFavoriteCommandSatisfied(kanji, action, status = '') {
-  const isFavorite = favorites.includes(kanji);
+function isFavoriteCommandDataSatisfied(responseData, kanji, action, status = '') {
+  const remoteWords = safeArray(responseData?.words).map(word => String(word || '').trim()).filter(Boolean);
+  const isFavorite = remoteWords.includes(kanji);
   if (action === 'add') return isFavorite;
   if (action === 'remove') return !isFavorite;
-  if (action === 'status') return isFavorite && getFavoriteStatus(kanji) === cleanFavoriteStatus(status);
+  if (action === 'status') {
+    return isFavorite && cleanFavoriteStatus(responseData?.statuses?.[kanji]) === cleanFavoriteStatus(status);
+  }
   return false;
 }
 
-function buildReconciledFavoriteCommandResponse(kanji) {
-  return {
-    ok: true,
-    words: favorites,
-    statuses: favoriteStatuses,
-    candidate: candidatePool[kanji] || null,
-    revision: workflowStore.getRevision(),
-    auditEvent: null,
-    updated: lastCloudSyncAt,
-    schemaVersion: 3
-  };
+async function fetchFavoriteCommandState(kanji) {
+  const endpoint = getFavoriteCommandEndpoint(kanji);
+  if (!endpoint) return false;
+  return workflowSync.read({
+    endpoint,
+    cancelKey: `favorite-command-state:${kanji}`,
+    timeoutMs: 15000
+  });
 }
 
-async function requestFavoriteCommand(kanji, action, status = '') {
+async function requestFavoriteCommand(kanji, action, status = '', operationId = '') {
   const endpoint = getFavoriteCommandEndpoint(kanji);
   if (!endpoint) throw new Error('收藏同步接口还没有配置');
   ensureFavoriteWordsHaveCandidateEntries();
   const payload = buildFavoriteCommandPayload(kanji, action, status);
-  const operationId = createOperationId(`favorite-${action}`);
   return workflowSync.mutate({
     endpoint,
     payload,
-    operationId,
+    operationId: operationId || createOperationId(`favorite-${action}`),
     operationPrefix: `favorite-${action}`,
-    isSatisfied: () => isFavoriteCommandSatisfied(kanji, action, status),
-    buildReconciledResponse: () => buildReconciledFavoriteCommandResponse(kanji)
+    reconcile: () => fetchFavoriteCommandState(kanji),
+    isSatisfied: responseData => isFavoriteCommandDataSatisfied(responseData, kanji, action, status),
+    buildReconciledResponse: responseData => ({ ...responseData, ok: true, reconciled: true })
   });
 }
 
@@ -3237,20 +3265,89 @@ async function refreshPublishedMetrics(recordId = '') {
   }
 }
 
-async function syncFavoriteChange(kanji, action) {
+function schedulePendingFavoriteSync(delayMs = 12000) {
+  if (favoriteIntentRetryTimer || !favoriteIntentStore.list().length) return;
+  favoriteIntentRetryTimer = window.setTimeout(() => {
+    favoriteIntentRetryTimer = null;
+    void flushPendingFavoriteIntents();
+  }, Math.max(500, delayMs));
+}
+
+async function syncFavoriteChange(kanji, action, intent = null, options = {}) {
+  const currentIntent = intent || favoriteIntentStore.get(kanji);
+  const operationId = currentIntent?.operationId || createOperationId(`favorite-${action}`);
+  if (currentIntent) favoriteIntentStore.markSaving(kanji, operationId);
+  applyPendingFavoriteIntents();
+  updateAllBadges();
+  refreshCurrentGrid();
   try {
-    const responseData = await requestFavoriteCommand(kanji, action);
+    const responseData = await requestFavoriteCommand(kanji, action, '', operationId);
+    if (!isFavoriteCommandDataSatisfied(responseData, kanji, action)) {
+      throw new Error('云端尚未确认本次收藏操作');
+    }
+    favoriteIntentStore.acknowledge(kanji, operationId);
     applyFavoriteCommandResponse(responseData, kanji);
     updateAllBadges();
     refreshCurrentGrid();
     return true;
   } catch (error) {
     console.warn('收藏同步失败', error);
-    const reconciled = await loadCloudWorkflow({ mode: 'remote-first', showMessages: false });
-    cloudWorkflowFailed = !reconciled;
-    showToast('团队同步失败，本次修改未保存到团队后台');
+    let remoteState = null;
+    try {
+      remoteState = await fetchFavoriteCommandState(kanji);
+    } catch (reconcileError) {
+      console.warn('收藏状态核对失败', reconcileError);
+    }
+    if (remoteState && isFavoriteCommandDataSatisfied(remoteState, kanji, action)) {
+      favoriteIntentStore.acknowledge(kanji, operationId);
+      applyFavoriteCommandResponse(remoteState, kanji);
+      updateAllBadges();
+      refreshCurrentGrid();
+      return true;
+    }
+    if (remoteState) applyFavoriteCommandResponse(remoteState, kanji);
+    favoriteIntentStore.markWaiting(
+      kanji,
+      operationId,
+      error?.message || getApiErrorMessage({}, error?.status)
+    );
+    applyPendingFavoriteIntents();
+    saveLocalWorkflow();
+    updateAllBadges();
+    refreshCurrentGrid();
+    cloudWorkflowFailed = !remoteState;
+    if (options.showMessage !== false) showToast('收藏已记下，网络恢复后会自动同步');
+    if (options.scheduleRetry !== false) schedulePendingFavoriteSync();
     return false;
   }
+}
+
+function flushPendingFavoriteIntents(options = {}) {
+  if (favoriteIntentFlushPromise) return favoriteIntentFlushPromise;
+  if (typeof navigator !== 'undefined' && navigator.onLine === false) {
+    schedulePendingFavoriteSync(30000);
+    return Promise.resolve(false);
+  }
+  const operation = (async () => {
+    let allSynced = true;
+    for (const intent of favoriteIntentStore.list().reverse()) {
+      const latest = favoriteIntentStore.get(intent.word);
+      if (!latest || latest.operationId !== intent.operationId) continue;
+      const synced = await syncFavoriteChange(latest.word, latest.action, latest, {
+        showMessage: false,
+        scheduleRetry: false
+      });
+      allSynced = synced && allSynced;
+    }
+    if (favoriteIntentStore.list().length) schedulePendingFavoriteSync(30000);
+    else if (options.showMessage) showToast('之前等待同步的收藏已经保存');
+    return allSynced;
+  })();
+  const trackedOperation = operation.finally(() => {
+    if (favoriteIntentFlushPromise === trackedOperation) favoriteIntentFlushPromise = null;
+  });
+  favoriteIntentFlushPromise = trackedOperation;
+  return trackedOperation;
 }
 
 async function syncFavoriteStatus(kanji, status) {
@@ -6329,12 +6426,11 @@ async function submitManualWord() {
 
 async function toggleFavorite(kanji, forceState = null) {
   return runUiOperation(`favorite:${kanji}`, async () => {
-    const previousFavorites = [...favorites];
-    const previousStatuses = { ...favoriteStatuses };
-    const previousTodaySnapshot = cleanTodaySnapshot(todaySnapshot);
-    const previousCandidate = candidatePool[kanji]
-      ? cleanCandidatePoolEntry(kanji, candidatePool[kanji])
-      : null;
+    const existingIntent = getPendingFavoriteIntent(kanji);
+    if (existingIntent) {
+      showToast(existingIntent.state === 'saving' ? '收藏正在保存' : '收藏已记下，正在等待同步');
+      return true;
+    }
     const transition = transitionFavoriteToggle({
       kanji,
       favorites,
@@ -6344,33 +6440,26 @@ async function toggleFavorite(kanji, forceState = null) {
     const action = transition.action;
     let entry = null;
     if (action === 'remove') {
-      showToast('正在从选题池移除');
+      showToast('正在保存移除操作');
     } else if (action === 'add') {
       entry = ensureManualKeepEntry(kanji);
       removeWordFromTodaySnapshot(kanji);
-      showToast('正在加入选题池');
+      showToast('正在保存收藏');
     }
     if (!action) return true;
+    const intent = favoriteIntentStore.stage(kanji, action === 'add');
+    if (!intent) {
+      showToast('收藏操作没有记录成功，请稍后重试');
+      return false;
+    }
     favorites = transition.favorites;
     favoriteStatuses = transition.statuses;
+    applyPendingFavoriteIntents();
     saveLocalWorkflow();
     updateAllBadges();
     refreshCurrentGrid();
-    const synced = await syncFavoriteChange(kanji, action);
-    if (!synced) {
-      if (cloudWorkflowFailed) {
-        favorites = previousFavorites;
-        favoriteStatuses = previousStatuses;
-        todaySnapshot = previousTodaySnapshot;
-        if (previousCandidate) candidatePool[kanji] = previousCandidate;
-        else delete candidatePool[kanji];
-        hydrateTodayWordsFromSnapshot();
-        saveLocalWorkflow();
-        updateAllBadges();
-        refreshCurrentGrid();
-      }
-      return false;
-    }
+    const synced = await syncFavoriteChange(kanji, action, intent);
+    if (!synced) return true;
     showToast(action === 'add' ? '已加入选题池' : '已从选题池移除');
     if (action === 'add' && cleanAiCard(entry?.aiCard || {})?.cardStatus !== 'ready') {
       void generateDeepSeekWordCards([kanji], { force: false, silent: true }).then(savedCount => {
@@ -6590,6 +6679,16 @@ function getDailyHotDirectionTags(word = {}) {
 
 function getDailyHotTeamState(word = {}) {
   const kanji = word.kanji || '';
+  const favoriteIntent = getPendingFavoriteIntent(kanji);
+  if (favoriteIntent) {
+    const isSaving = favoriteIntent.state === 'saving';
+    const actionLabel = favoriteIntent.desiredFavorite ? '收藏' : '移除';
+    return {
+      key: isSaving ? 'syncing' : 'waiting-sync',
+      label: isSaving ? `${actionLabel}保存中` : `${actionLabel}待同步`,
+      note: isSaving ? `${actionLabel}保存中` : `${actionLabel}待同步`
+    };
+  }
   const status = getFavoriteStatus(kanji);
   const isPublished = status === 'published' || cleanPublishedRecords(publishedRecords).some(record => record.word === kanji);
   const isPending = status === 'pending';
@@ -6604,6 +6703,24 @@ function getDailyHotTeamState(word = {}) {
   if (isSkipped) return { key: 'skipped', label: '已跳过', note: '已跳过' };
   if (needsReview) return { key: 'review', label: '需查证', note: '需查证' };
   return { key: 'idle', label: '未处理', note: '未处理' };
+}
+
+function getFavoriteButtonState(kanji, isFavorite = favorites.includes(kanji)) {
+  const intent = getPendingFavoriteIntent(kanji);
+  if (!intent) {
+    return {
+      className: isFavorite ? 'favorited' : '',
+      disabled: false,
+      label: isFavorite ? '取消收藏' : '收藏'
+    };
+  }
+  const isSaving = intent.state === 'saving';
+  const actionLabel = intent.desiredFavorite ? '收藏' : '移除';
+  return {
+    className: `${intent.desiredFavorite ? 'favorited ' : ''}${isSaving ? 'syncing' : 'waiting-sync'}`.trim(),
+    disabled: true,
+    label: isSaving ? `${actionLabel}正在保存` : `${actionLabel}等待同步`
+  };
 }
 
 function getRecommendationGrade(word = {}) {
@@ -6655,7 +6772,8 @@ function dismissDailyHotRecommendation(kanji) {
 
 function renderTodayCard(word) {
   const teamState = getDailyHotTeamState(word);
-  const isFav = teamState.key === 'favorite' || teamState.key === 'pending' || teamState.key === 'published';
+  const isFav = favorites.includes(word.kanji);
+  const favoriteButton = getFavoriteButtonState(word.kanji, isFav);
   const isSkipped = teamState.key === 'skipped';
   const reason = getDailyHotReason(word);
   const directionTags = getDailyHotDirectionTags(word);
@@ -6692,7 +6810,7 @@ function renderTodayCard(word) {
           <div class="card-reading">${escapeHTML(word.reading)}</div>
         </div>
         <div class="card-top-actions" data-daily-hot-stop>
-          <button class="card-fav-btn ${isFav ? 'favorited' : ''}" data-daily-hot-action="toggle-favorite" data-kanji="${safeKanjiAction}">
+          <button class="card-fav-btn ${favoriteButton.className}" title="${escapeHTML(favoriteButton.label)}" aria-label="${escapeHTML(favoriteButton.label)}" ${favoriteButton.disabled ? 'disabled' : ''} data-daily-hot-action="toggle-favorite" data-kanji="${safeKanjiAction}">
             <img class="fav-icon" src="assets/illustrations/dorayaki.png" alt="收藏">
           </button>
           <button class="card-dismiss-btn" title="不感兴趣" aria-label="不感兴趣" data-daily-hot-action="dismiss" data-kanji="${safeKanjiAction}">×</button>
@@ -6705,7 +6823,7 @@ function renderTodayCard(word) {
             <div class="daily-hot-reference-reading">${escapeHTML(word.reading)}</div>
           </div>
           <div class="daily-hot-reference-controls" data-daily-hot-stop>
-            <button class="card-fav-btn ${isFav ? 'favorited' : ''}" title="收藏" aria-label="收藏" data-daily-hot-action="toggle-favorite" data-kanji="${safeKanjiAction}">
+            <button class="card-fav-btn ${favoriteButton.className}" title="${escapeHTML(favoriteButton.label)}" aria-label="${escapeHTML(favoriteButton.label)}" ${favoriteButton.disabled ? 'disabled' : ''} data-daily-hot-action="toggle-favorite" data-kanji="${safeKanjiAction}">
               <img class="fav-icon" src="assets/illustrations/dorayaki.png" alt="收藏">
             </button>
             <button class="card-dismiss-btn" title="不感兴趣" aria-label="不感兴趣" data-daily-hot-action="dismiss" data-kanji="${safeKanjiAction}">×</button>
@@ -6809,7 +6927,8 @@ function renderCodexDraftPreviewCard(item, index) {
   const recommendationGrade = audit.recommendationLevel || 'A';
   const categoryLabel = getDailyQualityCategoryLabel(audit.qualityCategory);
   const teamState = getDailyHotTeamState({ kanji: item.kanji, candidateMeta: item });
-  const isFav = ['favorite', 'pending', 'published'].includes(teamState.key);
+  const isFav = favorites.includes(item.kanji);
+  const favoriteButton = getFavoriteButtonState(item.kanji, isFav);
   const riskStateLabel = getRiskStateLabel({ ...item, candidateMeta: item });
   const riskStateKey = getRiskStateKey(riskStateLabel);
   const safeKanjiAction = escapeHTML(item.kanji);
@@ -6820,7 +6939,7 @@ function renderCodexDraftPreviewCard(item, index) {
         <img class="codex-preview-image" src="${escapeHTML(imageUrl || fallbackSvg)}" alt="${escapeHTML(item.kanji)} 参考插画" loading="lazy" data-image-fallback="fallback-src" data-fallback-src="${escapeHTML(fallbackSvg)}">
         <span class="codex-preview-readonly-badge">草稿内容只读</span>
         <div class="card-top-actions" data-daily-hot-stop>
-          <button class="card-fav-btn ${isFav ? 'favorited' : ''}" title="${isFav ? '取消收藏' : '收藏'}" aria-label="${isFav ? '取消收藏' : '收藏'}" data-daily-hot-action="toggle-codex-favorite" data-kanji="${safeKanjiAction}">
+          <button class="card-fav-btn ${favoriteButton.className}" title="${escapeHTML(favoriteButton.label)}" aria-label="${escapeHTML(favoriteButton.label)}" ${favoriteButton.disabled ? 'disabled' : ''} data-daily-hot-action="toggle-codex-favorite" data-kanji="${safeKanjiAction}">
             <img class="fav-icon" src="assets/illustrations/dorayaki.png" alt="收藏">
           </button>
           <button class="card-dismiss-btn" title="不感兴趣（记录负反馈）" aria-label="不感兴趣" data-daily-hot-action="codex-feedback" data-kanji="${safeKanjiAction}" data-reason="uninterested">×</button>
@@ -6866,7 +6985,8 @@ function openCodexDraftPreview(index) {
   const coverSuggestion = wordCardView.coverSuggestion;
   const hasCoverSuggestion = wordCardView.hasCoverSuggestion;
   const teamState = getDailyHotTeamState({ kanji: item.kanji, candidateMeta: item });
-  const isFav = ['favorite', 'pending', 'published'].includes(teamState.key);
+  const isFav = favorites.includes(item.kanji);
+  const favoriteButton = getFavoriteButtonState(item.kanji, isFav);
   const riskStateLabel = getRiskStateLabel({ ...item, candidateMeta: item });
   const riskStateKey = getRiskStateKey(riskStateLabel);
   const safeKanjiAction = escapeHTML(item.kanji);
@@ -6923,7 +7043,7 @@ function openCodexDraftPreview(index) {
             <section class="codex-preview-section">
               <h3>团队操作</h3>
               <div class="modal-footer-actions codex-preview-modal-actions">
-                <button class="btn ${isFav ? 'btn-ghost' : 'btn-primary'}" data-modal-action="toggle-codex-favorite" data-kanji="${safeKanjiAction}">${isFav ? '取消收藏' : '加入收藏 / 选题池'}</button>
+                <button class="btn ${isFav ? 'btn-ghost' : 'btn-primary'}" ${favoriteButton.disabled ? 'disabled' : ''} data-modal-action="toggle-codex-favorite" data-kanji="${safeKanjiAction}">${favoriteButton.disabled ? escapeHTML(favoriteButton.label) : (isFav ? '取消收藏' : '加入收藏 / 选题池')}</button>
                 ${renderFeedbackControl(item.kanji, { context: 'codex-preview' })}
               </div>
               <p class="modal-section-subtle">收藏和负反馈会进入现有团队工作流；明日草稿内容本身保持只读。</p>
@@ -6939,6 +7059,7 @@ function openCodexDraftPreview(index) {
 function renderFavoriteCard(word) {
   const fallbackSvg = `data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 520 390%22><rect fill=%22%23fdeef0%22 width=%22520%22 height=%22390%22/><text x=%22260%22 y=%22195%22 text-anchor=%22middle%22 font-size=%2272%22 fill=%22%23f47a9a%22>${encodeURIComponent(word.kanji)}</text></svg>`;
   const isFav = favorites.includes(word.kanji);
+  const favoriteButton = getFavoriteButtonState(word.kanji, isFav);
   const entry = cleanCandidatePoolEntry(word.kanji, candidatePool[word.kanji] || word.candidateMeta || {}) || {};
   const rawAiCard = entry.aiCard || word.aiCard || {};
   const wordCardView = buildWordCardViewModel({
@@ -6960,7 +7081,7 @@ function renderFavoriteCard(word) {
           <div class="card-reading">${escapeHTML(word.reading)}</div>
         </div>
         <div class="card-top-actions" data-favorites-stop>
-          <button class="card-fav-btn ${isFav ? 'favorited' : ''}" title="取消收藏" aria-label="取消收藏" data-favorites-action="toggle-favorite" data-kanji="${escapeHTML(word.kanji)}" data-force-state="false">
+          <button class="card-fav-btn ${favoriteButton.className}" title="${escapeHTML(favoriteButton.label)}" aria-label="${escapeHTML(favoriteButton.label)}" ${favoriteButton.disabled ? 'disabled' : ''} data-favorites-action="toggle-favorite" data-kanji="${escapeHTML(word.kanji)}" data-force-state="false">
             <img class="fav-icon" src="assets/illustrations/dorayaki.png" alt="取消收藏">
           </button>
         </div>
@@ -8447,16 +8568,22 @@ async function init() {
   hydrateTodayWordsFromSnapshot();
   updateAllBadges();
   refreshCurrentGrid();
+  void flushPendingFavoriteIntents();
 }
 
 window.addEventListener('pageshow', event => {
-  if (!event.persisted) return;
+  favoriteIntentStore.reload();
+  applyPendingFavoriteIntents();
+  if (!event.persisted) {
+    void flushPendingFavoriteIntents();
+    return;
+  }
   cloudWorkflowLoadEpoch += 1;
   apiClient.abortAll();
   backgroundSyncPromise = null;
   resetTransientUiState();
   ensureTodayGridVisible();
-  void syncRemoteDataInBackground();
+  void syncRemoteDataInBackground().finally(() => flushPendingFavoriteIntents());
 });
 
 window.addEventListener('offline', () => {
@@ -8470,7 +8597,16 @@ window.addEventListener('online', () => {
     if (!synced) return;
     updateSyncStatus('网络已恢复，云端数据已同步。', '#4caf50');
     showToast('网络已恢复，数据已重新同步');
-  });
+  }).finally(() => flushPendingFavoriteIntents({ showMessage: true }));
+});
+
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState !== 'visible') return;
+  favoriteIntentStore.reload();
+  applyPendingFavoriteIntents();
+  updateAllBadges();
+  refreshCurrentGrid();
+  void flushPendingFavoriteIntents();
 });
 
 createAppShellController({

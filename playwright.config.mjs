@@ -1,12 +1,14 @@
 import { defineConfig } from '@playwright/test';
 
+const useRoutedStaticBuild = process.env.E2E_ROUTE_STATIC === '1';
+
 export default defineConfig({
   testDir: './e2e',
   fullyParallel: false,
   retries: process.env.CI ? 1 : 0,
   reporter: process.env.CI ? [['line'], ['html', { open: 'never' }]] : 'line',
   use: {
-    baseURL: 'http://127.0.0.1:4174',
+    baseURL: useRoutedStaticBuild ? 'http://app.test' : 'http://127.0.0.1:4174',
     locale: 'zh-CN',
     screenshot: 'only-on-failure',
     trace: 'retain-on-failure'
@@ -25,7 +27,7 @@ export default defineConfig({
       use: { browserName: 'chromium', viewport: { width: 402, height: 874 }, isMobile: true, ...(process.env.CI ? {} : { channel: 'chrome' }) }
     }
   ],
-  webServer: {
+  webServer: useRoutedStaticBuild ? undefined : {
     command: 'node scripts/e2e-server.mjs',
     url: 'http://127.0.0.1:4174',
     reuseExistingServer: !process.env.CI,

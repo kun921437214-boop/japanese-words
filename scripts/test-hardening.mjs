@@ -255,6 +255,44 @@ test('coordinated full saves preserve the current workflow and enforce the autho
   assert.equal(mutation.workflow.revision, 5);
 });
 
+test('coordinated favorite commands ignore stale page revisions and preserve unrelated workflow domains', () => {
+  const current = {
+    words: ['既有收藏'],
+    feedback: { 既有收藏: { reasons: { tooBasic: 1 }, lastReason: 'tooBasic' } },
+    publishedRecords: [{ id: 'published-1', word: '既有收藏', title: '已发布内容' }],
+    todaySnapshot: {
+      dateKey: '2026-07-20',
+      words: ['今日词'],
+      generatedAt: '2026-07-20T02:00:00.000Z',
+      generatorVersion: 'daily-v4-dedup30-server',
+      version: 1
+    },
+    candidatePool: { 既有收藏: { kanji: '既有收藏', meaning: '保留' } },
+    revision: 8
+  };
+  const mutation = buildCoordinatedWorkflowMutation(current, {
+    action: 'add',
+    word: '新收藏',
+    feedback: {},
+    publishedRecords: [],
+    todaySnapshot: {},
+    candidatePool: { 新收藏: { kanji: '新收藏', meaning: '新增' } }
+  }, {
+    operationId: 'favorite-command-stale-page',
+    expectedRevision: 1,
+    action: 'favorite.add',
+    actor: 'editor@example.com'
+  }, { strategy: 'favorite-command' });
+
+  assert.equal(mutation.conflict, false);
+  assert.equal(mutation.workflow.revision, 9);
+  assert.deepEqual(mutation.workflow.words, ['新收藏', '既有收藏']);
+  assert.equal(mutation.workflow.feedback['既有收藏'].lastReason, 'tooBasic');
+  assert.equal(mutation.workflow.publishedRecords[0].title, '已发布内容');
+  assert.deepEqual(mutation.workflow.todaySnapshot.words, ['今日词']);
+  assert.equal(mutation.workflow.candidatePool['新收藏'].meaning, '新增');
+});
+
 test('Durable Object serializes same-revision writes before KV commit', async () => {
   const kv = createKv({ words: [], revision: 0, auditLog: [] });
   const coordinator = new WorkflowCoordinator({}, { FAVORITES: kv });
@@ -370,7 +408,7 @@ test('workflow and today endpoints reject unauthenticated requests before KV rea
   assert.equal(todayKv.getCalls, 0);
 });
 
-test('favorite mutation is idempotent and rejects a stale revision', async () => {
+test('favorite mutation is idempotent and accepts stale page revisions without losing earlier favorites', async () => {
   const kv = createKv({ words: [], revision: 0, auditLog: [] });
   const makeMutationRequest = (operationId, revision, word = 'モヤる') => request(undefined, {
     method: 'POST',
@@ -406,9 +444,10 @@ test('favorite mutation is idempotent and rejects a stale revision', async () =>
     env: { FAVORITES: kv, ADMIN_API_TOKEN: 'admin-secret' }
   });
   const staleData = await staleResponse.json();
-  assert.equal(staleResponse.status, 409);
-  assert.equal(staleData.error.code, 'REVISION_CONFLICT');
-  assert.equal(kv.putCalls, 1);
+  assert.equal(staleResponse.status, 200);
+  assert.equal(staleData.revision, 2);
+  assert.deepEqual(staleData.words, ['余裕', 'モヤる']);
+  assert.equal(kv.putCalls, 2);
 });
 
 test('favorite command view returns only mutation state and the target candidate', async () => {

@@ -799,6 +799,35 @@ body::before {
   transform:scale(1);
 }
 
+.card-fav-btn.syncing,
+.card-fav-btn.waiting-sync {
+  position:relative;
+  cursor:wait;
+  opacity:1;
+}
+
+.card-fav-btn.syncing {
+  box-shadow:0 0 0 3px rgba(244, 122, 154, 0.22), 0 10px 22px rgba(17, 19, 24, 0.12);
+}
+
+.card-fav-btn.syncing::after {
+  content:"";
+  position:absolute;
+  inset:-4px;
+  border:2px solid transparent;
+  border-top-color:var(--pink-500);
+  border-radius:50%;
+  animation:favorite-sync-spin 0.9s linear infinite;
+}
+
+.card-fav-btn.waiting-sync {
+  box-shadow:0 0 0 3px rgba(235, 164, 58, 0.24), 0 10px 22px rgba(17, 19, 24, 0.12);
+}
+
+@keyframes favorite-sync-spin {
+  to { transform:rotate(360deg); }
+}
+
 .card-dismiss-btn {
   width:42px;
   height:42px;
@@ -2419,6 +2448,13 @@ body::before {
   background:#f1fbf4;
   color:#4b9155;
   border-color:#cbeed6;
+}
+
+.daily-hot-tag.state-tag-syncing,
+.daily-hot-tag.state-tag-waiting-sync {
+  background:#fff7e9;
+  color:#a46319;
+  border-color:#f1d19e;
 }
 
 .daily-hot-tag.state-tag-published {

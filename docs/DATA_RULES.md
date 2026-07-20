@@ -8,6 +8,8 @@
 - `candidatePool` is the unified active candidate pool.
 - `aiCard` is the only formal word-card content source.
 
+`kotoba_pending_favorite_operations_v1` is a device-local delivery outbox, not a second team source of truth. It may temporarily overlay the last loaded workflow so a user action stays visible until the server confirms it.
+
 ## Workflow Top-Level Fields
 
 ```json
@@ -90,6 +92,14 @@ Manual words should:
 - Generate DeepSeek card later if no `aiCard.ready`.
 
 Canceling favorite should remove the word from `words` but should not delete the candidatePool entry.
+
+Favorite add/remove commands must:
+
+- Apply atomically to the latest workflow inside the workflow coordinator.
+- Be idempotent by operation ID and remain retryable after a timeout or page restart.
+- Ignore a stale page-wide workflow revision; unrelated workflow updates must not reject the favorite action.
+- Change only `words`, the target word's status, and the target candidate entry.
+- Stay in the local delivery outbox and remain overlaid in the UI until a compact server read confirms the requested state.
 
 ## DeepSeek Word Card Rules
 

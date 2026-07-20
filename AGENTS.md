@@ -66,6 +66,7 @@ npm run deploy:worker
   - `kotoba_favorite_statuses`
   - `kotoba_workflow_state_v2`
   - `kotoba_ai_preview_state`
+  - `kotoba_pending_favorite_operations_v1`
 - Existing API paths:
   - `/favorites`
   - `/published-refresh`

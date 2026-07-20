@@ -285,18 +285,6 @@ function cleanStatus(status) {
   return ['pending', 'published'].includes(status) ? status : 'none';
 }
 
-function cleanStatuses(statuses, words) {
-  const allowedWords = new Set(cleanWords(words));
-  return Object.entries(statuses || {}).reduce((result, [word, status]) => {
-    const cleanWord = String(word || '').trim().slice(0, 80);
-    const cleanStatusValue = cleanStatus(status);
-    if (allowedWords.has(cleanWord) && cleanStatusValue !== 'none') {
-      result[cleanWord] = cleanStatusValue;
-    }
-    return result;
-  }, {});
-}
-
 function cleanFeedback(feedback) {
   return Object.entries(feedback || {}).reduce((result, [word, record]) => {
     const cleanWord = String(word || '').trim().slice(0, 80);
@@ -656,40 +644,22 @@ export default {
       if (!word) return fail(400, 'INVALID_WORD', 'Invalid word');
       if (!['add', 'remove', 'status'].includes(body.action)) return fail(400, 'INVALID_ACTION', 'Invalid action');
 
-      const stored = await env.FAVORITES.get(key, 'json');
-      const current = cleanStoredData(stored);
-      const currentWords = current.words;
-      let words = currentWords;
-      if (body.action === 'add') words = cleanWords([word, ...currentWords]);
-      if (body.action === 'remove') words = currentWords.filter(item => item !== word);
-      const statuses = cleanStatuses(current.statuses, words);
-      if (body.action === 'remove') delete statuses[word];
-      if (body.action === 'status' && currentWords.includes(word)) {
-        const status = cleanStatus(body.status);
-        if (status === 'none') delete statuses[word];
-        else statuses[word] = status;
-      }
-      const data = cleanStoredWorkflow({
-        ...current,
-        words,
-        statuses,
-        feedback: body.feedback || current.feedback,
-        publishedRecords: body.publishedRecords || current.publishedRecords,
-        candidatePool: body.candidatePool || current.candidatePool,
-        aiBatches: body.aiBatches || current.aiBatches,
-        aiPreview: body.aiPreview || current.aiPreview,
-        todaySnapshot: body.todaySnapshot || current.todaySnapshot,
-        todayDismissed: body.todayDismissed || body.teamDismissed || current.todayDismissed,
-        historySnapshots: body.historySnapshots || current.historySnapshots,
-        todaySnapshotHistory: body.todaySnapshotHistory || current.todaySnapshotHistory,
-        updated: new Date().toISOString()
-      });
-      const mutation = await commitWorkflowMutation(env, key, data, getWorkflowMutationMetadata(request, body, {
+      const command = {
+        action: body.action,
+        word,
+        status: cleanStatus(body.status),
+        candidatePool: body?.candidatePool?.[word] ? { [word]: body.candidatePool[word] } : {}
+      };
+      const metadata = getWorkflowMutationMetadata(request, body, {
         action: `favorite.${body.action}`,
         actor: authorization.actor,
         target: word,
         summary: body.action === 'status' ? `状态更新为 ${cleanStatus(body.status)}` : ''
-      }), { strategy: 'full-save' });
+      });
+      const mutation = await commitWorkflowMutation(env, key, command, {
+        ...metadata,
+        expectedRevision: null
+      }, { strategy: 'favorite-command' });
       if (mutation.conflict) {
         return respond({
           ok: false,

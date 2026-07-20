@@ -1,6 +1,43 @@
 import { expect, test } from '@playwright/test';
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 const GENERATOR_VERSION = 'daily-v4-dedup30-server';
+const STATIC_BUILD_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'dist');
+const STATIC_CONTENT_TYPES = {
+  '.css': 'text/css; charset=utf-8',
+  '.html': 'text/html; charset=utf-8',
+  '.jpeg': 'image/jpeg',
+  '.jpg': 'image/jpeg',
+  '.js': 'text/javascript; charset=utf-8',
+  '.json': 'application/json; charset=utf-8',
+  '.mjs': 'text/javascript; charset=utf-8',
+  '.png': 'image/png',
+  '.svg': 'image/svg+xml',
+  '.webp': 'image/webp'
+};
+
+async function installStaticBuildFixture(page) {
+  if (process.env.E2E_ROUTE_STATIC !== '1') return;
+  await page.route('http://app.test/**', async route => {
+    const pathname = decodeURIComponent(new URL(route.request().url()).pathname);
+    const relativePath = pathname === '/' ? 'index.html' : pathname.replace(/^\/+/, '');
+    const filePath = path.resolve(STATIC_BUILD_ROOT, relativePath);
+    const isSafeFile = filePath.startsWith(`${STATIC_BUILD_ROOT}${path.sep}`)
+      && fs.existsSync(filePath)
+      && fs.statSync(filePath).isFile();
+    if (!isSafeFile) {
+      await route.fulfill({ status: 404, body: 'Not found' });
+      return;
+    }
+    await route.fulfill({
+      status: 200,
+      contentType: STATIC_CONTENT_TYPES[path.extname(filePath).toLowerCase()] || 'application/octet-stream',
+      path: filePath
+    });
+  });
+}
 
 function shanghaiDateKey(offsetDays = 0) {
   const formatter = new Intl.DateTimeFormat('en-CA', {
@@ -67,6 +104,7 @@ function createWorkflow() {
 }
 
 async function installApiFixture(page, options = {}) {
+  await installStaticBuildFixture(page);
   const state = createWorkflow();
   const controls = {
     mutationFailuresRemaining: options.mutationFailures || 0,
@@ -205,12 +243,27 @@ test('favorite and pending status persist through command synchronization', asyn
   expect(controls.pageErrors).toEqual([]);
 });
 
-test('conflicting favorite writes reconcile to the remote workflow', async ({ page }) => {
-  const controls = await openApp(page, { mutationFailures: 2 });
-  await page.locator('#todayGrid .daily-hot-card').filter({ hasText: 'そわそわ' }).locator('.card-fav-btn').click();
-  await expect(page.locator('#toast')).toContainText('团队同步失败');
-  await expect(page.locator('#favBadge')).toBeHidden();
-  expect(controls.commandRequests).toBe(2);
+test('failed favorite writes stay visible across reload and sync automatically after recovery', async ({ page }) => {
+  const controls = await openApp(page, { mutationFailures: Number.POSITIVE_INFINITY });
+  const favoriteButton = page.locator('#todayGrid .daily-hot-card').filter({ hasText: 'そわそわ' }).locator('.card-fav-btn');
+  await favoriteButton.click();
+  await expect(page.locator('#toast')).toContainText('收藏已记下');
+  await expect(page.locator('#favBadge')).toContainText('1');
+  await expect(favoriteButton).toBeDisabled();
+  await expect(favoriteButton).toHaveClass(/waiting-sync/);
+
+  await page.reload();
+  const restoredButton = page.locator('#todayGrid .daily-hot-card').filter({ hasText: 'そわそわ' }).locator('.card-fav-btn');
+  await expect(page.locator('#favBadge')).toContainText('1');
+  await expect(restoredButton).toBeDisabled();
+  await expect(restoredButton).toHaveClass(/waiting-sync/);
+
+  controls.mutationFailuresRemaining = 0;
+  await page.evaluate(() => window.dispatchEvent(new Event('online')));
+  await expect(restoredButton).toBeEnabled();
+  await expect(restoredButton).toHaveClass(/favorited/);
+  await expect(restoredButton).not.toHaveClass(/waiting-sync/);
+  expect(controls.commandRequests).toBeGreaterThanOrEqual(3);
   expect(controls.pageErrors).toEqual([]);
 });
 
