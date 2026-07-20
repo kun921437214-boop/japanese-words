@@ -54,6 +54,7 @@ import {
   getPublishedPerformanceScore,
   getPublishedUpdateState,
   getRecentPublishedAverage,
+  normalizePublishedCoverUrl,
   ratePublishedRecord
 } from '../frontend/published-page.mjs';
 import { createWorkflowCache } from '../frontend/workflow-cache.mjs';
@@ -1282,6 +1283,18 @@ test('published rating remains a derived compatibility signal instead of a store
 
   assert.equal(rating.saveRate, 0.05);
   assert.match(rating.reason, /收藏、分享、涨粉/);
+});
+
+test('published cover URLs recover stable Xiaohongshu assets and reject unsafe sources', () => {
+  const key = '1040g3k0322q8fokun2105obdjf8gjbkpcttk3vo';
+  const expiringUrl = `https://sns-webpic-qc.xhscdn.com/202607201442/example/notes_pre_post/${key}!nd_dft_wlteh_webp_3`;
+  const stableUrl = `https://sns-na-i6.xhscdn.com/notes_pre_post/${key}?imageView2/2/w/1080/format/jpg&origin=0`;
+  assert.equal(normalizePublishedCoverUrl(expiringUrl), stableUrl);
+  assert.equal(normalizePublishedCoverUrl(`https://sns-webpic-qc.xhscdn.com/202607201442/hash/${key}!nd_dft_wlteh_webp_3`), stableUrl);
+  assert.equal(normalizePublishedCoverUrl(`http://sns-na-i6.xhscdn.com/notes_pre_post/${key}?old=1`), stableUrl);
+  assert.equal(normalizePublishedCoverUrl('https://images.example.com/cover.jpg'), 'https://images.example.com/cover.jpg');
+  assert.equal(normalizePublishedCoverUrl('javascript:alert(1)'), '');
+  assert.equal(normalizePublishedCoverUrl('https://user:pass@images.example.com/cover.jpg'), '');
 });
 
 test('published page model exposes 30-day medians, 15-day state and red-card comparisons', () => {

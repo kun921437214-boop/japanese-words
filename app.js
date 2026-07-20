@@ -43,6 +43,7 @@ import {
   createPublishedPageController,
   getPublishedSourceLabel,
   getPublishedUpdateState,
+  normalizePublishedCoverUrl,
   ratePublishedRecord
 } from './frontend/published-page.mjs';
 import { buildWordCardViewModel } from './frontend/word-card-view.mjs';
@@ -7055,10 +7056,20 @@ function formatPublishedDate(value, includeTime = false) {
 }
 
 function getPublishedCover(record, word = {}) {
-  return record.coverUrl
-    || candidatePool[record.word]?.aiCard?.referenceImage?.url
-    || word.imageUrl
-    || '';
+  return [
+    record.coverUrl,
+    candidatePool[record.word]?.aiCard?.referenceImage?.url,
+    word.imageUrl
+  ].map(normalizePublishedCoverUrl).find(Boolean) || '';
+}
+
+function buildPublishedCoverFallback(label = '') {
+  const safeLabel = String(label || '笔记封面').trim().slice(0, 18)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="900" height="1200" viewBox="0 0 900 1200"><defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#ffdbe5"/><stop offset="0.52" stop-color="#fff4ee"/><stop offset="1" stop-color="#e7f3ff"/></linearGradient></defs><rect width="900" height="1200" rx="56" fill="url(#g)"/><circle cx="730" cy="170" r="170" fill="#fff" opacity=".4"/><circle cx="120" cy="1040" r="230" fill="#fff" opacity=".35"/><text x="450" y="560" text-anchor="middle" fill="#9f3654" font-family="-apple-system,BlinkMacSystemFont,'PingFang SC',sans-serif" font-size="72" font-weight="800">${safeLabel}</text><text x="450" y="650" text-anchor="middle" fill="#b67a8c" font-family="-apple-system,BlinkMacSystemFont,'PingFang SC',sans-serif" font-size="32" font-weight="600">封面暂不可用</text></svg>`;
+  return `data:image/svg+xml;charset=UTF-8,${encodeURIComponent(svg)}`;
 }
 
 function getPublishedContentLabel(record = {}, word = {}) {
@@ -7100,7 +7111,7 @@ function renderPublishedMedianSummary(medians = {}) {
           <strong>${medians.sampleSize ? formatPublishedMetric(value, kind) : '—'}</strong>
         </div>`).join('')}
     </div>
-    <p class="published-insights-note">卡片中低于对应中位数的数据会显示浅红底，方便快速定位需要复盘的内容。</p>`;
+    <p class="published-insights-note">卡片中低于对应中位数的数据会显示醒目的红色边框与底色，方便快速定位需要复盘的内容。</p>`;
 }
 
 function renderPublishedCard(item, medians) {
@@ -7112,12 +7123,12 @@ function renderPublishedCard(item, medians) {
   const sourceType = String(record.selectionSource?.type || 'unknown').replace(/[^a-z_]/g, '');
   const safeRecordId = escapeHTML(record.id);
   const contentLabel = getPublishedContentLabel(record, word);
+  const coverFallback = buildPublishedCoverFallback(contentLabel);
+  const coverSrc = coverUrl || coverFallback;
   return `
     <article class="published-card" data-published-action="open-detail" data-record-id="${safeRecordId}" tabindex="0" aria-label="查看 ${escapeHTML(record.title || record.word || '已发布内容')} 的详情">
-      <div class="published-cover ${coverUrl ? '' : 'is-placeholder'}">
-        ${coverUrl
-          ? `<img src="${escapeHTML(coverUrl)}" alt="${escapeHTML(record.title || record.word || '笔记封面')}" loading="lazy" data-image-fallback="parent-text" data-fallback-text="${escapeHTML(contentLabel)}" />`
-          : `<span>${escapeHTML(record.contentCategory === 'non_word' ? '内容封面' : record.word || '待补封面')}</span>`}
+      <div class="published-cover">
+        <img src="${escapeHTML(coverSrc)}" alt="${escapeHTML(record.title || record.word || '笔记封面')}" loading="lazy" data-image-fallback="fallback-src" data-fallback-src="${escapeHTML(coverFallback)}" />
         <div class="published-cover-overlay">
           <span class="published-source source-${sourceType}">${escapeHTML(getPublishedSourceLabel(record))}</span>
           <span class="published-type">${escapeHTML(record.contentType || '图文')}</span>
@@ -7975,6 +7986,8 @@ function openPublishedDetail(recordId) {
   const updateState = getPublishedUpdateState(record);
   const coverUrl = getPublishedCover(record, word);
   const contentLabel = getPublishedContentLabel(record, word);
+  const coverFallback = buildPublishedCoverFallback(contentLabel);
+  const coverSrc = coverUrl || coverFallback;
   const noteLink = normalizeXiaohongshuUrl(record.link);
   const views = metrics.views || 0;
   const allMetrics = [
@@ -8013,10 +8026,8 @@ function openPublishedDetail(recordId) {
       </div>
       <div class="modal-body published-detail-body">
         <section class="published-detail-hero">
-          <div class="published-detail-cover ${coverUrl ? '' : 'is-placeholder'}">
-            ${coverUrl
-              ? `<img src="${escapeHTML(coverUrl)}" alt="${escapeHTML(record.title || record.word || '笔记封面')}" data-image-fallback="parent-text" data-fallback-text="${escapeHTML(contentLabel)}" />`
-              : `<span>${escapeHTML(record.contentCategory === 'non_word' ? '内容封面' : record.word || '待补封面')}</span>`}
+          <div class="published-detail-cover">
+            <img src="${escapeHTML(coverSrc)}" alt="${escapeHTML(record.title || record.word || '笔记封面')}" data-image-fallback="fallback-src" data-fallback-src="${escapeHTML(coverFallback)}" />
           </div>
           <div class="published-detail-intro">
             <div class="published-detail-badges">

@@ -7,6 +7,29 @@ function safeArray(value) {
   return Array.isArray(value) ? value : [];
 }
 
+export function normalizePublishedCoverUrl(value) {
+  const rawUrl = String(value || '').trim();
+  if (!rawUrl) return '';
+  try {
+    const parsed = new URL(rawUrl);
+    if (parsed.username || parsed.password || (parsed.port && !['80', '443'].includes(parsed.port))) return '';
+    const hostname = parsed.hostname.toLowerCase();
+    const isXhsImageHost = hostname === 'xhscdn.com' || hostname.endsWith('.xhscdn.com');
+    if (isXhsImageHost) {
+      const assetMatch = parsed.pathname.match(/\/([a-z0-9_-]{30,160})(?:![^/]*)?$/i);
+      if (assetMatch) {
+        return `https://sns-na-i6.xhscdn.com/notes_pre_post/${assetMatch[1]}?imageView2/2/w/1080/format/jpg&origin=0`;
+      }
+      parsed.protocol = 'https:';
+      parsed.port = '';
+      return parsed.href;
+    }
+    return parsed.protocol === 'https:' ? parsed.href : '';
+  } catch {
+    return '';
+  }
+}
+
 function toMetric(value) {
   const number = Number.parseFloat(value);
   return Number.isFinite(number) ? Math.max(0, number) : 0;
