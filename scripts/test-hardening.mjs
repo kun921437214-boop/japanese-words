@@ -11,6 +11,11 @@ import {
   prepareWorkflowMutation
 } from '../shared/workflow-mutation.mjs';
 import {
+  buildCoordinatedWorkflowMutation,
+  commitWorkflowMutation
+} from '../shared/workflow-coordinator.mjs';
+import { WorkflowCoordinator } from '../durable-object/workflow-coordinator.js';
+import {
   fetchPublishedRecordRemote,
   normalizeXiaohongshuUrl
 } from '../shared/published-refresh.mjs';
@@ -220,6 +225,82 @@ test('workflow mutation rejects stale revisions and deduplicates operation ids',
   assert.equal(conflict.currentRevision, 1);
 });
 
+test('coordinated full saves preserve the current workflow and enforce the authoritative revision', () => {
+  const current = {
+    words: ['既有收藏'],
+    candidatePool: { 既有收藏: { kanji: '既有收藏', meaning: '保留', sourceType: 'manual_keep' } },
+    revision: 4
+  };
+  const mutation = buildCoordinatedWorkflowMutation(current, {
+    words: ['新收藏'],
+    candidatePool: { 新收藏: { kanji: '新收藏', meaning: '新增', sourceType: 'manual_keep' } }
+  }, {
+    operationId: 'coordinated-save',
+    expectedRevision: 4,
+    action: 'workflow.replace',
+    actor: 'editor@example.com'
+  }, { strategy: 'full-save' });
+  assert.equal(mutation.conflict, false);
+  assert.deepEqual(mutation.workflow.words, ['新收藏']);
+  assert.ok(mutation.workflow.candidatePool['既有收藏']);
+  assert.ok(mutation.workflow.candidatePool['新收藏']);
+  assert.equal(mutation.workflow.revision, 5);
+});
+
+test('Durable Object serializes same-revision writes before KV commit', async () => {
+  const kv = createKv({ words: [], revision: 0, auditLog: [] });
+  const coordinator = new WorkflowCoordinator({}, { FAVORITES: kv });
+  const makeRequest = (operationId, word) => new Request('https://workflow-coordinator.internal/mutate', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      key: 'favorites:global',
+      candidateWorkflow: { words: [word] },
+      metadata: { operationId, expectedRevision: 0, action: 'favorite.add', actor: 'editor@example.com' },
+      strategy: 'replace'
+    })
+  });
+  const [firstResponse, secondResponse] = await Promise.all([
+    coordinator.fetch(makeRequest('do-op-1', '先写入')),
+    coordinator.fetch(makeRequest('do-op-2', '后写入'))
+  ]);
+  const first = await firstResponse.json();
+  const second = await secondResponse.json();
+  assert.equal(first.mutation.conflict, false);
+  assert.equal(first.mutation.workflow.revision, 1);
+  assert.equal(second.mutation.conflict, true);
+  assert.equal(second.mutation.currentRevision, 1);
+  assert.equal(kv.putCalls, 1);
+});
+
+test('Pages mutation client routes writes through the coordinator binding', async () => {
+  const kv = createKv({ words: [], revision: 0, auditLog: [] });
+  const coordinator = new WorkflowCoordinator({}, { FAVORITES: kv });
+  let bindingCalls = 0;
+  const namespace = {
+    getByName(name) {
+      assert.equal(name, 'favorites:global');
+      return {
+        fetch(...args) {
+          bindingCalls += 1;
+          return coordinator.fetch(new Request(...args));
+        }
+      };
+    }
+  };
+  const mutation = await commitWorkflowMutation({ FAVORITES: kv, WORKFLOW_COORDINATOR: namespace }, 'favorites:global', {
+    words: ['协调写入']
+  }, {
+    operationId: 'binding-op',
+    expectedRevision: 0,
+    action: 'favorite.add',
+    actor: 'editor@example.com'
+  });
+  assert.equal(bindingCalls, 1);
+  assert.equal(mutation.workflow.revision, 1);
+  assert.deepEqual(mutation.workflow.words, ['协调写入']);
+});
+
 test('automated workflow merge preserves concurrent team-owned fields', () => {
   const current = {
     words: ['余裕'],
@@ -375,13 +456,20 @@ test('AI endpoint authenticates before exposing provider configuration', async (
 test('health check reports binding status without reading workflow data', async () => {
   const okResponse = await handleHealth({
     request: request('https://jiyimianbao.pages.dev/healthz'),
-    env: { FAVORITES: {}, REFERENCE_IMAGES_KV: {} }
+    env: { FAVORITES: {}, REFERENCE_IMAGES_KV: {}, WORKFLOW_COORDINATOR: {} }
   });
   assert.equal(okResponse.status, 200);
   assert.equal((await okResponse.json()).imageStorageConfigured, true);
+  const okData = await (await handleHealth({
+    request: request('https://jiyimianbao.pages.dev/healthz'),
+    env: { FAVORITES: {}, REFERENCE_IMAGES_KV: {}, WORKFLOW_COORDINATOR: {} }
+  })).json();
+  assert.equal(okData.workflowCoordinatorConfigured, true);
   const failedResponse = await handleHealth({ request: request('https://jiyimianbao.pages.dev/healthz'), env: {} });
   assert.equal(failedResponse.status, 503);
-  assert.equal((await failedResponse.json()).imageStorageConfigured, false);
+  const failedData = await failedResponse.json();
+  assert.equal(failedData.imageStorageConfigured, false);
+  assert.equal(failedData.workflowCoordinatorConfigured, false);
 });
 
 test('Pages middleware preserves the endpoint request id for response correlation', async () => {

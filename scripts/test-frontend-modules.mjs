@@ -2,7 +2,28 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import test from 'node:test';
 import { createApiClient, createApiError, getApiErrorMessage } from '../frontend/api-client.mjs';
+import {
+  AI_CARD_AUTO_MAX_ATTEMPTS_PER_DAY,
+  AI_CARD_PENDING_TTL_MS,
+  buildTodayAiCardsRequest,
+  buildWordCardRequestPayload,
+  canAutoGenerateAiCard,
+  getSingleTodayAiCardGenerationOptions,
+  getTodayAiCardActionState,
+  isAiCardStalePending,
+  selectMissingTodayAiCardKanjis
+} from '../frontend/ai-card-generation.mjs';
+import {
+  buildAutoAiCandidatePayload,
+  requestAutoAiCandidateBatch
+} from '../frontend/ai-candidate-service.mjs';
 import { createAppShellController } from '../frontend/app-shell.mjs';
+import {
+  buildFavoriteSelectionExportText,
+  buildRecommendationAuditCsv,
+  csvCell,
+  getRecommendationAuditFilename
+} from '../frontend/content-export.mjs';
 import {
   buildDailyHotDateOptions,
   buildDailyHotSourceFilterModel,
@@ -27,10 +48,11 @@ import {
   parseXiaohongshuSharePayload
 } from '../frontend/published-record-parser.mjs';
 import {
+  buildPublishedMetricRows,
   buildPublishedPageModel,
   createPublishedPageController,
-  getPublishedAutoRefreshSummary,
   getPublishedPerformanceScore,
+  getPublishedUpdateState,
   getRecentPublishedAverage,
   ratePublishedRecord
 } from '../frontend/published-page.mjs';
@@ -39,6 +61,14 @@ import { createWorkflowStore } from '../frontend/workflow-store.mjs';
 import { createWorkflowSync } from '../frontend/workflow-sync.mjs';
 import { buildWordCardViewModel, WORD_CARD_STATUS_LABELS } from '../frontend/word-card-view.mjs';
 import { createWorkflowActionsController } from '../frontend/workflow-actions.mjs';
+import {
+  MAX_WORKFLOW_BACKUP_BYTES,
+  buildWorkflowBackup,
+  formatWorkflowBackupSummary,
+  getWorkflowBackupFilename,
+  parseWorkflowBackupText,
+  serializeWorkflowBackup
+} from '../frontend/workflow-backup.mjs';
 
 function cleanTestWorkflow(value = {}) {
   return {
@@ -60,6 +90,305 @@ function cleanTestWorkflow(value = {}) {
     schemaVersion: 2
   };
 }
+
+test('AI card pending timeout and action state stay deterministic', () => {
+  const nowMs = Date.parse('2026-07-19T12:00:00.000Z');
+  const freshPending = { cardStatus: 'pending', generatedAt: new Date(nowMs - AI_CARD_PENDING_TTL_MS + 1000).toISOString() };
+  const stalePending = { cardStatus: 'pending', generatedAt: new Date(nowMs - AI_CARD_PENDING_TTL_MS - 1000).toISOString() };
+
+  assert.equal(isAiCardStalePending(freshPending, {}, { nowMs }), false);
+  assert.equal(isAiCardStalePending(stalePending, {}, { nowMs }), true);
+  assert.deepEqual(getTodayAiCardActionState({ aiCard: freshPending, nowMs }), {
+    status: 'pending',
+    stalePending: false,
+    label: '生成中',
+    disabled: true
+  });
+  assert.deepEqual(getTodayAiCardActionState({ aiCard: stalePending, nowMs }), {
+    status: 'pending',
+    stalePending: true,
+    label: '重试',
+    disabled: false
+  });
+  assert.equal(getTodayAiCardActionState({ aiCard: { cardStatus: 'ready' } }).label, '重新生成');
+  assert.equal(getTodayAiCardActionState({ aiCard: { cardStatus: 'failed' } }).label, '重试');
+  assert.deepEqual(getTodayAiCardActionState({ aiCard: { cardStatus: 'none' }, inFlight: true }), {
+    status: 'none',
+    stalePending: false,
+    label: '生成中',
+    disabled: true
+  });
+});
+
+test('single today-card generation enables only the matching retry mode', () => {
+  const nowMs = Date.parse('2026-07-19T12:00:00.000Z');
+  assert.deepEqual(getSingleTodayAiCardGenerationOptions({ aiCard: { cardStatus: 'ready' }, nowMs }), {
+    force: true,
+    retryFailed: false,
+    retryStalePending: false,
+    maxWords: 1
+  });
+  assert.deepEqual(getSingleTodayAiCardGenerationOptions({ aiCard: { cardStatus: 'failed' }, nowMs }), {
+    force: false,
+    retryFailed: true,
+    retryStalePending: false,
+    maxWords: 1
+  });
+  const stalePending = { cardStatus: 'pending', generatedAt: new Date(nowMs - AI_CARD_PENDING_TTL_MS - 1).toISOString() };
+  assert.equal(getSingleTodayAiCardGenerationOptions({ aiCard: stalePending, nowMs }).retryStalePending, true);
+});
+
+test('automatic AI-card policy preserves in-flight, status, and daily-attempt guards', () => {
+  assert.equal(canAutoGenerateAiCard({ aiCard: { cardStatus: 'none' }, attemptCount: 0 }), true);
+  assert.equal(canAutoGenerateAiCard({ aiCard: { cardStatus: 'failed' }, attemptCount: 1 }), true);
+  assert.equal(canAutoGenerateAiCard({ aiCard: { cardStatus: 'ready' }, force: true }), false);
+  assert.equal(canAutoGenerateAiCard({ aiCard: { cardStatus: 'pending' }, force: true }), false);
+  assert.equal(canAutoGenerateAiCard({ aiCard: { cardStatus: 'none' }, inFlight: true }), false);
+  assert.equal(canAutoGenerateAiCard({
+    aiCard: { cardStatus: 'failed' },
+    attemptCount: AI_CARD_AUTO_MAX_ATTEMPTS_PER_DAY
+  }), false);
+  assert.equal(canAutoGenerateAiCard({
+    aiCard: { cardStatus: 'failed' },
+    attemptCount: AI_CARD_AUTO_MAX_ATTEMPTS_PER_DAY,
+    force: true
+  }), true);
+});
+
+test('missing today-card selection skips ready, pending, failed, duplicates, and overflow', () => {
+  const kanjis = ['未生成', '已完成', '生成中', '失败', '需更新', '未生成', '补位一', '补位二', '补位三', '补位四'];
+  const candidatePool = {
+    已完成: { aiCard: { cardStatus: 'ready' } },
+    生成中: { aiCard: { cardStatus: 'pending' } },
+    失败: { aiCard: { cardStatus: 'failed' } },
+    需更新: { aiCard: { cardStatus: 'stale' } }
+  };
+  assert.deepEqual(selectMissingTodayAiCardKanjis({ kanjis, candidatePool }), [
+    '未生成', '需更新', '补位一', '补位二', '补位三'
+  ]);
+});
+
+test('AI-card request builders preserve limits, retry flags, and account context', () => {
+  assert.deepEqual(buildTodayAiCardsRequest(['一', '一', '二', '三', '四', '五', '六'], {
+    force: true,
+    retryFailed: true,
+    retryStalePending: true,
+    maxWords: 99
+  }), {
+    mode: 'today',
+    words: ['一', '二', '三', '四', '五'],
+    force: true,
+    retryFailed: true,
+    retryStalePending: true,
+    maxWords: 5
+  });
+
+  const words = Array.from({ length: 22 }, (_, index) => ({ kanji: `词${index + 1}` }));
+  const payload = buildWordCardRequestPayload({
+    words,
+    favorites: ['気が重い'],
+    negativeFeedback: { 基本: { reason: 'tooBasic' } },
+    publishedWords: ['抜け感'],
+    accountLearningSummary: { priority: 'saves' }
+  });
+  assert.equal(payload.action, 'generate_word_card');
+  assert.equal(payload.count, 20);
+  assert.equal(payload.context.words.length, 20);
+  assert.deepEqual(payload.context.favorites, ['気が重い']);
+  assert.deepEqual(payload.context.publishedWords, ['抜け感']);
+  assert.deepEqual(payload.context.accountLearningSummary, { priority: 'saves' });
+  assert.equal(payload.preferences.includeHighRisk, 'review_only');
+});
+
+test('automatic candidate service builds a stable context without duplicate favorites', () => {
+  const payload = buildAutoAiCandidatePayload({
+    favorites: ['気が重い', '気が重い', '抜け感'],
+    negativeFeedback: { 基本: { lastReason: 'tooBasic' } },
+    publishedRecords: [{ id: 'published-1', word: '沼', date: '2026-07-18' }],
+    candidatePool: {
+      そわそわ: {
+        kanji: 'そわそわ',
+        candidateType: '网络口语词',
+        freshness: '长期',
+        riskLevel: 'low',
+        confidenceLevel: 'high',
+        displayBucket: 'today',
+        lastScore: 88
+      }
+    }
+  });
+  assert.equal(payload.action, 'stable_today');
+  assert.equal(payload.count, 50);
+  assert.deepEqual(payload.context.favorites, ['気が重い', '抜け感']);
+  assert.deepEqual(payload.context.publishedWords, ['沼']);
+  assert.equal(payload.context.existingCandidates[0].kanji, 'そわそわ');
+  assert.equal(payload.context.existingCandidates[0].lastScore, 88);
+});
+
+test('automatic candidate service normalizes response and preserves batch trace', async () => {
+  const payload = buildAutoAiCandidatePayload({});
+  const result = await requestAutoAiCandidateBatch({
+    request: async (_endpoint, requestOptions, meta) => {
+      assert.equal(requestOptions.method, 'POST');
+      assert.equal(meta.timeoutMs, 100000);
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          items: [{ kanji: 'そわそわ' }, {}],
+          usage: { model: 'deepseek-test', createdAt: '2026-07-19T00:00:00.000Z' },
+          summary: { trendNotes: '生活感表达增加' }
+        })
+      };
+    },
+    endpoint: '/ai-candidates',
+    payload,
+    normalizeItem: (item, batchId) => item.kanji ? { ...item, batchId } : null,
+    buildBatchItems: rawItems => rawItems,
+    buildTrace: () => ({ promptVersion: 'test-v1' }),
+    cleanBatch: batch => batch,
+    createBatchId: () => 'auto-test'
+  });
+  assert.deepEqual(result.items, [{ kanji: 'そわそわ', batchId: 'auto-test' }]);
+  assert.equal(result.batch.id, 'auto-test');
+  assert.equal(result.batch.rawCount, 2);
+  assert.equal(result.batch.rejectedCount, 1);
+  assert.equal(result.batch.promptVersion, 'test-v1');
+  assert.equal(result.batch.trendNotes, '生活感表达增加');
+});
+
+test('automatic candidate service surfaces API errors', async () => {
+  await assert.rejects(() => requestAutoAiCandidateBatch({
+    request: async () => ({
+      ok: false,
+      status: 503,
+      json: async () => ({ error: { message: '候选词服务暂时不可用' } })
+    }),
+    endpoint: '/ai-candidates',
+    payload: buildAutoAiCandidatePayload({}),
+    normalizeItem: item => item,
+    buildBatchItems: items => items,
+    buildTrace: () => ({}),
+    cleanBatch: batch => batch
+  }), /候选词服务暂时不可用/);
+});
+
+test('workflow backup builder cleans and serializes the complete workflow payload', () => {
+  const backup = buildWorkflowBackup({
+    words: ['抜け感', '抜け感', '気が重い'],
+    candidatePool: { '抜け感': {}, '気が重い': {} },
+    publishedRecords: [{ id: 'published-1' }],
+    todaySnapshot: { words: ['抜け感'] },
+    revision: 7
+  }, { cleanWorkflow: cleanTestWorkflow });
+
+  assert.deepEqual(backup.words, ['抜け感', '気が重い']);
+  assert.equal(backup.revision, 7);
+  assert.equal(formatWorkflowBackupSummary(backup), '选题 2 个、候选 2 个、发布记录 1 条、今日推荐 1 个');
+  assert.equal(JSON.parse(serializeWorkflowBackup(backup)).revision, 7);
+  assert.equal(getWorkflowBackupFilename('2026-07-19'), 'japanese-words-workflow-backup-2026-07-19.json');
+  assert.equal(MAX_WORKFLOW_BACKUP_BYTES, 10 * 1024 * 1024);
+});
+
+test('workflow backup parser rejects invalid roots before cleaning restored data', () => {
+  const restored = parseWorkflowBackupText('{"words":["抜け感","抜け感"],"revision":8}', {
+    cleanWorkflow: cleanTestWorkflow
+  });
+  assert.deepEqual(restored.words, ['抜け感']);
+  assert.equal(restored.revision, 8);
+  assert.throws(
+    () => parseWorkflowBackupText('{broken', { cleanWorkflow: cleanTestWorkflow }),
+    /备份文件不是有效的 JSON/
+  );
+  assert.throws(
+    () => parseWorkflowBackupText('[]', { cleanWorkflow: cleanTestWorkflow }),
+    /备份根节点必须是 JSON 对象/
+  );
+  assert.throws(
+    () => parseWorkflowBackupText('{}'),
+    /工作流清理器不可用/
+  );
+});
+
+test('recommendation audit CSV preserves every field and escapes spreadsheet values', () => {
+  const csv = buildRecommendationAuditCsv({
+    audit: {
+      date: '2026-07-19',
+      items: [{
+        kanji: '気が重い',
+        meaning: '心情沉重，"不想面对"',
+        recommendationLevel: 'A',
+        riskLevel: 'low',
+        originType: 'candidate_pool',
+        originLabel: '候选池旧词',
+        fromDeepSeekNew: false,
+        fromCandidatePool: true,
+        isBackfill: false,
+        fromLocalFallback: false,
+        isDedupRelaxed: false,
+        dedupDaysUsed: 30,
+        finalScore: 88,
+        accountLearningBonus: 7,
+        accountLearningPenalty: 0,
+        expressionValueScore: 92,
+        chineseTransparencyScore: 45,
+        genericTopicPenalty: 0,
+        selectedReason: '有场景、适合收藏',
+        diagnosis: ['情绪状态词', '容易配图']
+      }]
+    },
+    words: [{ kanji: '気が重い', reading: 'きがおもい', meaning: '回退意思' }],
+    riskStateByKanji: { '気が重い': '低风险' }
+  });
+
+  assert.equal(csv.split('\n').length, 2);
+  assert.match(csv, /"心情沉重，""不想面对"""/);
+  assert.match(csv, /"きがおもい"/);
+  assert.match(csv, /"低风险"/);
+  assert.match(csv, /"否","是","否","否","否","30","88"/);
+  assert.match(csv, /"情绪状态词；容易配图"/);
+  assert.equal(csvCell(['甲', '乙']), '"甲；乙"');
+  assert.equal(getRecommendationAuditFilename('2026-07-19'), 'daily-hot-audit-2026-07-19.csv');
+});
+
+test('favorite selection export exposes formal fields only for ready card views', () => {
+  const text = buildFavoriteSelectionExportText({
+    dateLabel: '2026/7/19',
+    items: [
+      {
+        word: { kanji: '抜け感', reading: 'ぬけかん', meaning: '松弛感' },
+        statusLabel: '待发布',
+        wordCardView: {
+          hasFormalCard: false,
+          unavailableMessage: 'DeepSeek 词卡未生成',
+          suggestedTitles: ['不应导出的标题']
+        }
+      },
+      {
+        word: { kanji: '気が重い', reading: 'きがおもい', meaning: '心情沉重' },
+        statusLabel: '无',
+        wordCardView: {
+          hasFormalCard: true,
+          suggestedTitles: ['这个日语词太适合今天了'],
+          summary: '不想面对某件事时的沉重感。',
+          explanation: '强调心理负担。',
+          contentAngles: ['上班前', '社交压力'],
+          examples: [{ jp: '明日の会議は気が重い。', cn: '想到明天的会议就心情沉重。' }],
+          coverSuggestion: { coverText: '不想面对', mainVisual: '通勤人物', style: '柔和插画' },
+          interactionPrompts: ['你最近为什么気が重い？']
+        }
+      }
+    ]
+  });
+
+  assert.match(text, /📅 2026\/7\/19/);
+  assert.match(text, /1\. 【抜け感】ぬけかん/);
+  assert.match(text, /DeepSeek 词卡未生成/);
+  assert.doesNotMatch(text, /不应导出的标题/);
+  assert.match(text, /推荐标题：这个日语词太适合今天了/);
+  assert.match(text, /明日の会議は気が重い。（想到明天的会议就心情沉重。）/);
+  assert.match(text, /互动引导：你最近为什么気が重い？/);
+});
 
 test('API client adds workflow revision and operation headers', async () => {
   let receivedOptions = null;
@@ -285,7 +614,7 @@ test('manual word modal controller ignores outside actions and reports async fai
   assert.deepEqual(errors, ['submit failed']);
 });
 
-test('workflow actions controller routes shared card, feedback, candidate and preview actions', () => {
+test('workflow actions controller routes shared card and feedback actions', () => {
   const listeners = new Map();
   const root = {
     addEventListener: (type, listener) => listeners.set(type, listener),
@@ -296,17 +625,13 @@ test('workflow actions controller routes shared card, feedback, candidate and pr
   let stopped = 0;
   const controller = createWorkflowActionsController({
     root,
-    onToggleAiPreviewSelection: kanji => calls.push(['preview', kanji]),
     onGenerateTodayCard: kanji => calls.push(['today-card', kanji]),
     onGenerateDeepSeekCard: (kanji, force) => calls.push(['deepseek-card', kanji, force]),
     onToggleStatus: kanji => calls.push(['toggle-status', kanji]),
     onSelectStatus: (kanji, status) => calls.push(['select-status', kanji, status]),
     onToggleFeedback: kanji => calls.push(['toggle-feedback', kanji]),
     onNegativeFeedback: (kanji, reason) => calls.push(['feedback', kanji, reason]),
-    onCodexFeedback: (kanji, reason) => calls.push(['codex-feedback', kanji, reason]),
-    onOpenDetail: id => calls.push(['detail', id]),
-    onToggleCandidate: kanji => calls.push(['candidate-toggle', kanji]),
-    onSetCandidateState: (kanji, state) => calls.push(['candidate-state', kanji, state])
+    onCodexFeedback: (kanji, reason) => calls.push(['codex-feedback', kanji, reason])
   });
   const action = (name, dataset = {}) => {
     const element = { dataset: { workflowAction: name, ...dataset } };
@@ -315,7 +640,6 @@ test('workflow actions controller routes shared card, feedback, candidate and pr
   };
   const click = target => listeners.get('click')({ target, stopPropagation: () => { stopped += 1; } });
 
-  listeners.get('change')({ target: action('ai-preview-selection', { kanji: '抜け感' }) });
   click(action('generate-today-card', { kanji: '気が楽' }));
   click(action('generate-deepseek-card', { kanji: '沼', force: 'true' }));
   click(action('toggle-status', { kanji: '沼' }));
@@ -323,24 +647,17 @@ test('workflow actions controller routes shared card, feedback, candidate and pr
   click(action('toggle-feedback', { kanji: '沼' }));
   click(action('apply-feedback', { kanji: '沼', reason: 'tooBasic', context: 'default' }));
   click(action('apply-feedback', { kanji: 'エモい', reason: 'uninterested', context: 'codex-preview' }));
-  click(action('candidate-open-detail', { wordId: 'candidate-1' }));
-  click(action('candidate-toggle', { kanji: '沼' }));
-  click(action('candidate-state', { kanji: '沼', state: 'review' }));
 
   assert.deepEqual(calls, [
-    ['preview', '抜け感'],
     ['today-card', '気が楽'],
     ['deepseek-card', '沼', true],
     ['toggle-status', '沼'],
     ['select-status', '沼', 'pending'],
     ['toggle-feedback', '沼'],
     ['feedback', '沼', 'tooBasic'],
-    ['codex-feedback', 'エモい', 'uninterested'],
-    ['detail', 'candidate-1'],
-    ['candidate-toggle', '沼'],
-    ['candidate-state', '沼', 'review']
+    ['codex-feedback', 'エモい', 'uninterested']
   ]);
-  assert.equal(stopped, 10);
+  assert.equal(stopped, 7);
   controller.destroy();
   assert.equal(listeners.size, 0);
 });
@@ -803,6 +1120,8 @@ test('daily hot controller routes filters, cards and keyboard preview without in
   dispatch('change', { dataset: { dailyHotAction: 'date' }, value: '2026-07-18' });
   dispatch('change', { dataset: { dailyHotAction: 'source', scope: 'history' }, value: 'DeepSeek' });
   dispatch('click', { dataset: { dailyHotAction: 'manage', manageAction: 'fill' } });
+  dispatch('click', { dataset: { dailyHotAction: 'manage', manageAction: 'audit' } });
+  dispatch('click', { dataset: { dailyHotAction: 'manage', manageAction: 'exportAudit' } });
   dispatch('click', { dataset: { dailyHotAction: 'open-detail', wordId: 'today-1' } });
   assert.equal(dispatch('click', { dataset: { dailyHotAction: 'toggle-favorite', kanji: '思い切って' } }, { stopContains: true }).stopped, true);
   dispatch('click', { dataset: { dailyHotAction: 'shift-history', step: '-1' } });
@@ -816,6 +1135,8 @@ test('daily hot controller routes filters, cards and keyboard preview without in
     ['date', '2026-07-18'],
     ['source', 'history', 'DeepSeek'],
     ['manage', 'fill'],
+    ['manage', 'audit'],
+    ['manage', 'exportAudit'],
     ['detail', 'today-1'],
     ['favorite', '思い切って'],
     ['shift', -1],
@@ -935,83 +1256,51 @@ test('favorites page controller delegates card and filter actions without window
   assert.equal(listeners.size, 0);
 });
 
-test('published performance score weights saves and deeper engagement above likes', () => {
-  const score = getPublishedPerformanceScore({
-    latestStats: { likes: 10, favorites: 5, comments: 2, shares: 1, views: 1000 }
+test('published compatibility score prioritizes save, share and follow efficiency', () => {
+  const saveHeavy = getPublishedPerformanceScore({
+    latestMetrics: { likes: 10, favorites: 50, comments: 2, shares: 10, follows: 5, views: 1000 }
   });
-  assert.equal(score, 29);
-  assert.equal(getRecentPublishedAverage([
-    { sourceStatus: 'placeholder', latestStats: { likes: 999 } },
-    { publishedAt: '2026-07-18', latestStats: { likes: 20 } },
-    { publishedAt: '2026-07-17', latestStats: { favorites: 10 } }
-  ]), 20);
+  const likeHeavy = getPublishedPerformanceScore({
+    latestMetrics: { likes: 100, favorites: 0, comments: 0, shares: 0, follows: 0, views: 1000 }
+  });
+  assert.ok(saveHeavy > likeHeavy);
+  assert.ok(getRecentPublishedAverage([
+    { sourceStatus: 'placeholder', latestMetrics: { likes: 999, views: 1000 } },
+    { publishedAt: '2026-07-18', latestMetrics: { likes: 20, favorites: 10, views: 1000 } },
+    { publishedAt: '2026-07-17', latestMetrics: { favorites: 20, shares: 5, views: 1000 } }
+  ]) > 0);
 });
 
-test('published rating keeps high-save low-exposure content from penalizing the word', () => {
+test('published rating remains a derived compatibility signal instead of a stored product field', () => {
   const rating = ratePublishedRecord({
     publishedAt: '2026-07-15T12:00:00.000Z',
-    latestStats: { likes: 10, favorites: 50, comments: 2, shares: 1, views: 1000 }
+    latestMetrics: { likes: 10, favorites: 50, comments: 2, shares: 1, follows: 2, views: 1000 }
   }, {
     now: Date.parse('2026-07-19T12:00:00.000Z'),
-    recentAverage: 300
+    recentAverage: 20
   });
 
-  assert.equal(rating.performanceScore, 119);
   assert.equal(rating.saveRate, 0.05);
-  assert.equal(rating.level, '正常');
-  assert.match(rating.reason, /流量不足/);
+  assert.match(rating.reason, /收藏、分享、涨粉/);
 });
 
-test('published rating waits 72 hours and flags high-exposure low-engagement content', () => {
-  const recent = ratePublishedRecord({
-    publishedAt: '2026-07-19T00:00:00.000Z',
-    latestStats: { likes: 100, favorites: 30, comments: 10, shares: 2, views: 1000 }
-  }, {
-    now: Date.parse('2026-07-19T12:00:00.000Z'),
-    recentAverage: 100
-  });
-  assert.equal(recent.level, '待评估');
-
-  const weak = ratePublishedRecord({
-    publishedAt: '2026-07-15T00:00:00.000Z',
-    latestStats: { likes: 2, favorites: 2, comments: 1, shares: 0, views: 5000 }
-  }, {
-    now: Date.parse('2026-07-19T12:00:00.000Z'),
-    recentAverage: 5
-  });
-  assert.equal(weak.level, '偏弱');
-  assert.match(weak.reason, /有一定曝光但互动偏低/);
+test('published page model exposes 30-day medians, 15-day state and red-card comparisons', () => {
+  const empty = buildPublishedPageModel([]);
+  assert.equal(empty.count, 0);
+  assert.equal(empty.isEmpty, true);
+  assert.equal(empty.countText, '等待首次导入小红书官方内容数据');
+  const record = {
+    publishedAt: '2026-07-19T09:00:00+08:00',
+    latestMetrics: { impressions: 1000, views: 100, coverClickRate: 0.1, comments: 2, favorites: 4, shares: 1, follows: 1 }
+  };
+  const model = buildPublishedPageModel([{ type: 'record', record }], { now: new Date('2026-07-20T14:30:00+08:00') });
+  assert.equal(model.activeCount, 1);
+  assert.equal(model.medians.impressions, 1000);
+  assert.equal(getPublishedUpdateState(record, new Date('2026-07-20T14:30:00+08:00')).active, true);
+  assert.equal(buildPublishedMetricRows(record, { ...model.medians, impressions: 2000 })[0].belowMedian, true);
 });
 
-test('published page model and refresh summary provide stable empty and status copy', () => {
-  assert.deepEqual(buildPublishedPageModel([]), {
-    items: [],
-    count: 0,
-    isEmpty: true,
-    countText: '管理已经发到小红书的内容和表现'
-  });
-  const model = buildPublishedPageModel([{ type: 'record' }, { type: 'placeholder' }]);
-  assert.equal(model.countText, '当前共 2 条已发布记录 / 占位项');
-  const summary = getPublishedAutoRefreshSummary({
-    autoRefresh: {
-      status: 'success',
-      source: 'remote',
-      lastMessage: '已更新',
-      lastAttemptAt: '2026-07-19T09:10:00.000Z'
-    }
-  }, {
-    statusLabels: { idle: '待更新', success: '更新成功' },
-    sourceLabels: { remote: '页面识别' }
-  });
-  assert.deepEqual(summary, {
-    label: '更新成功',
-    message: '已更新',
-    sourceLabel: '页面识别',
-    timeLabel: '2026-07-19 09:10'
-  });
-});
-
-test('published page controller routes cards, placeholders and actions without opening stopped links', () => {
+test('published page controller routes detail, refresh and render actions', () => {
   const listeners = new Map();
   const root = {
     addEventListener: (type, listener) => listeners.set(type, listener),
@@ -1022,33 +1311,23 @@ test('published page controller routes cards, placeholders and actions without o
   const controller = createPublishedPageController({
     root,
     onOpenDetail: recordId => calls.push(['detail', recordId]),
-    onEditRecord: (recordId, presetKanji) => calls.push(['edit', recordId, presetKanji]),
     onRefresh: recordId => calls.push(['refresh', recordId]),
     onRender: () => calls.push(['render'])
   });
-  const dispatch = (actionElement, stopContains = null) => {
-    let stopped = false;
-    const stopElement = stopContains === null ? null : { contains: () => stopContains };
+  const dispatch = actionElement => {
     listeners.get('click')({
       target: {
-        closest: selector => selector === '[data-published-action]' ? actionElement : stopElement
+        closest: selector => selector === '[data-published-action]' ? actionElement : null
       },
-      stopPropagation: () => { stopped = true; },
       preventDefault() {}
     });
-    return stopped;
   };
 
   dispatch({ dataset: { publishedAction: 'open-detail', recordId: 'record-1' } });
-  dispatch({ dataset: { publishedAction: 'edit-record', recordId: '', presetKanji: '詰めが甘い' } });
-  assert.equal(dispatch({ dataset: { publishedAction: 'refresh', recordId: 'record-1' } }, true), true);
+  dispatch({ dataset: { publishedAction: 'refresh', recordId: 'record-1' } });
   dispatch({ dataset: { publishedAction: 'render' } });
-  const beforeStoppedLink = calls.length;
-  assert.equal(dispatch({ dataset: { publishedAction: 'open-detail', recordId: 'record-1' } }, false), true);
-  assert.equal(calls.length, beforeStoppedLink);
   assert.deepEqual(calls, [
     ['detail', 'record-1'],
-    ['edit', '', '詰めが甘い'],
     ['refresh', 'record-1'],
     ['render']
   ]);
@@ -1099,6 +1378,7 @@ test('word card view exposes sanitized formal content and image for ready cards'
   });
 
   assert.equal(view.hasFormalCard, true);
+  assert.equal(view.sourceLabel, 'Codex 词卡');
   assert.equal(view.statusLabel, '已生成词卡');
   assert.equal(view.title, '日本人说「思い切って」是什么感觉？');
   assert.equal(view.summary, '跨过犹豫，鼓起勇气行动。');
@@ -1106,6 +1386,17 @@ test('word card view exposes sanitized formal content and image for ready cards'
   assert.equal(view.hasCoverSuggestion, true);
   assert.equal(view.referenceImageUrl, 'https://example.com/ready.png');
   assert.equal(view.listTitle, view.title);
+});
+
+test('word card view labels DeepSeek cards by their stored source and marks stale pending cards retryable', () => {
+  const view = buildWordCardViewModel({
+    aiCard: { cardStatus: 'pending', cardSource: 'deepseek_api' },
+    stalePending: true
+  });
+
+  assert.equal(view.sourceLabel, 'DeepSeek 词卡');
+  assert.equal(view.statusLabel, '生成超时 · 可重试');
+  assert.match(view.unavailableMessage, /DeepSeek 词卡生成已超时/);
 });
 
 test('word card view keeps ready content visible while an explicit regeneration is in flight', () => {
@@ -1148,7 +1439,9 @@ test('module migration removes inline handlers and the temporary window compatib
   const appSource = fs.readFileSync(new URL('../app.js', import.meta.url), 'utf8');
   const combined = `${indexSource}\n${appSource}`;
   assert.ok(indexSource.includes('<script type="module" src="app.js"></script>'));
+  assert.ok(appSource.includes("from './frontend/ai-card-generation.mjs'"));
   assert.ok(appSource.includes("from './frontend/app-shell.mjs'"));
+  assert.ok(appSource.includes("from './frontend/content-export.mjs'"));
   assert.ok(appSource.includes("from './frontend/image-fallback.mjs'"));
   assert.ok(appSource.includes("from './frontend/manual-word-modal.mjs'"));
   assert.ok(appSource.includes("from './frontend/modal-actions.mjs'"));
@@ -1159,17 +1452,22 @@ test('module migration removes inline handlers and the temporary window compatib
   assert.doesNotMatch(appSource, /Object\.assign\(window/);
   assert.doesNotMatch(appSource, /Compatibility facade/);
   assert.ok(indexSource.includes('data-app-shell-action="switch-tab"'));
+  assert.ok(indexSource.includes('data-manage-action="audit"'));
+  assert.ok(indexSource.includes('data-manage-action="exportAudit"'));
   assert.ok(indexSource.includes('data-image-fallback="parent-text"'));
   assert.ok(appSource.includes('data-manual-word-action="submit"'));
   assert.ok(appSource.includes('data-workflow-action="generate-deepseek-card"'));
-  assert.ok(appSource.includes('data-workflow-action="candidate-state"'));
-  assert.ok(appSource.includes('data-modal-action="save-published-record"'));
+  assert.equal(appSource.includes('data-workflow-action="candidate-state"'), false);
+  assert.equal(appSource.includes('data-workflow-action="ai-preview-selection"'), false);
+  assert.ok(indexSource.includes('id="publishedInsightsSummary"'));
+  assert.ok(appSource.includes('buildPublishedMetricRows'));
+  assert.equal(appSource.includes('data-modal-action="save-published-record"'), false);
   assert.ok(appSource.includes('data-image-fallback="fallback-src"'));
 });
 
-test('published record share input preserves multiline text for safe parsing', () => {
+test('published page no longer exposes the legacy manual record form', () => {
   const appSource = fs.readFileSync(new URL('../app.js', import.meta.url), 'utf8');
-  assert.ok(appSource.includes("from './frontend/published-record-parser.mjs'"));
-  assert.match(appSource, /<textarea[^>]+id="recordLink"[^>]*>/);
-  assert.doesNotMatch(appSource, /<input[^>]+id="recordLink"[^>]*>/);
+  assert.equal(appSource.includes("from './frontend/published-record-parser.mjs'"), false);
+  assert.doesNotMatch(appSource, /id="recordLink"/);
+  assert.doesNotMatch(appSource, /1h \/ 2h \/ 4h \/ 24h \/ 72h/);
 });

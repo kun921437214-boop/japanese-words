@@ -1,4 +1,5 @@
-import { addDays, buildRankingForDate, cleanDateKey, cleanStoredRanking, dateKey } from '../shared/rankings.mjs';
+import { isStoredDailyWordCount } from '../shared/daily-config.mjs';
+import { addDays, buildRankingForDate, cleanDateKey, cleanStoredRanking, dateKey, WORDS_PER_DAY } from '../shared/rankings.mjs';
 import {
   cleanStoredWorkflow,
   generateTodaySnapshot,
@@ -23,7 +24,8 @@ import {
   readJsonBody as readLimitedJsonBody,
   unauthorizedResponse
 } from '../shared/api-security.mjs';
-import { mergeAutomatedWorkflowUpdate, prepareWorkflowMutation } from '../shared/workflow-mutation.mjs';
+import { mergeAutomatedWorkflowUpdate } from '../shared/workflow-mutation.mjs';
+import { commitWorkflowMutation } from '../shared/workflow-coordinator.mjs';
 const PROMPT_VERSION_BY_ACTION = {
   stable_today: 'candidate-v3',
   wild_ideas: 'candidate-v3',
@@ -376,13 +378,13 @@ async function readRankingHistoryWords(env, todayDateKey, days = 30) {
   }));
 
   storedRankings.forEach(({ dateKey: currentDateKey, ranking }) => {
-    if (ranking.words.length === 20) cachedSelections.set(currentDateKey, ranking.words);
+    if (isStoredDailyWordCount(ranking.words.length)) cachedSelections.set(currentDateKey, ranking.words);
   });
 
   const rankingHistoryWords = {};
   historyDateKeys.forEach(cursor => {
     let words = cachedSelections.get(cursor);
-    if (!words || words.length !== 20) {
+    if (!words || !isStoredDailyWordCount(words.length)) {
       words = buildRankingForDate(cursor, cachedSelections);
       cachedSelections.set(cursor, words);
     }
@@ -950,15 +952,14 @@ async function generateCardsAndSave(origin, workflow, env, key, requestId = '') 
   const cardResult = await generateCards(origin, workflow, authorization);
   const storedAfterCards = cleanStoredWorkflow(await env.FAVORITES.get(key, 'json'));
   const mergedWorkflow = mergeAutomatedWorkflowUpdate(storedAfterCards, cardResult.workflow);
-  const mutation = prepareWorkflowMutation(storedAfterCards, mergedWorkflow, {
+  const mutation = await commitWorkflowMutation(env, key, mergedWorkflow, {
     operationId: `${requestId || crypto.randomUUID()}:cards`,
     expectedRevision: null,
     action: 'daily-refresh.cards',
     actor: 'scheduled-worker',
     target: storedAfterCards.todaySnapshot?.dateKey || '',
     summary: `生成 ${cardResult.generatedCards} 张词卡`
-  });
-  if (!mutation.duplicate) await env.FAVORITES.put(key, JSON.stringify(mutation.workflow));
+  }, { strategy: 'automated' });
   return cardResult.generatedCards;
 }
 
@@ -1149,7 +1150,7 @@ async function runDailyRefreshJob({ origin, env, key, today, options = {}, reque
         onFailure: writeAiFailure,
         count: runState.count,
         exclusionContext: topUpExclusionContext,
-        batchHint: `topUp 补词：当前今日热门只有 ${safeArray(snapshot.workflow.todaySnapshot?.words).length}/20 个。首批、本轮已生成、今日已选和近 30 天历史词都在禁止列表里，必须换新方向。`
+        batchHint: `topUp 补词：当前今日热门只有 ${safeArray(snapshot.workflow.todaySnapshot?.words).length}/${WORDS_PER_DAY} 个。首批、本轮已生成、今日已选和近 30 天历史词都在禁止列表里，必须换新方向。`
       });
       recordGeneratedWords(noveltyStats, extraGenerated.items);
       totalGenerated += extraGenerated.items.length;
@@ -1206,14 +1207,14 @@ async function runDailyRefreshJob({ origin, env, key, today, options = {}, reque
       ...snapshot.workflow,
       updated: nowIso()
     });
-    const mutation = prepareWorkflowMutation(storedBeforeSave, finalCandidateWorkflow, {
+    const mutation = await commitWorkflowMutation(env, key, finalCandidateWorkflow, {
       operationId: requestId || crypto.randomUUID(),
       expectedRevision: null,
       action: 'daily-refresh.generate',
       actor: 'scheduled-worker',
       target: today,
       summary: `生成 ${safeArray(finalCandidateWorkflow.todaySnapshot?.words).length} 个今日推荐`
-    });
+    }, { strategy: 'automated' });
     const finalWorkflow = mutation.workflow;
 
     await writeStep('save_workflow_start', {
@@ -1222,7 +1223,6 @@ async function runDailyRefreshJob({ origin, env, key, today, options = {}, reque
       todayCount: safeArray(finalWorkflow.todaySnapshot?.words).length,
       ...getNoveltyPatch()
     });
-    if (!mutation.duplicate) await env.FAVORITES.put(key, JSON.stringify(finalWorkflow));
     const todayWords = safeArray(finalWorkflow.todaySnapshot?.words);
     const cardTargets = todayWords.filter(kanji => cleanAiCard(finalWorkflow.candidatePool?.[kanji]?.aiCard || {}).cardStatus !== 'ready');
     const workflowSavedPatch = {

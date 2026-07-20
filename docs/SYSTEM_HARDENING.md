@@ -46,6 +46,14 @@ npm run backup:workflow
 
 Backups are written with mode `0600` under the gitignored `exports/workflow-backups` directory and include a SHA-256 digest in the command output.
 
+When Production is intentionally running with `ALLOW_PUBLIC_APP=true`, a read-only backup may omit the token only with the explicit flag:
+
+```bash
+WORKFLOW_ENDPOINT=https://example.pages.dev/favorites npm run backup:workflow -- --public-read
+```
+
+This flag changes only the GET authentication header; it does not enable restore or any write.
+
 ## Restore
 
 Restore is dry-run by default:
@@ -69,18 +77,20 @@ The restore sends the current revision and a unique operation ID. A concurrent u
 1. Run `npm ci`, `npm run lint`, `npm run typecheck`, `npm test`, and `npm run build`.
 2. Export and inspect a workflow backup.
 3. Configure Cloudflare Access and Pages variables before deploying code.
-4. Deploy Pages and verify `/healthz`, authenticated `/favorites`, and a read-only `/ai-cards` check.
-5. Deploy the Worker and verify `/healthz` reports `scheduledOnly=true`.
-6. Observe request errors and cron results before approving any generation call.
+4. Deploy the coordinator with `npm run deploy:coordinator` and verify the exported `WorkflowCoordinator` binding exists.
+5. Deploy Pages and verify `/healthz` reports `workflowCoordinatorConfigured=true`, then check authenticated `/favorites` and a read-only `/ai-cards` request.
+6. Deploy the Worker and verify `/healthz` reports `scheduledOnly=true`.
+7. Observe request errors and cron results before approving any generation call.
 
 ## Rollback
 
 1. Roll Pages back to the previous successful deployment.
 2. Roll the Worker back to its previous version if Worker code was deployed.
-3. Do not clear KV.
-4. Compare current workflow counts and revision with the pre-deployment backup.
-5. Use the guarded restore only when data actually differs and the restore preview is correct.
+3. Keep the coordinator deployed while either Pages or Worker still references it; roll it back only after both callers have been rolled back.
+4. Do not clear KV.
+5. Compare current workflow counts and revision with the pre-deployment backup.
+6. Use the guarded restore only when data actually differs and the restore preview is correct.
 
-## Remaining Concurrency Limit
+## Serialized Workflow Writes
 
-Revision checks and idempotency prevent stale clients and repeated requests from silently overwriting data. Cloudflare KV still lacks atomic compare-and-set, so two requests that read the same revision at exactly the same time can race. Strong serialization requires a Durable Object coordinator or a transactional D1 migration and should be implemented as a separate infrastructure phase.
+Pages Functions and the scheduled Worker route workflow mutations through one Durable Object instance per workflow key. The coordinator queues each read/validate/write cycle, so two requests with the same expected revision cannot both commit. KV remains the source of truth and no workflow migration or KV cleanup is required. If the binding is absent in local tests, the shared mutation helper keeps a direct fallback; production `/healthz` and the smoke test fail when the binding is missing.

@@ -1,3 +1,5 @@
+import { getExpectedDailyWordCount } from '../shared/daily-config.mjs';
+
 const SITE_URL = String(process.env.SITE_URL || 'https://jiyimianbao.pages.dev').replace(/\/+$/, '');
 const TIMEOUT_MS = 30000;
 
@@ -46,6 +48,7 @@ async function fetchJson(path) {
 try {
   const health = await fetchJson('/healthz');
   if (!health.data.storageConfigured) fail('Production FAVORITES binding 未生效');
+  if (!health.data.workflowCoordinatorConfigured) fail('Production Durable Object 写入协调 binding 未生效');
   if (!health.data.imageStorageConfigured) fail('Production 图片 KV binding 未生效');
 
   const workflow = await fetchJson('/favorites?view=app&scope=today');
@@ -53,8 +56,11 @@ try {
   const dateKey = todayKey();
   const snapshot = workflow.data.todaySnapshot || {};
   const words = Array.isArray(snapshot.words) ? snapshot.words : [];
+  const expectedWordCount = getExpectedDailyWordCount(dateKey);
   if (snapshot.dateKey !== dateKey) fail('Production 今日快照日期不正确', { expected: dateKey, actual: snapshot.dateKey || '' });
-  if (words.length !== 20) fail('Production 今日推荐不是 20 个', { count: words.length });
+  if (words.length !== expectedWordCount) {
+    fail(`Production 今日推荐不是 ${expectedWordCount} 个`, { count: words.length, expected: expectedWordCount });
+  }
 
   const candidatePool = workflow.data.candidatePool || {};
   const readyCards = words.filter(word => candidatePool[word]?.aiCard?.cardStatus === 'ready');
@@ -69,6 +75,27 @@ try {
     fail('Production 收藏页面候选词卡不完整', { favorites: favoriteWords.length, candidates: favoriteCandidates.length });
   }
 
+  const revision = Number(workflow.data.revision) || 0;
+  const auditLog = Array.isArray(workflow.data.auditLog) ? workflow.data.auditLog : [];
+  const latestAudit = auditLog[0] || null;
+  if (revision < 1) fail('Production workflow revision 尚未建立');
+  if (!latestAudit) fail('Production workflow 缺少写入审计记录', { revision });
+  if (Number(latestAudit.revision) !== revision) {
+    fail('Production workflow revision 与最新审计记录不一致', {
+      revision,
+      auditRevision: Number(latestAudit.revision) || 0,
+      action: latestAudit.action || ''
+    });
+  }
+  if (latestAudit.after?.todaySnapshotDateKey !== dateKey || Number(latestAudit.after?.todaySnapshotCount) !== expectedWordCount) {
+    fail(`Production 最新审计记录未保留今日 ${expectedWordCount} 词快照`, {
+      dateKey: latestAudit.after?.todaySnapshotDateKey || '',
+      count: Number(latestAudit.after?.todaySnapshotCount) || 0,
+      expected: expectedWordCount,
+      action: latestAudit.action || ''
+    });
+  }
+
   console.log(JSON.stringify({
     ok: true,
     site: SITE_URL,
@@ -79,7 +106,13 @@ try {
     readyImages: readyImages.length,
     todayResponseBytes: workflow.bytes,
     favoritesResponseBytes: favoritesWorkflow.bytes,
-    revision: Number(workflow.data.revision) || 0,
+    revision,
+    latestMutation: {
+      action: latestAudit.action || '',
+      actor: latestAudit.actor || '',
+      at: latestAudit.at || '',
+      revision: Number(latestAudit.revision) || 0
+    },
     requestId: workflow.requestId
   }, null, 2));
 } catch (error) {

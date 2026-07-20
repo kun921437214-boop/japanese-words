@@ -12,10 +12,8 @@ import {
   readJsonBody,
   unauthorizedResponse
 } from '../shared/api-security.mjs';
-import {
-  getWorkflowMutationMetadata,
-  prepareWorkflowMutation
-} from '../shared/workflow-mutation.mjs';
+import { getWorkflowMutationMetadata } from '../shared/workflow-mutation.mjs';
+import { commitWorkflowMutation } from '../shared/workflow-coordinator.mjs';
 
 function cleanSyncCode(value) {
   return String(value || '').trim().replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 64);
@@ -608,17 +606,14 @@ export async function onRequest({ request, env }) {
       return fail(400, 'INVALID_BODY', 'workflow 必须是 JSON 对象');
     }
 
-    const stored = await env.FAVORITES.get(key, 'json');
-    const current = cleanWorkflowSchema(stored);
-    const merged = mergeWorkflowForFullSave(current, {
+    const mutation = await commitWorkflowMutation(env, key, {
       ...body,
       updated: new Date().toISOString()
-    });
-    const mutation = prepareWorkflowMutation(current, merged, getWorkflowMutationMetadata(request, body, {
+    }, getWorkflowMutationMetadata(request, body, {
       action: 'workflow.replace',
       actor: authorization.actor,
       summary: '保存完整团队工作流'
-    }));
+    }), { strategy: 'full-save' });
     if (mutation.conflict) {
       return respond({
         ok: false,
@@ -628,7 +623,6 @@ export async function onRequest({ request, env }) {
     }
     const data = mutation.workflow;
 
-    if (!mutation.duplicate) await env.FAVORITES.put(key, JSON.stringify(data));
     return respond({ ...getWorkflowResponseData(data, url), mutation: { duplicate: mutation.duplicate, operationId: mutation.event?.id || '' } });
   }
 
@@ -646,12 +640,12 @@ export async function onRequest({ request, env }) {
     const stored = await env.FAVORITES.get(key, 'json');
     const current = cleanWorkflowSchema(stored);
     const next = applyFavoriteAction(current, body);
-    const mutation = prepareWorkflowMutation(current, next, getWorkflowMutationMetadata(request, body, {
+    const mutation = await commitWorkflowMutation(env, key, next, getWorkflowMutationMetadata(request, body, {
       action: `favorite.${body.action}`,
       actor: authorization.actor,
       target: word,
       summary: body.action === 'status' ? `状态更新为 ${cleanStatus(body.status)}` : ''
-    }));
+    }), { strategy: 'full-save' });
     if (mutation.conflict) {
       return respond({
         ok: false,
@@ -661,7 +655,6 @@ export async function onRequest({ request, env }) {
     }
     const data = mutation.workflow;
 
-    if (!mutation.duplicate) await env.FAVORITES.put(key, JSON.stringify(data));
     return respond({ ...getWorkflowResponseData(data, url), mutation: { duplicate: mutation.duplicate, operationId: mutation.event?.id || '' } });
   }
 

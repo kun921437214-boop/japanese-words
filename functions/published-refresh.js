@@ -1,5 +1,9 @@
 import { refreshPublishedRecords } from '../shared/published-refresh.mjs';
-import { cleanStoredWorkflow, mergeWorkflow } from '../shared/workflow-schema.mjs';
+import {
+  cleanPublishedRecords as cleanWorkflowPublishedRecords,
+  cleanStoredWorkflow,
+  mergeWorkflow
+} from '../shared/workflow-schema.mjs';
 import {
   API_LIMITS,
   authorizeRequest,
@@ -12,9 +16,9 @@ import {
 } from '../shared/api-security.mjs';
 import {
   getWorkflowMutationMetadata,
-  inspectWorkflowMutation,
-  prepareWorkflowMutation
+  inspectWorkflowMutation
 } from '../shared/workflow-mutation.mjs';
+import { commitWorkflowMutation } from '../shared/workflow-coordinator.mjs';
 
 function cleanSyncCode(value) {
   return String(value || '').trim().replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 64);
@@ -237,7 +241,7 @@ export async function onRequest({ request, env }) {
     });
   }
   const workingRecords = Array.isArray(body?.publishedRecords) && body.publishedRecords.length
-    ? cleanPublishedRecords(body.publishedRecords)
+    ? cleanWorkflowPublishedRecords(body.publishedRecords)
     : current.publishedRecords;
 
   const result = await refreshPublishedRecords(workingRecords, {
@@ -247,13 +251,13 @@ export async function onRequest({ request, env }) {
   });
 
   const merged = mergeWorkflow(current, {
-    publishedRecords: cleanPublishedRecords(result.records),
+    publishedRecords: cleanWorkflowPublishedRecords(result.records),
     updated: new Date().toISOString()
   });
-  const mutation = prepareWorkflowMutation(current, merged, {
+  const mutation = await commitWorkflowMutation(env, key, merged, {
     ...mutationMetadata,
     summary: `成功 ${result.summary.successCount}，失败 ${result.summary.failureCount}`
-  });
+  }, { strategy: 'merge' });
   if (mutation.conflict) {
     return respond({
       ok: false,
@@ -263,7 +267,6 @@ export async function onRequest({ request, env }) {
   }
   const nextData = mutation.workflow;
 
-  if (!mutation.duplicate) await env.FAVORITES.put(key, JSON.stringify(nextData));
   return respond({
     ok: true,
     publishedRecords: nextData.publishedRecords,

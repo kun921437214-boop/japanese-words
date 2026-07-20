@@ -12,11 +12,13 @@ export async function onRequest({ request, env }) {
 
   const requestId = getRequestId(request);
   const storageConfigured = Boolean(env.FAVORITES);
+  const workflowCoordinatorConfigured = Boolean(env.WORKFLOW_COORDINATOR);
   const imageStorageConfigured = Boolean(env.REFERENCE_IMAGES || env.REFERENCE_IMAGES_KV);
   const response = jsonResponse(request, env, {
     ok: storageConfigured,
     service: 'japanese-words-pages',
     storageConfigured,
+    workflowCoordinatorConfigured,
     imageStorageConfigured,
     checkedAt: new Date().toISOString()
   }, storageConfigured ? 200 : 503, { methods, requestId });

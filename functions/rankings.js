@@ -5,6 +5,7 @@ import {
   cleanStoredRanking,
   dateKey
 } from '../shared/rankings.mjs';
+import { isStoredDailyWordCount } from '../shared/daily-config.mjs';
 import {
   authorizeRequest,
   errorResponse,
@@ -24,7 +25,7 @@ async function readStoredSelections(env, startDateKey, endDateKey) {
   while (cursor) {
     const stored = await env.FAVORITES.get(getRankingStorageKey(cursor), 'json');
     const ranking = cleanStoredRanking(stored, cursor);
-    if (ranking.words.length === 20) selections.set(cursor, ranking.words);
+    if (isStoredDailyWordCount(ranking.words.length)) selections.set(cursor, ranking.words);
     if (cursor === endDateKey) break;
     cursor = addDays(cursor, 1);
   }
@@ -41,7 +42,7 @@ async function ensureRankings(env, requestedDays) {
 
   while (cursor) {
     let words = cachedSelections.get(cursor);
-    if (!words || words.length !== 20) {
+    if (!words || !isStoredDailyWordCount(words.length)) {
       words = buildRankingForDate(cursor, cachedSelections);
       cachedSelections.set(cursor, words);
       await env.FAVORITES.put(getRankingStorageKey(cursor), JSON.stringify({

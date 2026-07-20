@@ -8,11 +8,16 @@ preview_urls = false
 SITE_URL = "https://jiyimianbao.pages.dev"
 
 [triggers]
-crons = ["0 16 * * *", "5,25,45 * * * *", "10,20,30,40,50 16 * * *", "0 17 * * *"]
+crons = ["30 6 * * *", "0 16 * * *", "5,25,45 * * * *", "10,20,30,40,50 16 * * *", "0 17 * * *"]
 
 [[kv_namespaces]]
 binding = "FAVORITES"
 id = "969904de6cf24fe6982d2b8ee01c9b1a"
+
+[[durable_objects.bindings]]
+name = "WORKFLOW_COORDINATOR"
+class_name = "WorkflowCoordinator"
+script_name = "japanese-words-workflow-coordinator"
 
 [env.preview]
 name = "japanese-words-sync-preview"
@@ -26,3 +31,8 @@ ENABLE_LEGACY_WORKER_API = "false"
 [[env.preview.kv_namespaces]]
 binding = "FAVORITES"
 id = "d4d4852d9be04115830789aaffbf4aca"
+
+[[env.preview.durable_objects.bindings]]
+name = "WORKFLOW_COORDINATOR"
+class_name = "WorkflowCoordinator"
+script_name = "japanese-words-workflow-coordinator-preview"

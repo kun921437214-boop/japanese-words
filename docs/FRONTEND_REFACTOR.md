@@ -62,8 +62,8 @@ Remove inline HTML handlers only after the corresponding page module has executa
   - validation, duplicate handling, team sync, and DeepSeek generation behavior remain in the existing application services;
   - executable tests cover action routing, outside-root isolation, async failures, cleanup, and compatibility-facade removal;
   - browser checks cover empty-word validation, cancel/close actions, and reopening without creating or syncing a word.
-- Shared workflow and AI-management actions — completed:
-  - `frontend/workflow-actions.mjs` owns delegated AI-preview selection, word-card generation, status/feedback, and internal candidate actions;
+- Shared workflow actions — completed:
+  - `frontend/workflow-actions.mjs` owns delegated word-card generation and status/feedback actions;
   - buttons and cards use escaped data attributes rather than executable inline JavaScript;
   - executable tests cover every route, propagation boundaries, outside-root isolation, async failures, and cleanup.
 - Generated modal actions — completed:
@@ -87,6 +87,44 @@ Remove inline HTML handlers only after the corresponding page module has executa
 - Executable tests cover valid share parsing, lookalike-domain and insecure-URL rejection, count/date helpers, multiline markup, and deployment-module integrity.
 - Computer Use browser validation caught and verified both deployment-module loading and multiline paste behavior. The final check rejected a lookalike domain and correctly filled a valid link, title, author, publish time, description, and all five metrics without saving a record.
 
+## Completed: Phase 6 — Workflow Backup Safety
+
+- `frontend/workflow-backup.mjs` owns workflow backup construction, JSON parsing, root validation, summary copy, serialization, filename generation, and the shared 10 MB browser limit.
+- Export and restore still pass through the existing application workflow cleaner, so favorites, statuses, feedback, published records, candidate cards, AI batches, today snapshots, history, revision, and audit metadata keep their current schema behavior.
+- Invalid JSON and non-object roots are rejected before any local state replacement or cloud save; oversized file selection now also resets the file input so the same file can be selected again after correction.
+- The browser keeps the existing confirmation boundary before restoration and reuses the shared text-download path for exports; no API path, localStorage key, Cloudflare binding, or workflow mutation behavior changed.
+- Executable tests cover cleaning before export/restore, complete summary counts, serialization, filenames, size limits, invalid JSON, invalid roots, and missing-cleaner failure.
+- Computer Use validation on the built site confirmed Daily Recommendations, Favorites, Published Records, settings open/close, both backup actions, and the desktop modal layout without exporting, restoring, or saving workflow data.
+
+## Completed: Phase 7 — Content Export and Recommendation Audit
+
+- `frontend/content-export.mjs` owns recommendation-audit CSV construction, CSV escaping, audit filenames, and Favorites / Topic Pool text-export formatting.
+- Favorites export keeps the shared ready-card boundary: formal titles, summaries, explanations, examples, cover suggestions, and interaction prompts are exported only when `aiCard.cardStatus === "ready"`; unavailable cards export status copy instead of local template content.
+- Recommendation audit export preserves all 22 operational fields, including origin, fallback, deduplication, account-learning scores, expression value, Chinese transparency, selection reason, and diagnosis.
+- The existing recommendation-audit view and CSV export are now reachable from the Daily Recommendations management menu instead of remaining hidden behind application code.
+- The audit modal now has responsive metric cards, a readable diagnosis panel, a sticky table header, and contained horizontal scrolling for the wide per-word audit table.
+- Executable tests cover CSV field order and escaping, audit filenames, ready-only Favorites content, unavailable-card copy, and both management-menu routes.
+- Computer Use validation on the built site confirmed the management entries, audit-modal layout, Favorites export entry, and Published Records navigation without generating recommendations, downloading files, or mutating cloud workflow data.
+- No API path, localStorage key, Cloudflare binding, KV data, daily snapshot, candidate pool, or draft content changed.
+
+## Completed: Phase 8 — AI Word-Card Generation Policy
+
+- `frontend/ai-card-generation.mjs` owns the browser's pure AI-card timeout, action-state, single-word retry, automatic-attempt, missing-card selection, and request-building rules.
+- Pending cards keep the existing 10-minute timeout boundary: active pending cards stay disabled, while stale pending cards expose the explicit retry path.
+- Ready cards remain protected from automatic regeneration, in-flight cards cannot be queued twice, and the existing two-attempt daily guard is preserved unless an explicit force action is used.
+- “Generate missing cards” still skips ready, active pending, and failed cards, deduplicates words, and limits each request to five; failed cards continue to require an explicit per-card retry.
+- Today-card requests preserve the existing `force`, `retryFailed`, `retryStalePending`, and five-word server contract. DeepSeek word-card requests preserve the 20-word limit, account-learning context, Favorites feedback, and Published Records context.
+- API calls, localStorage writes, candidate-pool updates, workflow saves, Cloudflare bindings, and KV mutation boundaries remain in `app.js` and were not changed in this phase.
+- Executable tests cover fresh/stale pending boundaries, every action label and disabled state, retry-mode selection, duplicate/in-flight/attempt guards, missing-card filtering, request limits, and account-learning context.
+- Computer Use validation on the built site confirmed Daily Recommendations, its management and missing-card controls, Favorites, and Published Records in Chrome, with a second Safari load check. No generation, refresh, export, or cloud write was triggered.
+
+## Completed: Phase 9 — Candidate UI Retirement and Browser E2E
+
+- The unused Candidate Pool / AI Workbench interface, event routes, selection state, audit buttons, and CSS were removed. The internal `candidatePool`, `aiBatches`, `aiPreview`, automatic daily generation, scoring, and formal `aiCard` source remain compatible.
+- `frontend/ai-candidate-service.mjs` now owns the automatic candidate request context and response/batch assembly, reducing the generation responsibility left in `app.js`.
+- Playwright E2E runs against a read-only local static server with mocked API boundaries. It covers Daily Recommendations, Favorites and pending status, revision-conflict reconciliation, backup validation without restore, retired-UI absence, page errors, and the iPhone 15 Pro (393×852) / iPhone 16 Pro (402×874) layouts.
+- CI installs Chromium and runs the E2E suite after lint, typecheck, unit tests, and the production static build.
+
 ## Required Validation
 
 ```bash
@@ -94,6 +132,7 @@ npm run lint
 npm run typecheck
 npm test
 npm run build
+npm run test:e2e
 ```
 
 After every frontend update, use Computer Use to verify the affected workflow on the built site in a real browser. Also verify Daily Recommendations, Favorites, and Published Records before deployment.

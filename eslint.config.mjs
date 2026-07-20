@@ -49,7 +49,7 @@ export default [
     }
   },
   {
-    files: ['shared/api-security.mjs', 'shared/workflow-mutation.mjs', 'functions/healthz.js', 'scripts/test-hardening.mjs'],
+    files: ['shared/api-security.mjs', 'shared/workflow-coordinator.mjs', 'shared/workflow-mutation.mjs', 'durable-object/workflow-coordinator.js', 'functions/healthz.js', 'scripts/test-hardening.mjs'],
     rules: {
       'no-unused-vars': ['error', { argsIgnorePattern: '^_' }]
     }

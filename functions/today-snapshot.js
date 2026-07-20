@@ -1,5 +1,6 @@
 import { cleanStoredWorkflow, generateTodaySnapshot } from '../shared/today-snapshot.mjs';
-import { addDays, buildRankingForDate, cleanStoredRanking, dateKey } from '../shared/rankings.mjs';
+import { isStoredDailyWordCount } from '../shared/daily-config.mjs';
+import { addDays, buildRankingForDate, cleanStoredRanking, dateKey, WORDS_PER_DAY } from '../shared/rankings.mjs';
 import {
   API_LIMITS,
   authorizeRequest,
@@ -12,9 +13,9 @@ import {
 } from '../shared/api-security.mjs';
 import {
   getWorkflowMutationMetadata,
-  inspectWorkflowMutation,
-  prepareWorkflowMutation
+  inspectWorkflowMutation
 } from '../shared/workflow-mutation.mjs';
+import { commitWorkflowMutation } from '../shared/workflow-coordinator.mjs';
 
 function cleanSyncCode(value) {
   return String(value || '').trim().replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 64);
@@ -38,7 +39,7 @@ async function readRankingHistoryWords(env, todayDateKey, days = 30) {
   while (cursor) {
     const stored = await env.FAVORITES.get(getRankingStorageKey(cursor), 'json');
     const ranking = cleanStoredRanking(stored, cursor);
-    if (ranking.words.length === 20) cachedSelections.set(cursor, ranking.words);
+    if (isStoredDailyWordCount(ranking.words.length)) cachedSelections.set(cursor, ranking.words);
     if (cursor === todayDateKey) break;
     cursor = addDays(cursor, 1);
   }
@@ -47,7 +48,7 @@ async function readRankingHistoryWords(env, todayDateKey, days = 30) {
   cursor = generationStartDateKey;
   while (cursor) {
     let words = cachedSelections.get(cursor);
-    if (!words || words.length !== 20) {
+    if (!words || !isStoredDailyWordCount(words.length)) {
       words = buildRankingForDate(cursor, cachedSelections);
       cachedSelections.set(cursor, words);
     }
@@ -118,7 +119,7 @@ export async function onRequest({ request, env }) {
       ok: true,
       mode,
       selectedCount,
-      shortage: selectedCount < 20,
+      shortage: selectedCount < WORDS_PER_DAY,
       todaySnapshot: stored.todaySnapshot,
       recommendationAudit: stored.todaySnapshot?.recommendationAudit || null,
       revision: stored.revision,
@@ -127,10 +128,10 @@ export async function onRequest({ request, env }) {
   }
   const rankingHistoryWords = await readRankingHistoryWords(env, dateKey(), 30);
   const generated = generateTodaySnapshot({ ...stored, rankingHistoryWords }, { mode, createdBy: 'server' });
-  const mutation = prepareWorkflowMutation(stored, generated.workflow, {
+  const mutation = await commitWorkflowMutation(env, key, generated.workflow, {
     ...mutationMetadata,
     summary: `今日推荐 ${generated.result.todaySnapshot?.words?.length || 0} 个词`
-  });
+  }, { strategy: 'replace' });
   if (mutation.conflict) {
     return respond({
       ok: false,
@@ -139,7 +140,6 @@ export async function onRequest({ request, env }) {
     }, 409);
   }
 
-  if (!mutation.duplicate) await env.FAVORITES.put(key, JSON.stringify(mutation.workflow));
   return respond({
     ...generated.result,
     revision: mutation.workflow.revision,

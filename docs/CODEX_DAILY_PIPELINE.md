@@ -2,14 +2,14 @@
 
 ## 目标
 
-每天北京时间 14:00 在固定的 Codex 对话中准备次日 20 个词、完整词卡和参考图片。午夜 Worker 只负责把已通过质量门的草稿晋升为正式 `todaySnapshot`；草稿缺失或不合格时，才调用现有 DeepSeek 日更作为保底。
+每天北京时间 14:00 在固定的 Codex 对话中准备次日 10 个词、完整词卡和参考图片。午夜 Worker 只负责把已通过质量门的草稿晋升为正式 `todaySnapshot`；草稿缺失或不合格时，才调用现有 DeepSeek 日更作为保底。
 
 固定 Codex 任务：`019f5c0e-3d15-75b2-92b1-5f6cb05610aa`。14:00 主任务和 17:00 补漏任务都必须唤醒这一条任务，不能每天创建新任务。
 
 ## 数据流
 
 1. Codex 只读请求 `/codex-daily?date=明日&view=context`，取得账号定位、收藏/反馈、候选池和近 30 天快照。
-2. Codex 在本地生成 20 个词和完整词卡，并用 image generation 为每个词准备一张参考图。
+2. Codex 在本地生成 10 个词和完整词卡，并用 image generation 为每个词准备一张参考图。
 3. 图片通过 `PUT /codex-image` 写入独立的 `REFERENCE_IMAGES_KV`；返回的同源 URL 保存到 `aiCard.referenceImage`。若未来开通 R2，接口仍可优先使用 `REFERENCE_IMAGES` R2 binding。
 4. `npm run codex:daily -- validate` 在本地执行同一套质量门。
 5. Codex 使用独立的 `CODEX_AUTOMATION_SECRET` 提交草稿。该凭证不能发布草稿，不能调用 `/favorites`、`/daily-refresh` 或 `/ai-cards`。
@@ -18,7 +18,7 @@
 
 ## 发布门
 
-- 恰好 20 个不重复词。
+- 恰好 10 个不重复词。
 - 每个词包含日语、读音、中文语感和完整词卡。
 - 完整词卡必须覆盖 `summary`、`explanation`、`usageScenes`、`examples`、`suggestedTitles`、`coverSuggestion`、`contentAngles`、`targetAudience`、`referenceDirection`、`riskWarning`、`wrongUsage`、`similarWords`、`interactionPrompts`。
 - 内容数量与 DeepSeek 词卡规则对齐：例句 2-4 条、推荐标题 3-6 条、内容角度 3-6 条、互动引导 2-4 条；相近词至少 1 个，并说明语感差异。
@@ -78,7 +78,7 @@ KV 模式下单张图片不能超过 800 KiB，批量命令会在联网前完成
 
 ## 固定任务行为
 
-14:00 主任务：读取明日上下文，生成并验证 20 个词/卡片/图片，只提交草稿，不发布、不调用 DeepSeek、不部署。
+14:00 主任务：读取明日上下文，生成并验证 10 个词/卡片/图片，只提交草稿，不发布、不调用 DeepSeek、不部署。
 
 16:00 恢复检查：读取同一日期的现有草稿；如果 14:00 因网络或审批链路中断，使用同一个 `upload-images` 命令从缺失图片继续，不重做 ready 内容。
 

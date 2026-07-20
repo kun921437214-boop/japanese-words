@@ -39,25 +39,13 @@ export function createWorkflowActionsController(options = {}) {
     else if (action === 'apply-feedback') {
       const handler = dataset.context === 'codex-preview' ? options.onCodexFeedback : options.onNegativeFeedback;
       invoke(handler, dataset.kanji || '', dataset.reason || '');
-    } else if (action === 'candidate-open-detail') invoke(options.onOpenDetail, dataset.wordId || dataset.kanji || '');
-    else if (action === 'candidate-toggle') invoke(options.onToggleCandidate, dataset.kanji || '');
-    else if (action === 'candidate-state') invoke(options.onSetCandidateState, dataset.kanji || '', dataset.state || '');
-  }
-
-  function handleChange(event) {
-    const actionElement = event.target?.closest?.(`[${WORKFLOW_ACTION_ATTRIBUTE}]`);
-    if (!actionElement || !belongsToRoot(actionElement)) return;
-    if (actionElement.dataset?.workflowAction === 'ai-preview-selection') {
-      invoke(options.onToggleAiPreviewSelection, actionElement.dataset.kanji || '');
     }
   }
 
   root.addEventListener('click', handleClick);
-  root.addEventListener('change', handleChange);
   return {
     destroy() {
       root.removeEventListener?.('click', handleClick);
-      root.removeEventListener?.('change', handleChange);
     }
   };
 }

@@ -8,6 +8,11 @@ const WORD_CARD_STATUS_LABELS = {
   stale: '需重新生成'
 };
 
+const WORD_CARD_SOURCE_LABELS = {
+  codex: 'Codex 词卡',
+  deepseek_api: 'DeepSeek 词卡'
+};
+
 const EMPTY_FORMAL_CONTENT = Object.freeze({
   summary: '',
   explanation: '',
@@ -56,25 +61,27 @@ export function buildWordCardViewModel(options = {}) {
       ? text(card.referenceImage.url)
       : '';
   const coverSuggestion = formalContent.coverSuggestion || {};
+  const sourceLabel = WORD_CARD_SOURCE_LABELS[card.cardSource] || 'AI 词卡';
   const statusLabel = status === 'pending' && options.stalePending
-    ? '生成超时'
+    ? '生成超时 · 可重试'
     : (WORD_CARD_STATUS_LABELS[status] || WORD_CARD_STATUS_LABELS.none);
   const title = formalContent.suggestedTitles[0] || '';
   const unavailableMessage = status === 'pending'
     ? (options.stalePending
-        ? 'DeepSeek 词卡生成已超时，请重新生成。正式内容就绪前不会展示推荐标题、例句或参考图。'
-        : 'DeepSeek 词卡生成中。生成完成后会刷新为正式词卡内容。')
+        ? `${sourceLabel}生成已超时，请重新生成。正式内容就绪前不会展示推荐标题、例句或参考图。`
+        : `${sourceLabel}生成中。生成完成后会刷新为正式词卡内容。`)
     : status === 'failed'
-      ? 'DeepSeek 词卡生成失败，请重试。失败结果不会作为正式词卡展示。'
+      ? `${sourceLabel}生成失败，请重试。失败结果不会作为正式词卡展示。`
       : status === 'stale'
-        ? '这张 DeepSeek 词卡需要重新生成。更新完成前不会展示旧的正式内容。'
-        : '该词还没有生成 DeepSeek 词卡。未生成前不展示推荐标题、例句、详细解释、错误用法或互动引导。';
+        ? `这张${sourceLabel}需要重新生成。更新完成前不会展示旧的正式内容。`
+        : `该词还没有生成${sourceLabel}。未生成前不展示推荐标题、例句、详细解释、错误用法或互动引导。`;
 
   return {
     card,
     storedStatus,
     status,
     statusLabel,
+    sourceLabel,
     hasFormalCard,
     hasReferenceImage: Boolean(referenceImageUrl),
     referenceImageUrl,
@@ -94,7 +101,7 @@ export function buildWordCardViewModel(options = {}) {
     wrongUsage: formalContent.wrongUsage,
     similarWords: formalContent.similarWords,
     interactionPrompts: formalContent.interactionPrompts,
-    listTitle: hasFormalCard ? (title || 'DeepSeek 词卡已生成') : statusLabel,
+    listTitle: hasFormalCard ? (title || `${sourceLabel}已生成`) : statusLabel,
     basic: {
       kanji: text(word.kanji || entry.kanji),
       kana: text(entry.kana || word.kana || word.reading),
@@ -105,4 +112,4 @@ export function buildWordCardViewModel(options = {}) {
   };
 }
 
-export { EMPTY_FORMAL_CONTENT, WORD_CARD_STATUS_LABELS };
+export { EMPTY_FORMAL_CONTENT, WORD_CARD_SOURCE_LABELS, WORD_CARD_STATUS_LABELS };

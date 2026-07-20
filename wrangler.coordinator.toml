@@ -1,22 +1,25 @@
-name = "jiyimianbao"
+name = "japanese-words-workflow-coordinator"
+main = "durable-object/workflow-coordinator.js"
 compatibility_date = "2026-04-29"
-pages_build_output_dir = "dist"
-
-[vars]
-ALLOW_PUBLIC_APP = "true"
+workers_dev = false
+preview_urls = false
 
 [[kv_namespaces]]
 binding = "FAVORITES"
 id = "969904de6cf24fe6982d2b8ee01c9b1a"
 
-[[kv_namespaces]]
-binding = "REFERENCE_IMAGES_KV"
-id = "2d408128295d451eae65935b9fdac082"
-
 [[durable_objects.bindings]]
 name = "WORKFLOW_COORDINATOR"
 class_name = "WorkflowCoordinator"
-script_name = "japanese-words-workflow-coordinator"
+
+[exports.WorkflowCoordinator]
+type = "durable-object"
+storage = "sqlite"
+
+[env.preview]
+name = "japanese-words-workflow-coordinator-preview"
+workers_dev = false
+preview_urls = false
 
 [[env.preview.kv_namespaces]]
 binding = "FAVORITES"
@@ -25,4 +28,3 @@ id = "d4d4852d9be04115830789aaffbf4aca"
 [[env.preview.durable_objects.bindings]]
 name = "WORKFLOW_COORDINATOR"
 class_name = "WorkflowCoordinator"
-script_name = "japanese-words-workflow-coordinator-preview"

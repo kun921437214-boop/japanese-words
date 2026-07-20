@@ -68,6 +68,7 @@ Open `index.html` directly or serve the project root with a static file server.
 Production:
 
 ```bash
+npm run deploy:coordinator
 npm run deploy
 npm run deploy:worker
 ```
@@ -79,14 +80,14 @@ Production site currently uses Cloudflare Pages at `https://jiyimianbao.pages.de
 - DeepSeek calls can timeout or return malformed JSON; the backend has retry/structured error handling but prompt size still matters.
 - Cloudflare CLI deploy depends on local Wrangler authentication.
 - Team workflow data is valuable; always avoid partial writes that drop `candidatePool`, `aiBatches`, `todaySnapshot`, `publishedRecords`, or `aiCard`.
-- `app.js` is large; make small targeted changes and run smoke tests.
+- `app.js` is still large; continue extracting tested domain services in small increments and run browser E2E after frontend changes.
 
 ## Next Recommendations
 
 P0:
 
 - Keep validating team sync after favorites, manual add, card generation, and published-record updates.
-- Add a small browser smoke test for Daily Hot and Favorites flows.
+- Keep the Playwright browser E2E fixture aligned with Daily Hot, Favorites, backup, and conflict behavior.
 
 P1:
 

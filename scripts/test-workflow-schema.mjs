@@ -22,7 +22,12 @@ import {
   getDailyQualityScoreDelta
 } from '../shared/today-quality.mjs';
 import { getAccountLearningSummary } from '../shared/account-learning.mjs';
+import { DAILY_WORD_COUNT } from '../shared/daily-config.mjs';
 import { buildDeepSeekExclusionContext } from '../shared/deepseek-exclusion.mjs';
+import {
+  AI_CARD_PENDING_TTL_MS as FRONTEND_AI_CARD_PENDING_TTL_MS,
+  isAiCardStalePending as isFrontendAiCardStalePending
+} from '../frontend/ai-card-generation.mjs';
 import { applyFavoriteAction, buildAppWorkflowView, buildFavoriteCommandView } from '../functions/favorites.js';
 import {
   applyAiCardGenerationResult,
@@ -97,7 +102,9 @@ test('候选池后台从用户界面下线但内部日更数据结构保持不�
   assert.equal(indexSource.includes('id="candidateGrid"'), false);
   assert.ok(appSource.includes("['today', 'favorites', 'published'].includes(normalizedTab)"));
   assert.ok(appSource.includes("(['today', 'favorites', 'published'].includes(savedTab)"));
-  assert.ok(appSource.includes("const grid = document.getElementById('candidateGrid');\n  if (!grid) return;"));
+  assert.equal(appSource.includes("document.getElementById('candidateGrid')"), false);
+  assert.equal(appSource.includes('candidateSelection'), false);
+  assert.equal(appSource.includes('renderAiWorkbench'), false);
   assert.ok(appSource.includes('candidatePool: cleanCandidatePool(candidatePool)'));
 });
 
@@ -263,7 +270,12 @@ test('前端收藏使用小命令响应并防止旧同步覆盖新版本', () =>
 
 test('历史日期缺少 aiCard 时安全渲染并按需重新加载词卡', () => {
   const appSource = fs.readFileSync(new URL('../app.js', import.meta.url), 'utf8');
-  assert.ok(appSource.includes("if (!card || card.cardStatus !== 'pending') return false;"));
+  const nowMs = Date.parse('2026-07-19T12:00:00.000Z');
+  assert.equal(isFrontendAiCardStalePending({
+    cardStatus: 'pending',
+    generatedAt: new Date(nowMs - FRONTEND_AI_CARD_PENDING_TTL_MS - 1).toISOString()
+  }, {}, { nowMs }), true);
+  assert.equal(isFrontendAiCardStalePending({ cardStatus: 'none' }, {}, { nowMs }), false);
   assert.ok(appSource.includes("const card = cleanAiCard(aiCard || {}) || { cardStatus: 'none' };"));
   assert.ok(appSource.includes('正在加载这一天的词卡内容'));
   assert.ok(appSource.includes("void ensureWorkflowScopeLoaded('today', { historyDate }).then"));
@@ -278,7 +290,8 @@ test('Codex 明日预览保留团队操作和完整词卡详情', () => {
   assert.ok(appSource.includes('加入收藏 / 选题池'));
   assert.ok(appSource.includes('目标受众'));
   assert.ok(appSource.includes('封面建议'));
-  assert.ok(appSource.includes('互动引导'));
+  assert.ok(appSource.includes('const interactionPrompts = wordCardView.interactionPrompts;'));
+  assert.ok(appSource.includes('interactionPrompts.map(prompt =>'));
   assert.ok(appSource.includes('相近词'));
   assert.ok(appSource.includes('风险与使用提醒'));
 });
@@ -337,10 +350,12 @@ test('scheduled Worker 分离日更和 aiCard 批量 cron', () => {
   const workerSource = fs.readFileSync(new URL('../worker/favorites-worker.js', import.meta.url), 'utf8');
 
   assert.ok(workerConfig.includes('"0 16 * * *"'));
+  assert.ok(workerConfig.includes('"30 6 * * *"'));
   assert.ok(workerConfig.includes('"5,25,45 * * * *"'));
   assert.ok(workerConfig.includes('"10,20,30,40,50 16 * * *"'));
   assert.ok(workerConfig.includes('"0 17 * * *"'));
   assert.ok(workerSource.includes("const DAILY_REFRESH_CRON = '0 16 * * *';"));
+  assert.ok(workerSource.includes("const PUBLISHED_REFRESH_CRON = '30 6 * * *';"));
   assert.ok(workerSource.includes("const CODEX_LATE_PROMOTION_CRON = '5,25,45 * * * *';"));
   assert.ok(workerSource.includes("const AI_CARD_BATCH_MAX_WORDS = 5;"));
   assert.ok(workerSource.includes("new URL(`${siteUrl}/codex-daily`)"));
@@ -357,7 +372,7 @@ test('scheduled Worker 分离日更和 aiCard 批量 cron', () => {
   assert.ok(workerSource.includes('retryFailed: plan.retryFailed'));
   assert.ok(workerSource.includes('words: plan.targetWords'));
   assert.ok(workerSource.includes('if (!plan.shouldRun)'));
-  assert.ok(workerSource.includes('cron !== DAILY_REFRESH_CRON'));
+  assert.ok(workerSource.includes('cron !== PUBLISHED_REFRESH_CRON'));
   assert.ok(workerSource.includes('triggerCodexPromotionIfAvailable(env)'));
   assert.equal(workerSource.includes('force: true'), false);
 });
@@ -511,13 +526,13 @@ test('daily snapshot selection limits basic, beauty, fandom and keeps account-fi
   const words = result.todaySnapshot.words;
   const categories = words.map(word => getDailyQualityCategory(candidatePool[word]));
   const countCategory = category => categories.filter(item => item === category).length;
-  assert.equal(words.length, 20);
+  assert.equal(words.length, DAILY_WORD_COUNT);
   assert.ok(countCategory('basic_greeting') + countCategory('textbook_polite') <= 1);
   assert.ok(countCategory('beauty_product') <= 1);
   assert.ok(countCategory('fandom_circle') <= 2);
-  assert.ok(countCategory('emotion_state') >= 4);
-  assert.ok(countCategory('social_nuance') >= 3);
-  assert.ok(countCategory('life_state') >= 4);
+  assert.ok(countCategory('emotion_state') >= 2);
+  assert.ok(countCategory('social_nuance') >= 2);
+  assert.ok(countCategory('life_state') >= 2);
   assert.equal(result.recommendationAudit.qualitySummary.relaxed, false);
 });
 
@@ -551,7 +566,7 @@ test('cleanStoredWorkflow 补齐缺失字段', () => {
   assert.deepEqual(cleaned.candidatePool, {});
   assert.deepEqual(cleaned.aiBatches, []);
   assert.deepEqual(cleaned.todaySnapshot.words, []);
-  assert.equal(cleaned.schemaVersion, 2);
+  assert.equal(cleaned.schemaVersion, 3);
   assert.equal(cleaned.revision, 0);
   assert.deepEqual(cleaned.auditLog, []);
 });
@@ -734,30 +749,60 @@ test('mergeWorkflow 合并 candidatePool 时保留手动添加来源元数据', 
   assert.ok(entry.sourceTags.includes('手动添加'));
 });
 
-test('mergeWorkflow 合并 publishedRecords 时新 updatedAt 胜出但不丢备注', () => {
+test('mergeWorkflow 合并 publishedRecords 时更新指标但不覆盖已锁定内容', () => {
   const merged = mergeWorkflow({
     publishedRecords: [{
       id: 'record-1',
       word: 'こなれ',
       title: '旧标题',
-      remarks: '人工复盘备注',
-      performanceNote: '标题可以更生活化',
-      latestStats: { likes: 1, favorites: 2, comments: 0, shares: 0, views: 100 },
+      description: '首次保存的帖子正文',
+      coverUrl: 'https://example.com/first.jpg',
+      contentLocked: true,
+      contentImportedAt: '2026-05-30T01:00:00.000Z',
+      latestMetrics: { likes: 1, favorites: 2, comments: 0, shares: 0, views: 100 },
+      lastMetricsImportedAt: '2026-05-30T01:00:00.000Z',
       updatedAt: '2026-05-30T01:00:00.000Z'
     }]
   }, {
     publishedRecords: [{
       id: 'record-1',
       word: 'こなれ',
-      latestStats: { likes: 10, favorites: 5, comments: 1, shares: 0, views: 1000 },
+      description: '后续不应覆盖的正文',
+      latestMetrics: { likes: 10, favorites: 5, comments: 1, shares: 0, views: 1000 },
+      lastMetricsImportedAt: '2026-05-31T01:00:00.000Z',
       updatedAt: '2026-05-31T01:00:00.000Z'
     }]
   });
   const record = merged.publishedRecords[0];
-  assert.equal(record.remarks, '人工复盘备注');
-  assert.equal(record.performanceNote, '标题可以更生活化');
+  assert.equal(record.description, '首次保存的帖子正文');
+  assert.equal(record.coverUrl, 'https://example.com/first.jpg');
   assert.equal(record.latestStats.views, 1000);
   assert.equal(record.updatedAt, '2026-05-31T01:00:00.000Z');
+});
+
+test('mergeWorkflow 保留已锁定发布内容的非单词分类', () => {
+  const merged = mergeWorkflow({
+    publishedRecords: [{
+      id: 'promo-1',
+      title: '书籍宣传',
+      contentCategory: 'non_word',
+      description: '首次保存的宣传正文',
+      contentLocked: true,
+      contentImportedAt: '2026-05-30T01:00:00.000Z',
+      updatedAt: '2026-05-30T01:00:00.000Z'
+    }]
+  }, {
+    publishedRecords: [{
+      id: 'promo-1',
+      title: '书籍宣传',
+      latestMetrics: { views: 1000 },
+      lastMetricsImportedAt: '2026-05-31T01:00:00.000Z',
+      updatedAt: '2026-05-31T01:00:00.000Z'
+    }]
+  });
+  assert.equal(merged.publishedRecords[0].contentCategory, 'non_word');
+  assert.equal(merged.publishedRecords[0].word, '');
+  assert.equal(merged.publishedRecords[0].description, '首次保存的宣传正文');
 });
 
 test('mergeWorkflow 合并 todaySnapshot 时同一天 version 高者优先', () => {
@@ -784,14 +829,14 @@ test('published-refresh 类写回不会导致 aiBatches/todaySnapshot 丢失', (
   const current = cleanStoredWorkflow({
     aiBatches: [{ id: 'batch-a', action: 'wild_ideas', createdAt: '2026-05-31T01:00:00.000Z' }],
     todaySnapshot: { dateKey: '2026-05-31', words: ['こなれ'], generatedAt: '2026-05-31T01:00:00.000Z', version: 1 },
-    publishedRecords: [{ id: 'record-1', word: 'こなれ', remarks: '保留备注', updatedAt: '2026-05-30T01:00:00.000Z' }]
+    publishedRecords: [{ id: 'record-1', word: 'こなれ', description: '保留正文', contentLocked: true, contentImportedAt: '2026-05-30T01:00:00.000Z', updatedAt: '2026-05-30T01:00:00.000Z' }]
   });
   const saved = mergeWorkflow(current, {
-    publishedRecords: [{ id: 'record-1', word: 'こなれ', latestStats: { likes: 3 }, updatedAt: '2026-05-31T01:00:00.000Z' }]
+    publishedRecords: [{ id: 'record-1', word: 'こなれ', latestMetrics: { likes: 3 }, lastMetricsImportedAt: '2026-05-31T01:00:00.000Z', updatedAt: '2026-05-31T01:00:00.000Z' }]
   });
   assert.equal(saved.aiBatches[0].id, 'batch-a');
   assert.deepEqual(saved.todaySnapshot.words, ['こなれ']);
-  assert.equal(saved.publishedRecords[0].remarks, '保留备注');
+  assert.equal(saved.publishedRecords[0].description, '保留正文');
 });
 
 test('worker PUT 类保存不会导致 aiBatches/todaySnapshot 丢失', () => {
@@ -1187,7 +1232,7 @@ test('generateTodaySnapshot 硬排除最近 30 天历史词', () => {
   assert.equal(result.relaxedDedup, false);
   assert.equal(result.todaySnapshot.generatorVersion, TODAY_SNAPSHOT_GENERATOR_VERSION);
   assert.equal(isCurrentGeneratorSnapshot(result.todaySnapshot, new Date('2026-06-08T01:00:00.000Z')), true);
-  assert.equal(words.length, 20);
+  assert.equal(words.length, DAILY_WORD_COUNT);
   assert.equal(words.some(word => word.startsWith('回流词')), false);
 });
 
@@ -1208,7 +1253,7 @@ test('generateTodaySnapshot 硬排除中文直读低价值首页词', () => {
     candidatePool
   }, { mode: 'create', now: new Date('2026-06-08T01:00:00.000Z') });
   const words = result.todaySnapshot.words;
-  assert.equal(words.length, 20);
+  assert.equal(words.length, DAILY_WORD_COUNT);
   assert.equal(words.includes('副業'), false);
   assert.equal(words.includes('資格勉強'), false);
   assert.equal(words.includes('自己投資'), false);
@@ -1259,8 +1304,8 @@ test('generateTodaySnapshot 降级泛话题词并优先表达价值高的词', (
     candidatePool
   }, { mode: 'create', now: new Date('2026-06-08T01:00:00.000Z') });
   const words = result.todaySnapshot.words;
-  assert.equal(words.length, 20);
-  strongWords.forEach(word => assert.ok(words.includes(word), `${word} 应进入每日热门候选`));
+  assert.equal(words.length, DAILY_WORD_COUNT);
+  assert.ok(strongWords.filter(word => words.includes(word)).length >= 4, '高表达价值词应占据明显的优先位置');
   ['ネイル', 'ベースメイク', 'オーバサイズ', 'オーバーサイズ', 'メンズメイク', '資格勉強', '自己投資', 'おじさん構文', '紅葉', 'お弁当', '地雷系', '祭り', '副業', '転職'].forEach(word => {
     assert.equal(words.includes(word), false, `${word} 不应默认进入每日热门`);
   });
