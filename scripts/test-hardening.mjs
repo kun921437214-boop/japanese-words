@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import test from 'node:test';
 import {
   authorizeRequest,
@@ -28,6 +29,13 @@ import { onRequest as handleMiddleware } from '../functions/_middleware.js';
 function request(url = 'https://jiyimianbao.pages.dev/favorites', options = {}) {
   return new Request(url, options);
 }
+
+test('Pages CSP allows only the stable Xiaohongshu cover CDN image host', () => {
+  const headers = readFileSync(new URL('../_headers', import.meta.url), 'utf8');
+  assert.match(headers, /img-src[^;]*https:\/\/sns-na-i6\.xhscdn\.com/);
+  assert.doesNotMatch(headers, /script-src[^;]*xhscdn\.com/);
+  assert.doesNotMatch(headers, /connect-src[^;]*xhscdn\.com/);
+});
 
 function base64Url(value) {
   const bytes = value instanceof Uint8Array ? value : new TextEncoder().encode(JSON.stringify(value));
