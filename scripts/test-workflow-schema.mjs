@@ -780,6 +780,31 @@ test('mergeWorkflow 合并 publishedRecords 时更新指标但不覆盖已锁定
   assert.equal(record.updatedAt, '2026-05-31T01:00:00.000Z');
 });
 
+test('mergeWorkflow 保留已锁定发布内容的非单词分类', () => {
+  const merged = mergeWorkflow({
+    publishedRecords: [{
+      id: 'promo-1',
+      title: '书籍宣传',
+      contentCategory: 'non_word',
+      description: '首次保存的宣传正文',
+      contentLocked: true,
+      contentImportedAt: '2026-05-30T01:00:00.000Z',
+      updatedAt: '2026-05-30T01:00:00.000Z'
+    }]
+  }, {
+    publishedRecords: [{
+      id: 'promo-1',
+      title: '书籍宣传',
+      latestMetrics: { views: 1000 },
+      lastMetricsImportedAt: '2026-05-31T01:00:00.000Z',
+      updatedAt: '2026-05-31T01:00:00.000Z'
+    }]
+  });
+  assert.equal(merged.publishedRecords[0].contentCategory, 'non_word');
+  assert.equal(merged.publishedRecords[0].word, '');
+  assert.equal(merged.publishedRecords[0].description, '首次保存的宣传正文');
+});
+
 test('mergeWorkflow 合并 todaySnapshot 时同一天 version 高者优先', () => {
   const merged = mergeWorkflow({
     todaySnapshot: {

@@ -40,6 +40,7 @@ const NEGATIVE_FEEDBACK_REASONS = [
   'notMyTone'
 ];
 const CONTENT_TYPE_OPTIONS = ['图文', '视频', '其他'];
+const PUBLISHED_CONTENT_CATEGORY_OPTIONS = ['word_card', 'non_word', 'unknown'];
 const SNAPSHOT_NODE_ORDER = ['1h', '2h', '4h', '24h', '72h'];
 const CANDIDATE_TYPE_OPTIONS = ['稳定候选', '新鲜梗词', '审美氛围词', '美妆穿搭词', '追星兴趣词', '生活方式词', '网络口语词', '圈层词', '高风险话题词'];
 const FRESHNESS_OPTIONS = ['长期', '中期', '短期', '需要尽快判断'];
@@ -221,7 +222,14 @@ export function cleanSnapshots(snapshots = []) {
 }
 
 export function cleanPublishedRecord(record = {}, index = 0) {
-  const id = cleanText(record?.id || `record_${cleanText(record?.word, 80) || 'unknown'}_${index}`, 120);
+  const rawWord = cleanText(record?.word, 80);
+  const contentCategory = cleanEnum(
+    record?.contentCategory,
+    PUBLISHED_CONTENT_CATEGORY_OPTIONS,
+    rawWord ? 'word_card' : 'unknown'
+  );
+  const word = contentCategory === 'non_word' ? '' : rawWord;
+  const id = cleanText(record?.id || `record_${word || 'unknown'}_${index}`, 120);
   const legacyStats = cleanStats(record?.latestStats || record);
   const explicitMetrics = cleanPublishedMetrics(record?.latestMetrics || {});
   const hasExplicitMetrics = Object.values(explicitMetrics).some(value => value > 0);
@@ -240,13 +248,14 @@ export function cleanPublishedRecord(record = {}, index = 0) {
   return {
     id,
     sourceKey: cleanText(record?.sourceKey, 160),
-    word: cleanText(record?.word, 80),
+    word,
     noteId: cleanText(record?.noteId, 120),
     link: cleanText(record?.link, 1000),
     title: cleanText(record?.title, 200),
     description: cleanText(record?.description, 12000),
     coverUrl: cleanText(record?.coverUrl, 1000),
     contentType: cleanEnum(record?.contentType, CONTENT_TYPE_OPTIONS, '图文'),
+    contentCategory,
     authorName: cleanText(record?.authorName, 120),
     publishedAt: isIsoLike(record?.publishedAt) ? record.publishedAt : '',
     contentStatus: cleanEnum(record?.contentStatus, ['pending', 'complete'], record?.contentLocked ? 'complete' : 'pending'),
@@ -1033,6 +1042,9 @@ function mergePublishedRecord(localRecord = {}, remoteRecord = {}) {
     contentLocked: contentWinner.contentLocked,
     contentImportedAt: contentWinner.contentImportedAt,
     contentSource: contentWinner.contentSource,
+    contentCategory: contentWinner.contentCategory !== 'unknown'
+      ? contentWinner.contentCategory
+      : (winner.contentCategory !== 'unknown' ? winner.contentCategory : fallback.contentCategory),
     latestMetrics: metricSource.latestMetrics,
     metricSnapshots: mergePublishedMetricSnapshots(local.metricSnapshots, remote.metricSnapshots),
     metricsUpdateUntil: metricSource.metricsUpdateUntil || winner.metricsUpdateUntil,

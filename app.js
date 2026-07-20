@@ -7061,6 +7061,18 @@ function getPublishedCover(record, word = {}) {
     || '';
 }
 
+function getPublishedContentLabel(record = {}, word = {}) {
+  if (record.contentCategory === 'non_word') return '非单词内容';
+  return word.kanji || record.word || (record.contentLocked ? '主词待确认' : '等待内容');
+}
+
+function getPublishedContentSubLabel(record = {}, word = {}) {
+  if (record.contentCategory === 'non_word') return '宣传、活动或其他自选内容';
+  if (word.meaning) return word.meaning;
+  if (record.word) return '已关联日语词';
+  return record.contentLocked ? '正文已获取，主词待确认' : '等待从「笔记管理」点封面读取详情';
+}
+
 function renderPublishedMedianSummary(medians = {}) {
   const root = document.getElementById('publishedInsightsSummary');
   if (!root) return;
@@ -7099,12 +7111,13 @@ function renderPublishedCard(item, medians) {
   const coverUrl = getPublishedCover(record, word);
   const sourceType = String(record.selectionSource?.type || 'unknown').replace(/[^a-z_]/g, '');
   const safeRecordId = escapeHTML(record.id);
+  const contentLabel = getPublishedContentLabel(record, word);
   return `
     <article class="published-card" data-published-action="open-detail" data-record-id="${safeRecordId}" tabindex="0" aria-label="查看 ${escapeHTML(record.title || record.word || '已发布内容')} 的详情">
       <div class="published-cover ${coverUrl ? '' : 'is-placeholder'}">
         ${coverUrl
-          ? `<img src="${escapeHTML(coverUrl)}" alt="${escapeHTML(record.title || record.word || '笔记封面')}" loading="lazy" data-image-fallback="parent-text" data-fallback-text="${escapeHTML(record.word || '日语词')}" />`
-          : `<span>${escapeHTML(record.word || '待补封面')}</span>`}
+          ? `<img src="${escapeHTML(coverUrl)}" alt="${escapeHTML(record.title || record.word || '笔记封面')}" loading="lazy" data-image-fallback="parent-text" data-fallback-text="${escapeHTML(contentLabel)}" />`
+          : `<span>${escapeHTML(record.contentCategory === 'non_word' ? '内容封面' : record.word || '待补封面')}</span>`}
         <div class="published-cover-overlay">
           <span class="published-source source-${sourceType}">${escapeHTML(getPublishedSourceLabel(record))}</span>
           <span class="published-type">${escapeHTML(record.contentType || '图文')}</span>
@@ -7113,12 +7126,12 @@ function renderPublishedCard(item, medians) {
       <div class="published-card-body">
         <div class="published-card-heading">
           <div>
-            <div class="published-word">${escapeHTML(word.kanji || record.word || '待映射')}</div>
+            <div class="published-word">${escapeHTML(contentLabel)}</div>
             <h3 class="published-title line-2">${escapeHTML(record.title || '未获取到标题')}</h3>
           </div>
           <time>${formatPublishedDate(record.publishedAt)}</time>
         </div>
-        <div class="published-sub">${escapeHTML(word.meaning || (record.word ? '已关联日语词' : '中文标题待人工映射日语词'))}</div>
+        <div class="published-sub">${escapeHTML(getPublishedContentSubLabel(record, word))}</div>
         <div class="published-metric-grid">
           ${metricRows.map(metric => `
             <div class="published-metric ${metric.belowMedian ? 'is-below-median' : ''}">
@@ -7961,6 +7974,7 @@ function openPublishedDetail(recordId) {
   const medians = buildPublishedPageModel(getPublishedDisplayItems()).medians;
   const updateState = getPublishedUpdateState(record);
   const coverUrl = getPublishedCover(record, word);
+  const contentLabel = getPublishedContentLabel(record, word);
   const noteLink = normalizeXiaohongshuUrl(record.link);
   const views = metrics.views || 0;
   const allMetrics = [
@@ -7993,7 +8007,7 @@ function openPublishedDetail(recordId) {
       <div class="modal-header settings-header">
         <div>
           <span class="published-eyebrow">已发布详情</span>
-          <h2 class="modal-title">${escapeHTML(record.word || '待映射日语词')}</h2>
+          <h2 class="modal-title">${escapeHTML(contentLabel)}</h2>
         </div>
         <button class="modal-close" data-modal-action="close" aria-label="关闭">×</button>
       </div>
@@ -8001,8 +8015,8 @@ function openPublishedDetail(recordId) {
         <section class="published-detail-hero">
           <div class="published-detail-cover ${coverUrl ? '' : 'is-placeholder'}">
             ${coverUrl
-              ? `<img src="${escapeHTML(coverUrl)}" alt="${escapeHTML(record.title || record.word || '笔记封面')}" data-image-fallback="parent-text" data-fallback-text="${escapeHTML(record.word || '日语词')}" />`
-              : `<span>${escapeHTML(record.word || '待补封面')}</span>`}
+              ? `<img src="${escapeHTML(coverUrl)}" alt="${escapeHTML(record.title || record.word || '笔记封面')}" data-image-fallback="parent-text" data-fallback-text="${escapeHTML(contentLabel)}" />`
+              : `<span>${escapeHTML(record.contentCategory === 'non_word' ? '内容封面' : record.word || '待补封面')}</span>`}
           </div>
           <div class="published-detail-intro">
             <div class="published-detail-badges">
@@ -8010,11 +8024,13 @@ function openPublishedDetail(recordId) {
               <span class="published-update-state ${updateState.active ? 'is-active' : 'is-frozen'}"><i></i>${escapeHTML(updateState.label)}</span>
             </div>
             <h3>${escapeHTML(record.title || '未获取到标题')}</h3>
-            <p class="published-detail-word">${escapeHTML(word.reading || '')}${word.meaning ? ` · ${escapeHTML(word.meaning)}` : ''}</p>
+            <p class="published-detail-word">${escapeHTML(record.contentCategory === 'non_word'
+              ? '非单词内容 · 自选'
+              : `${word.reading || ''}${word.meaning ? ` · ${word.meaning}` : ''}`)}</p>
             <dl class="published-detail-meta">
               <div><dt>发布时间</dt><dd>${formatPublishedDate(record.publishedAt, true)}</dd></div>
               <div><dt>数据采集</dt><dd>${formatPublishedDate(record.lastMetricsImportedAt, true)}</dd></div>
-              <div><dt>内容状态</dt><dd>${record.contentLocked ? '已保存，不再覆盖' : '等待首次获取'}</dd></div>
+              <div><dt>内容状态</dt><dd>${record.contentLocked ? '已保存，不再覆盖' : '等待从笔记管理读取'}</dd></div>
               <div><dt>数据更新</dt><dd>${escapeHTML(updateState.description)}</dd></div>
             </dl>
             ${noteLink ? `<a class="btn btn-ghost published-open-link" href="${escapeHTML(noteLink)}" target="_blank" rel="noopener">打开小红书笔记 ↗</a>` : ''}
@@ -8042,9 +8058,9 @@ function openPublishedDetail(recordId) {
 
         <section class="published-detail-section">
           <div class="published-detail-section-heading">
-            <div><span class="published-eyebrow">帖子内容</span><h3>${record.contentLocked ? '首次获取后已锁定' : '等待首次获取'}</h3></div>
+            <div><span class="published-eyebrow">帖子内容</span><h3>${record.contentLocked ? '首次获取后已锁定' : '等待只读详情'}</h3></div>
           </div>
-          <div class="published-content-copy ${record.description ? '' : 'is-empty'}">${record.description ? renderMultiline(record.description) : '当前官方 Excel 不包含正文与封面。系统会在首次成功获取帖子内容后保存一次，之后只更新数据，不再覆盖正文。'}</div>
+          <div class="published-content-copy ${record.description ? '' : 'is-empty'}">${record.description ? renderMultiline(record.description) : '等待从小红书「笔记管理」点击封面读取只读详情。首次获取成功后会固定保存正文与封面，后续只更新数据。'}</div>
         </section>
 
         <section class="published-detail-section">

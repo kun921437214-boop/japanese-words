@@ -9,6 +9,7 @@ const SELECTION_SOURCE_TYPES = [
   'self_selected',
   'unknown'
 ];
+const PUBLISHED_CONTENT_CATEGORIES = ['word_card', 'non_word', 'unknown'];
 const DATE_KEY_FORMATTER = new Intl.DateTimeFormat('en-US', {
   timeZone: APP_TIME_ZONE,
   year: 'numeric',
@@ -107,6 +108,12 @@ function cleanSelectionSource(input = {}) {
   };
 }
 
+export function cleanPublishedContentCategory(value, word = '') {
+  const category = cleanText(value, 40);
+  if (PUBLISHED_CONTENT_CATEGORIES.includes(category)) return category;
+  return cleanText(word, 80) ? 'word_card' : 'unknown';
+}
+
 export function cleanPublishedMetrics(metrics = {}) {
   return {
     impressions: toInt(metrics?.impressions ?? metrics?.exposure),
@@ -173,11 +180,14 @@ export function normalizePublishedImportRow(row = {}, wordMappings = {}) {
   const title = cleanText(row?.title ?? row?.['笔记标题'], 200);
   const publishedAt = normalizePublishedAt(row?.publishedAt ?? row?.['首次发布时间']);
   const mappedWord = cleanText(wordMappings[title] || row?.word, 80);
+  const inferredWord = mappedWord || extractPublishedWordFromTitle(title);
+  const contentCategory = cleanPublishedContentCategory(row?.contentCategory, inferredWord);
   return {
     title,
     publishedAt,
     contentType: cleanText(row?.contentType ?? row?.['体裁'], 20) === '视频' ? '视频' : '图文',
-    word: mappedWord || extractPublishedWordFromTitle(title),
+    contentCategory,
+    word: contentCategory === 'non_word' ? '' : inferredWord,
     noteId: cleanText(row?.noteId, 120),
     link: cleanText(row?.link, 1000),
     description: cleanText(row?.description, 12000),
@@ -374,12 +384,14 @@ export function applyPublishedImport(workflowInput = {}, batchInput = {}, option
     frozenCount: 0,
     skippedOlderCount: 0,
     unmappedCount: 0,
+    nonWordCount: 0,
     ambiguousCount: 0,
     activeCount: 0
   };
 
   rows.forEach(row => {
-    if (!row.word) summary.unmappedCount += 1;
+    if (row.contentCategory === 'non_word') summary.nonWordCount += 1;
+    else if (!row.word) summary.unmappedCount += 1;
     if (duplicateKeys.get(row.sourceKey) > 1) {
       summary.ambiguousCount += 1;
       previewRows.push({ title: row.title, publishedAt: row.publishedAt, word: row.word, status: 'ambiguous' });
@@ -397,13 +409,18 @@ export function applyPublishedImport(workflowInput = {}, batchInput = {}, option
       description: existing?.description || '',
       coverUrl: existing?.coverUrl || '',
       contentType: existing?.contentType || row.contentType,
+      contentCategory: existing?.contentCategory && existing.contentCategory !== 'unknown'
+        ? existing.contentCategory
+        : row.contentCategory,
       publishedAt: existing?.publishedAt || row.publishedAt,
       sourceStatus: 'record'
     };
     const existingSelectionType = cleanText(existing?.selectionSource?.type, 40);
-    const selectionSource = existingSelectionType && existingSelectionType !== 'unknown'
-      ? cleanSelectionSource(existing.selectionSource)
-      : inferPublishedSelectionSource(identity.word, identity.publishedAt, workflow);
+    const selectionSource = identity.contentCategory === 'non_word'
+      ? cleanSelectionSource({ type: 'self_selected', confidence: 'high' })
+      : existingSelectionType && existingSelectionType !== 'unknown'
+        ? cleanSelectionSource(existing.selectionSource)
+        : inferPublishedSelectionSource(identity.word, identity.publishedAt, workflow);
     const ageDays = getPublishedAgeDays(identity, now);
     const updateActive = ageDays <= PUBLISHED_METRIC_UPDATE_DAYS;
     const metricSnapshot = buildMetricSnapshot(row, batch);
@@ -447,6 +464,7 @@ export function applyPublishedImport(workflowInput = {}, batchInput = {}, option
       title: next.title,
       publishedAt: next.publishedAt,
       word: next.word,
+      contentCategory: next.contentCategory,
       status: !existing ? 'create' : !updateActive ? 'skip_older' : changed ? 'update' : 'unchanged',
       selectionSource: next.selectionSource,
       metricsFrozen: next.metricsFrozen

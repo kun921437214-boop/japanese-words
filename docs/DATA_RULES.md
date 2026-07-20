@@ -114,7 +114,8 @@ Without a ready card, show only basic information and a "generate DeepSeek word 
 - `latestMetrics` stores the latest cumulative values: impressions, views, cover click rate, likes, comments, favorites, follows, shares, average watch seconds, and danmaku.
 - `metricSnapshots` stores at most one cumulative snapshot per day and keeps the latest 16 days.
 - Import must preview first, match idempotently, and stop on ambiguous duplicate title + publish-time identities.
-- Post content (`description`, `coverUrl`) may be captured once. After `contentLocked` becomes true, later imports must not overwrite it.
+- Post content (`description`, `coverUrl`, public `link`, and `noteId`) may be captured once from Creator Platform Note Management by clicking the cover to open the read-only note detail. Do not use the edit action or `/publish/update` page for collection. After `contentLocked` becomes true, later imports must not overwrite it.
+- `contentCategory` distinguishes a normal `word_card`, confirmed `non_word` content such as book promotion, and `unknown` content still awaiting the first read-only detail capture. Confirmed `non_word` records are self-selected content and must not be counted or displayed as unmapped words.
 - Metrics update once per day at 14:30 Asia/Shanghai while the post is no more than 15 days old. Older posts keep their final snapshot and do not update again.
 - `selectionSource` distinguishes Daily Hot (Codex / DeepSeek / unknown provider), self-selected, and unmapped/unknown records.
 - `latestStats` is only a derived compatibility mirror for existing ranking code. It is not the Published page source of truth.

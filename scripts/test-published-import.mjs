@@ -49,6 +49,7 @@ function batch(rows, overrides = {}) {
 test('官方导出字段完整拆分，标题中的日语词可自动映射', () => {
   const normalized = normalizePublishedImportRow(row());
   assert.equal(normalized.word, '尊い');
+  assert.equal(normalized.contentCategory, 'word_card');
   assert.deepEqual(normalized.metrics, {
     impressions: 12000,
     views: 3000,
@@ -161,6 +162,7 @@ test('来源能区分 Codex 每日热门与自选，旧字段只留下 latestSta
     row({ title: '中文标题待映射', word: '' })
   ]), { now: NOW });
   assert.equal(unmapped.records[0].selectionSource.type, 'unknown');
+  assert.equal(unmapped.records[0].contentCategory, 'unknown');
   const remapped = applyPublishedImport({ ...workflow, publishedRecords: unmapped.records }, batch([
     row({ title: '中文标题待映射', word: '尊い' })
   ], { id: 'xhs-export:2026-07-20:remapped' }), { now: NOW });
@@ -183,4 +185,25 @@ test('来源能区分 Codex 每日热门与自选，旧字段只留下 latestSta
   assert.equal('performanceNote' in cleaned, false);
   assert.equal('autoRefresh' in cleaned, false);
   assert.equal(getPublishedUpdateState(cleaned, NOW).active, true);
+});
+
+test('只读详情确认的宣传帖保留为非单词内容，不计入待映射', () => {
+  const imported = applyPublishedImport({}, batch([
+    row({
+      title: '🍞面包的插画书！旅行&日常&年轻人💡',
+      word: '',
+      contentCategory: 'non_word',
+      noteId: '69720c51000000000a0285a9',
+      link: 'https://www.xiaohongshu.com/explore/69720c51000000000a0285a9',
+      description: '书籍宣传正文',
+      coverUrl: 'https://example.com/book.jpg'
+    })
+  ]), { now: NOW });
+  const record = cleanPublishedRecord(imported.records[0]);
+  assert.equal(imported.summary.unmappedCount, 0);
+  assert.equal(imported.summary.nonWordCount, 1);
+  assert.equal(record.word, '');
+  assert.equal(record.contentCategory, 'non_word');
+  assert.equal(record.selectionSource.type, 'self_selected');
+  assert.equal(record.contentLocked, true);
 });
