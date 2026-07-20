@@ -342,6 +342,8 @@ test('Codex 参考图在列表卡和详情卡中完整展示', () => {
   assert.ok(appSource.includes('查看原图 ↗'));
   assert.match(styleSource, /\.daily-hot-reference-card \.card-image\s*\{[^}]*object-fit:contain;/);
   assert.match(styleSource, /\.modal-hero-full-reference \.modal-hero-img\s*\{[^}]*object-fit:contain;/);
+  assert.match(styleSource, /\.modal-container\s*\{[^}]*overflow-x:hidden;/);
+  assert.match(styleSource, /@media \(max-width:640px\)[\s\S]*?\.detail-judgement-grid,[\s\S]*?grid-template-columns:1fr;/);
   assert.ok(styleSource.includes('aspect-ratio:3 / 4;'));
 });
 

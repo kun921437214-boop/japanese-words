@@ -1115,7 +1115,8 @@ body::before {
   position:relative;
   width:min(920px, 100%);
   max-height:calc(100vh - 32px);
-  overflow:auto;
+  overflow-y:auto;
+  overflow-x:hidden;
   border:1px solid rgba(242, 216, 202, 0.96);
   border-radius:28px;
   background:linear-gradient(180deg, rgba(255,255,255,0.98), rgba(255,250,245,0.99));
@@ -1205,6 +1206,8 @@ body::before {
 }
 
 .modal-body {
+  min-width:0;
+  overflow-x:hidden;
   padding:26px 28px 30px;
 }
 
@@ -3506,8 +3509,16 @@ body::before {
   }
 
   .modal-reference-heading {
+    flex-direction:column;
     align-items:flex-start;
+    gap:10px;
     padding:14px 16px 0;
+  }
+
+  .modal-reference-heading > div,
+  .modal-reference-open {
+    min-width:0;
+    width:100%;
   }
 
   .modal-reference-word {
@@ -3607,6 +3618,7 @@ body::before {
   .detail-grid,
   .score-grid,
   .modal-score-board,
+  .detail-judgement-grid,
   .form-grid.two-col,
   .form-grid.metrics-grid,
   .published-stats-grid {
