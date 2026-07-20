@@ -1652,3 +1652,13 @@ test('published page no longer exposes the legacy manual record form', () => {
   assert.doesNotMatch(appSource, /id="recordLink"/);
   assert.doesNotMatch(appSource, /1h \/ 2h \/ 4h \/ 24h \/ 72h/);
 });
+
+test('published detail uses one metric grid and marks its below-median values in place', () => {
+  const appSource = fs.readFileSync(new URL('../app.js', import.meta.url), 'utf8');
+  const stylesSource = fs.readFileSync(new URL('../styles.css', import.meta.url), 'utf8');
+  assert.match(appSource, /const comparisonByKey = new Map\(/);
+  assert.match(appSource, /published-detail-metrics[\s\S]*?belowMedian \? 'is-below-median'/);
+  assert.doesNotMatch(appSource, /class="published-comparison-strip"/);
+  assert.match(stylesSource, /\.published-detail-metrics > \.is-below-median/);
+  assert.doesNotMatch(stylesSource, /\.published-comparison-strip/);
+});

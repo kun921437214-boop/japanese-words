@@ -8080,19 +8080,21 @@ function openPublishedDetail(recordId) {
     meaning: candidatePool[record.word]?.meaning || getWordByKanji(record.word)?.meaning || word.meaning || ''
   });
   const views = metrics.views || 0;
+  const comparisonByKey = new Map(
+    buildPublishedMetricRows(record, medians).map(metric => [metric.key, metric])
+  );
   const allMetrics = [
-    ['曝光', formatPublishedNumber(metrics.impressions), '内容被展示的累计次数'],
-    ['观看量', formatPublishedNumber(metrics.views), '进入并观看笔记的累计次数'],
-    ['封面点击率', formatPublishedRate(metrics.coverClickRate), '封面与标题的点击表现'],
-    ['点赞', formatPublishedNumber(metrics.likes), `点赞率 ${formatPublishedRate(views ? metrics.likes / views : 0)}`],
-    ['评论', formatPublishedNumber(metrics.comments), `评论率 ${formatPublishedRate(views ? metrics.comments / views : 0)}`],
-    ['收藏', formatPublishedNumber(metrics.favorites), `收藏率 ${formatPublishedRate(views ? metrics.favorites / views : 0)}`],
-    ['涨粉', formatPublishedNumber(metrics.follows), `涨粉率 ${formatPublishedRate(views ? metrics.follows / views : 0)}`],
-    ['分享', formatPublishedNumber(metrics.shares), `分享率 ${formatPublishedRate(views ? metrics.shares / views : 0)}`],
-    ['人均观看时长', `${formatPublishedNumber(metrics.avgWatchSeconds)} 秒`, '平台累计快照'],
-    ['弹幕', formatPublishedNumber(metrics.danmaku), '平台累计快照']
+    { comparisonKey: 'impressions', label: '曝光', value: formatPublishedNumber(metrics.impressions), note: '内容被展示的累计次数' },
+    { comparisonKey: 'views', label: '观看量', value: formatPublishedNumber(metrics.views), note: '进入并观看笔记的累计次数' },
+    { comparisonKey: 'coverClickRate', label: '封面点击率', value: formatPublishedRate(metrics.coverClickRate), note: '封面与标题的点击表现' },
+    { comparisonKey: '', label: '点赞', value: formatPublishedNumber(metrics.likes), note: `点赞率 ${formatPublishedRate(views ? metrics.likes / views : 0)}` },
+    { comparisonKey: 'comments', label: '评论', value: formatPublishedNumber(metrics.comments), note: `评论率 ${formatPublishedRate(views ? metrics.comments / views : 0)}` },
+    { comparisonKey: 'favoriteRate', label: '收藏', value: formatPublishedNumber(metrics.favorites), note: `收藏率 ${formatPublishedRate(views ? metrics.favorites / views : 0)}` },
+    { comparisonKey: 'followRate', label: '涨粉', value: formatPublishedNumber(metrics.follows), note: `涨粉率 ${formatPublishedRate(views ? metrics.follows / views : 0)}` },
+    { comparisonKey: 'shareRate', label: '分享', value: formatPublishedNumber(metrics.shares), note: `分享率 ${formatPublishedRate(views ? metrics.shares / views : 0)}` },
+    { comparisonKey: '', label: '人均观看时长', value: `${formatPublishedNumber(metrics.avgWatchSeconds)} 秒`, note: '平台累计快照' },
+    { comparisonKey: '', label: '弹幕', value: formatPublishedNumber(metrics.danmaku), note: '平台累计快照' }
   ];
-  const comparisonRows = buildPublishedMetricRows(record, medians);
   const snapshotRows = safeArray(record.metricSnapshots).map(snapshot => `
     <tr>
       <td>${escapeHTML(snapshot.dateKey || formatPublishedDate(snapshot.capturedAt))}</td>
@@ -8144,16 +8146,15 @@ function openPublishedDetail(recordId) {
             <span>最近 30 天中位数样本 ${medians.sampleSize} 篇</span>
           </div>
           <div class="published-detail-metrics">
-            ${allMetrics.map(([label, value, note]) => `
-              <div><span>${label}</span><strong>${value}</strong><small>${note}</small></div>`).join('')}
-          </div>
-          <div class="published-comparison-strip">
-            ${comparisonRows.map(metric => `
-              <div class="${metric.belowMedian ? 'is-below-median' : ''}">
+            ${allMetrics.map(metric => {
+              const belowMedian = Boolean(metric.comparisonKey && comparisonByKey.get(metric.comparisonKey)?.belowMedian);
+              return `
+              <div class="${belowMedian ? 'is-below-median' : ''}">
                 <span>${metric.label}</span>
-                <strong>${formatPublishedMetric(metric.value, metric.kind)}</strong>
-                <small>${metric.belowMedian ? '低于中位数' : '达到或高于中位数'}</small>
-              </div>`).join('')}
+                <strong>${metric.value}</strong>
+                <small>${belowMedian ? `低于中位数 · ${metric.note}` : metric.note}</small>
+              </div>`;
+            }).join('')}
           </div>
         </section>
 
