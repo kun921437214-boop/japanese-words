@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtemp } from 'node:fs/promises';
+import { mkdtemp, readFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
@@ -76,4 +76,12 @@ test('Tencent scheduler matches the existing UTC cron definitions', () => {
   assert.equal(matchesSchedule('30 6 * * *', new Date('2026-07-20T06:29:00Z')), false);
   assert.equal(matchesSchedule('5,25,45 * * * *', new Date('2026-07-20T09:25:00Z')), true);
   assert.equal(matchesSchedule('10,20,30,40,50 16 * * *', new Date('2026-07-20T16:40:00Z')), true);
+});
+
+test('Tencent installer changes into the resolved repository before relative installs', async () => {
+  const installer = await readFile(new URL('../server/install-runtime.sh', import.meta.url), 'utf8');
+  const changeDirectoryAt = installer.indexOf('cd "${repo_root}"');
+  assert.ok(changeDirectoryAt > 0);
+  assert.ok(changeDirectoryAt < installer.indexOf('install -m 0600 server/tencent.env.example'));
+  assert.ok(changeDirectoryAt < installer.indexOf('npm ci'));
 });
