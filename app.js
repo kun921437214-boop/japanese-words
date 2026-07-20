@@ -41,6 +41,7 @@ import {
   buildPublishedMetricRows,
   buildPublishedPageModel,
   createPublishedPageController,
+  getPublishedContentSubLabel,
   getPublishedSourceLabel,
   getPublishedUpdateState,
   normalizePublishedCoverUrl,
@@ -798,7 +799,7 @@ function cleanLibraryReviewRecords(records = {}) {
 
 async function loadLibraryReviewRecords() {
   try {
-    const response = await apiFetch('data/library-review.json', { cache: 'no-store' }, { cancelKey: 'library-review' });
+    const response = await apiFetch('data/library-review.json', { cache: 'default' }, { cancelKey: 'library-review' });
     if (!response.ok) {
       libraryReviewRecords = {};
       return false;
@@ -1572,7 +1573,7 @@ function getDisplayWordByKanji(kanji) {
   if (!entry) return null;
   const kana = cleanShortText(entry.kana || dbWord?.kana || dbWord?.reading || cleanKanji, 120);
   const romaji = cleanShortText(entry.romaji || dbWord?.romaji || (kana ? kanaToRomaji(kana) : ''), 120);
-  const meaning = cleanShortText(entry.meaning || dbWord?.meaning || entry.reason || 'AI 候选词，等待人工确认', 240);
+  const meaning = cleanShortText(entry.meaning || dbWord?.meaning || '释义待补充', 240);
   const examples = safeArray(entry.examples).map(cleanAiExample).filter(Boolean);
   return {
     kanji: cleanKanji,
@@ -2694,12 +2695,15 @@ function applyWorkflowData(workflow = {}) {
 
 function loadLocalWorkflow(options = {}) {
   const includeLegacyLocal = Boolean(options.includeLegacyLocal);
+  const deferLibraryAudit = Boolean(options.deferLibraryAudit);
+  let hasStoredWorkflow = false;
   let workflow = { words: [], statuses: {}, feedback: {}, publishedRecords: [], candidatePool: {}, aiBatches: [], aiPreview: {}, todaySnapshot: {}, todayDismissed: {}, historySnapshots: {}, todaySnapshotHistory: [], revision: 0, auditLog: [], schemaVersion: 3 };
   try {
     const storedWorkflow = localStorage.getItem(WORKFLOW_STORAGE_KEY);
     if (storedWorkflow) {
       workflow = cleanStoredWorkflow(JSON.parse(storedWorkflow));
       lastLocalCacheAt = workflow.updated || '';
+      hasStoredWorkflow = true;
     }
   } catch (error) {
     console.warn('本地工作流数据损坏，已忽略', error);
@@ -2727,11 +2731,14 @@ function loadLocalWorkflow(options = {}) {
 
   applyWorkflowData(workflow);
   workflowStore.replaceMetadata(workflow);
-  migrateOriginalWordsAfterAudit();
-  ensureReviewedSeedWordsInCandidatePool();
+  if (!deferLibraryAudit) {
+    migrateOriginalWordsAfterAudit();
+    ensureReviewedSeedWordsInCandidatePool();
+  }
   archiveStaleTodaySnapshot();
   hydrateTodayWordsFromSnapshot();
   refreshHistoryDates();
+  return hasStoredWorkflow;
 }
 
 function saveLocalWorkflow() {
@@ -2823,8 +2830,7 @@ function getPreferredWorkflowScope() {
 
 function getWorkflowScopeHistoryDate(scope = getPreferredWorkflowScope()) {
   if (scope !== 'today') return '';
-  const tomorrow = addDaysToDateKey(todayKey(), 1);
-  return /^\d{4}-\d{2}-\d{2}$/.test(currentDailyHotDateKey) && currentDailyHotDateKey !== tomorrow
+  return /^\d{4}-\d{2}-\d{2}$/.test(currentDailyHotDateKey) && rankingHistoryDates.includes(currentDailyHotDateKey)
     ? currentDailyHotDateKey
     : '';
 }
@@ -3774,17 +3780,14 @@ function refreshHistoryDates() {
   ]).sort((left, right) => String(right).localeCompare(String(left)));
   if (!rankingHistoryDates.includes(currentHistoryDateKey)) currentHistoryDateKey = rankingHistoryDates[0] || '';
   if (currentDailyHotDateKey !== 'today'
-    && currentDailyHotDateKey !== addDaysToDateKey(todayKey(), 1)
     && !rankingHistoryDates.includes(currentDailyHotDateKey)) currentDailyHotDateKey = 'today';
 }
 
 function getDailyHotDateOptions() {
   refreshHistoryDates();
   const today = todayKey();
-  const tomorrow = addDaysToDateKey(today, 1);
   return buildDailyHotDateOptions({
     todayDateKey: today,
-    tomorrowDateKey: tomorrow,
     historyDates: rankingHistoryDates,
     formatWeekday: formatWeekdayShort
   });
@@ -3802,31 +3805,26 @@ function populateDailyHotDateSelect() {
 }
 
 function setDailyHotDate(dateKeyValue) {
-  currentDailyHotDateKey = dateKeyValue === 'today' ? 'today' : cleanShortText(dateKeyValue, 20);
-  if (currentDailyHotDateKey !== 'today' && !isViewingTomorrowDailyHot()) {
+  currentDailyHotDateKey = normalizeDailyHotDateSelection(dateKeyValue, getDailyHotDateOptions());
+  if (currentDailyHotDateKey !== 'today') {
     currentHistoryDateKey = currentDailyHotDateKey;
     localStorage.setItem(HISTORY_DATE_STORAGE_KEY, currentHistoryDateKey);
   }
   localStorage.setItem(DAILY_HOT_DATE_STORAGE_KEY, currentDailyHotDateKey);
   closeDailyManageMenu();
-  if (isViewingTomorrowDailyHot()) void loadCodexTomorrowDraft({ notifyOnError: true });
   const selectedHistoryDate = currentDailyHotDateKey;
-  if (!isViewingTomorrowDailyHot()) {
-    const historyDate = /^\d{4}-\d{2}-\d{2}$/.test(selectedHistoryDate) ? selectedHistoryDate : '';
-    if (isWorkflowScopeLoaded('today', historyDate)) {
-      renderDailyHot();
-      return;
-    }
-    const grid = document.getElementById('todayGrid');
-    if (grid) grid.innerHTML = `<div class="empty-state inline-empty"><div class="empty-title">${historyDate ? '正在读取历史推荐' : '正在读取今日推荐'}</div><div class="empty-desc">正在加载这一天的词卡内容…</div></div>`;
-    void ensureWorkflowScopeLoaded('today', { historyDate }).then(loaded => {
-      if (currentDailyHotDateKey !== selectedHistoryDate) return;
-      if (loaded) renderDailyHot();
-      else renderWorkflowScopeState('today', 'error');
-    });
+  const historyDate = /^\d{4}-\d{2}-\d{2}$/.test(selectedHistoryDate) ? selectedHistoryDate : '';
+  if (isWorkflowScopeLoaded('today', historyDate)) {
+    renderDailyHot();
     return;
   }
-  renderDailyHot();
+  const grid = document.getElementById('todayGrid');
+  if (grid) grid.innerHTML = `<div class="empty-state inline-empty"><div class="empty-title">${historyDate ? '正在读取历史推荐' : '正在读取今日推荐'}</div><div class="empty-desc">正在加载这一天的词卡内容…</div></div>`;
+  void ensureWorkflowScopeLoaded('today', { historyDate }).then(loaded => {
+    if (currentDailyHotDateKey !== selectedHistoryDate) return;
+    if (loaded) renderDailyHot();
+    else renderWorkflowScopeState('today', 'error');
+  });
 }
 
 function getCurrentDailyHotWords() {
@@ -7077,13 +7075,6 @@ function getPublishedContentLabel(record = {}, word = {}) {
   return word.kanji || record.word || (record.contentLocked ? '主词待确认' : '等待内容');
 }
 
-function getPublishedContentSubLabel(record = {}, word = {}) {
-  if (record.contentCategory === 'non_word') return '宣传、活动或其他自选内容';
-  if (word.meaning) return word.meaning;
-  if (record.word) return '已关联日语词';
-  return record.contentLocked ? '正文已获取，主词待确认' : '等待从「笔记管理」点封面读取详情';
-}
-
 function renderPublishedMedianSummary(medians = {}) {
   const root = document.getElementById('publishedInsightsSummary');
   if (!root) return;
@@ -7142,7 +7133,9 @@ function renderPublishedCard(item, medians) {
           </div>
           <time>${formatPublishedDate(record.publishedAt)}</time>
         </div>
-        <div class="published-sub">${escapeHTML(getPublishedContentSubLabel(record, word))}</div>
+        <div class="published-sub">${escapeHTML(getPublishedContentSubLabel(record, {
+          meaning: candidatePool[record.word]?.meaning || getWordByKanji(record.word)?.meaning || ''
+        }))}</div>
         <div class="published-metric-grid">
           ${metricRows.map(metric => `
             <div class="published-metric ${metric.belowMedian ? 'is-below-median' : ''}">
@@ -7418,55 +7411,30 @@ function updateDailyHotViewControls(isTomorrowPreview) {
 function renderDailyHot() {
   populateDailyHotDateSelect();
   const isTodayView = isViewingTodayDailyHot();
-  const isTomorrowPreview = isViewingTomorrowDailyHot();
-  if (isTomorrowPreview && !codexTomorrowDraft && !codexTomorrowDraftPromise && !codexTomorrowDraftError) {
-    void loadCodexTomorrowDraft({ notifyOnError: true });
-  }
-  const words = isTomorrowPreview ? safeArray(codexTomorrowDraft?.items) : getCurrentDailyHotWords();
-  const sourceModel = isTomorrowPreview ? null : populateDailyHotSourceFilter('today', words);
-  const visibleWords = isTomorrowPreview ? words : sourceModel.visibleWords;
+  const words = getCurrentDailyHotWords();
+  const sourceModel = populateDailyHotSourceFilter('today', words);
+  const visibleWords = sourceModel.visibleWords;
   renderTodayGrid(visibleWords, {
-    mode: isTomorrowPreview ? 'codex-preview' : (isTodayView ? 'today' : 'history'),
+    mode: isTodayView ? 'today' : 'history',
     dateKey: currentDailyHotDateKey
   });
-  updateDailyHotViewControls(isTomorrowPreview);
+  updateDailyHotViewControls(false);
   const todayDate = document.getElementById('todayDate');
   if (todayDate) {
-    if (isTomorrowPreview) {
-      const targetDateKey = addDaysToDateKey(todayKey(), 1);
-      const draft = codexTomorrowDraft || codexTomorrowDraftStatus;
-      if (codexTomorrowDraftPromise && !codexTomorrowDraft) {
-        todayDate.textContent = `${formatDisplayDate(targetDateKey)} · 正在读取明日草稿…`;
-      } else {
-        const qualitySummary = draft?.validation?.qualitySummary || {};
-        const scoreMeta = Number.isFinite(Number(qualitySummary.estimatedHumanQualityScore))
-          ? ` · 人工估分 ${qualitySummary.estimatedHumanQualityScore}`
-          : '';
-        const gradeMeta = Number.isFinite(Number(qualitySummary.sLevelCount))
-          ? ` · S ${qualitySummary.sLevelCount} / A ${qualitySummary.aLevelCount || 0}`
-          : '';
-        todayDate.textContent = `${formatDisplayDate(targetDateKey)} · 明日只读预览 · ${draft?.wordCount || 0} 词 / 卡片 ${draft?.cardReadyCount || 0} / 图片 ${draft?.imageReadyCount || 0}${scoreMeta}${gradeMeta}`;
-      }
-    } else if (isTodayView) {
+    if (isTodayView) {
       const snapshot = cleanTodaySnapshot(todaySnapshot);
       const snapshotMeta = hasTodaySnapshotForToday(snapshot)
         ? `今天的固定推荐 · 今日固定 ${snapshot.words.length} 个 · 第 ${snapshot.version || 1} 版`
         : '今天还没有固定推荐，可等待每日任务生成或手动生成今日推荐。';
-      const draft = codexTomorrowDraftStatus;
-      const draftMeta = draft
-        ? ` · 明日草稿 ${draft.status === 'missing' ? '未提交' : `${draft.wordCount || 0} 词 / 卡片 ${draft.cardReadyCount || 0} / 图片 ${draft.imageReadyCount || 0}`}`
-        : '';
-      todayDate.textContent = `${formatDisplayDate(todayKey())} · ${snapshotMeta}${draftMeta}`;
+      todayDate.textContent = `${formatDisplayDate(todayKey())} · ${snapshotMeta}`;
     } else {
       todayDate.textContent = `正在查看 ${currentDailyHotDateKey} 的历史推荐 · ${getHistorySourceLabel(currentDailyHotDateKey)}`;
     }
   }
   const manageBtn = document.getElementById('dailyManageBtn');
   if (manageBtn) {
-    manageBtn.disabled = !isTodayView || isTomorrowPreview;
-    manageBtn.title = isTomorrowPreview
-      ? '明日预览为只读模式'
-      : (isTodayView ? '管理今天的固定推荐' : '历史推荐不能重新生成，请切回今天。');
+    manageBtn.disabled = !isTodayView;
+    manageBtn.title = isTodayView ? '管理今天的固定推荐' : '历史推荐不能重新生成，请切回今天。';
   }
 }
 
@@ -8294,11 +8262,12 @@ function exportWorkflowBackup() {
 
 async function refreshData() {
   showToast('🔄 刷新中…');
-  const synced = await loadCloudRankings(false);
+  const [synced, workflowSynced] = await Promise.all([
+    loadCloudRankings(false),
+    loadCloudWorkflow({ mode: 'remote-first', showMessages: false })
+  ]);
   if (!synced) generateFallbackRankings();
-  const workflowSynced = await loadCloudWorkflow({ mode: 'remote-first', showMessages: false });
   if (!workflowSynced) loadLocalWorkflow();
-  await loadCodexTomorrowDraftStatus();
   hydrateTodayWordsFromSnapshot();
   updateAllBadges();
   refreshCurrentGrid();
@@ -8328,9 +8297,11 @@ async function ensureTodayRecommendationsLoaded() {
 function syncRemoteDataInBackground() {
   if (backgroundSyncPromise) return backgroundSyncPromise;
   const operation = (async () => {
-    const rankingsLoaded = await loadCloudRankings(false);
+    const [rankingsLoaded, cloudLoaded] = await Promise.all([
+      loadCloudRankings(false),
+      loadCloudWorkflow({ mode: 'remote-first', showMessages: false })
+    ]);
     if (!rankingsLoaded) generateFallbackRankings();
-    const cloudLoaded = await loadCloudWorkflow({ mode: 'remote-first', showMessages: false });
     if (!cloudLoaded) return false;
     hydrateTodayWordsFromSnapshot();
     updateAllBadges();
@@ -8429,24 +8400,15 @@ async function init() {
   }
 
   resetTransientUiState();
-  await loadLibraryReviewRecords();
-  const rankingsLoaded = await loadCloudRankings(false);
-  if (!rankingsLoaded) generateFallbackRankings();
-  const cloudLoaded = await loadCloudWorkflow({ mode: 'remote-first', showMessages: false });
-  if (!cloudLoaded) {
-    loadLocalWorkflow();
-    loadAiPreviewState({ forceLocal: true });
-    updateSyncStatus('云端同步失败，正在使用本地缓存，可能与队友不一致。', '#c0392b');
-    showToast('云端同步失败，正在使用本地缓存');
-  }
-  void loadCodexTomorrowDraftStatus();
-  verifyDeepSeekLibraryAuditCoverage();
-  hydrateTodayWordsFromSnapshot();
-  updateAllBadges();
   const savedTab = localStorage.getItem(ACTIVE_TAB_STORAGE_KEY);
   const initialTab = savedTab === 'history'
     ? 'today'
     : (['today', 'favorites', 'published'].includes(savedTab) ? savedTab : 'today');
+  const initialHistoryDate = getWorkflowScopeHistoryDate(initialTab);
+  const hasLocalWorkflow = loadLocalWorkflow({ deferLibraryAudit: true });
+  if (hasLocalWorkflow) markWorkflowScopeLoaded(initialTab, initialHistoryDate);
+  hydrateTodayWordsFromSnapshot();
+  updateAllBadges();
   try {
     switchTab(initialTab);
   } catch (error) {
@@ -8457,6 +8419,36 @@ async function init() {
   ensureTodayGridVisible(true);
   requestAnimationFrame(() => ensureTodayGridVisible());
   setTimeout(() => ensureTodayGridVisible(), 0);
+
+  const workflowPromise = hasLocalWorkflow
+    ? loadCloudWorkflow({
+        mode: 'remote-first',
+        showMessages: false,
+        scope: initialTab,
+        historyDate: initialHistoryDate,
+        mergeCandidatePool: true
+      })
+    : ensureWorkflowScopeLoaded(initialTab, { historyDate: initialHistoryDate });
+  const [libraryReviewLoaded, rankingsLoaded, cloudLoaded] = await Promise.all([
+    loadLibraryReviewRecords(),
+    loadCloudRankings(false),
+    workflowPromise
+  ]);
+  if (!rankingsLoaded) generateFallbackRankings();
+  if (!cloudLoaded) {
+    if (!hasLocalWorkflow) loadLocalWorkflow();
+    loadAiPreviewState({ forceLocal: true });
+    updateSyncStatus('云端同步失败，正在使用本地缓存，可能与队友不一致。', '#c0392b');
+    showToast('云端同步失败，正在使用本地缓存');
+  }
+  if (libraryReviewLoaded) {
+    migrateOriginalWordsAfterAudit();
+    ensureReviewedSeedWordsInCandidatePool();
+  }
+  verifyDeepSeekLibraryAuditCoverage();
+  hydrateTodayWordsFromSnapshot();
+  updateAllBadges();
+  refreshCurrentGrid();
 }
 
 window.addEventListener('pageshow', event => {

@@ -51,6 +51,7 @@ import {
   buildPublishedMetricRows,
   buildPublishedPageModel,
   createPublishedPageController,
+  getPublishedContentSubLabel,
   getPublishedPerformanceScore,
   getPublishedUpdateState,
   getRecentPublishedAverage,
@@ -1037,21 +1038,20 @@ test('workflow cache quota errors do not escape into cloud sync flow', () => {
   assert.equal(warnings[0][0], '本地缓存写入失败，已保留当前云端数据');
 });
 
-test('daily hot date options keep today and tomorrow first and deduplicate history', () => {
+test('daily hot date options keep today first, omit tomorrow preview and deduplicate history', () => {
   const options = buildDailyHotDateOptions({
     todayDateKey: '2026-07-19',
-    tomorrowDateKey: '2026-07-20',
     historyDates: ['2026-07-18', '2026-07-17', '2026-07-18', '2026-07-20', 'invalid'],
     formatWeekday: dateKey => ({ '2026-07-20': '周一', '2026-07-18': '周六', '2026-07-17': '周五' })[dateKey] || ''
   });
 
   assert.deepEqual(options, [
     { value: 'today', label: '今天 · 2026-07-19' },
-    { value: '2026-07-20', label: '明天 · 2026-07-20 · 周一' },
     { value: '2026-07-18', label: '2026-07-18 · 周六' },
     { value: '2026-07-17', label: '2026-07-17 · 周五' }
   ]);
   assert.equal(normalizeDailyHotDateSelection('2026-07-18', options), '2026-07-18');
+  assert.equal(options.some(option => option.label.startsWith('明天')), false);
   assert.equal(normalizeDailyHotDateSelection('2026-06-01', options), 'today');
 });
 
@@ -1337,6 +1337,13 @@ test('published page model exposes 30-day medians, 15-day state and red-card com
   assert.equal(model.medians.impressions, 1000);
   assert.equal(getPublishedUpdateState(record, new Date('2026-07-20T14:30:00+08:00')).active, true);
   assert.equal(buildPublishedMetricRows(record, { ...model.medians, impressions: 2000 })[0].belowMedian, true);
+});
+
+test('published card sublabel never exposes internal workflow reasons as word meanings', () => {
+  assert.equal(getPublishedContentSubLabel({ word: 'メロい' }, { meaning: 'AI 候选词，等待人工确认' }), '释义待补充');
+  assert.equal(getPublishedContentSubLabel({ word: '滅' }, { meaning: '用户已进入工作流，禁止自动删除' }), '释义待补充');
+  assert.equal(getPublishedContentSubLabel({ word: 'グラデリップ' }, { meaning: '渐变唇妆' }), '渐变唇妆');
+  assert.equal(getPublishedContentSubLabel({ contentCategory: 'non_word' }), '宣传、活动或其他自选内容');
 });
 
 test('published page controller routes detail, refresh and render actions', () => {

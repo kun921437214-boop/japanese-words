@@ -93,6 +93,16 @@ test('移动端本地缓存超额不会把成功的云端同步误判为失败',
   assert.equal((cacheSource.match(/storage\.setItem\(/g) || []).length, 1);
 });
 
+test('首屏先渲染本地缓存并并行刷新非依赖数据源', () => {
+  const appSource = fs.readFileSync(new URL('../app.js', import.meta.url), 'utf8');
+  assert.ok(appSource.includes("loadLocalWorkflow({ deferLibraryAudit: true })"));
+  assert.ok(appSource.includes('const [libraryReviewLoaded, rankingsLoaded, cloudLoaded] = await Promise.all(['));
+  assert.ok(appSource.includes("apiFetch('data/library-review.json', { cache: 'default' }"));
+  assert.ok(appSource.includes('const [synced, workflowSynced] = await Promise.all(['));
+  assert.equal(appSource.includes('void loadCodexTomorrowDraftStatus();'), false);
+  assert.equal(appSource.includes('await loadCodexTomorrowDraftStatus();'), false);
+});
+
 test('候选池后台从用户界面下线但内部日更数据结构保持不变', () => {
   const indexSource = fs.readFileSync(new URL('../index.html', import.meta.url), 'utf8');
   const appSource = fs.readFileSync(new URL('../app.js', import.meta.url), 'utf8');

@@ -13,14 +13,12 @@ function uniqueStrings(values = []) {
 
 export function buildDailyHotDateOptions(options = {}) {
   const todayDateKey = String(options.todayDateKey || '').trim();
-  const tomorrowDateKey = String(options.tomorrowDateKey || '').trim();
   const formatWeekday = typeof options.formatWeekday === 'function' ? options.formatWeekday : () => '';
   const historyDates = uniqueStrings(options.historyDates)
-    .filter(dateKey => DATE_KEY_PATTERN.test(dateKey) && dateKey !== todayDateKey && dateKey !== tomorrowDateKey)
+    .filter(dateKey => DATE_KEY_PATTERN.test(dateKey) && (!todayDateKey || dateKey < todayDateKey))
     .sort((left, right) => right.localeCompare(left));
   return [
     { value: 'today', label: `今天 · ${todayDateKey}` },
-    { value: tomorrowDateKey, label: `明天 · ${tomorrowDateKey} · ${formatWeekday(tomorrowDateKey)}` },
     ...historyDates.map(dateKey => ({
       value: dateKey,
       label: `${dateKey} · ${formatWeekday(dateKey)}`

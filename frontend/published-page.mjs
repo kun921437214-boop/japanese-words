@@ -116,6 +116,16 @@ export function getPublishedSourceLabel(record = {}) {
   return record?.selectionSource?.label || '来源待确认';
 }
 
+const INTERNAL_WORKFLOW_COPY_PATTERN = /(?:AI\s*候选词|等待人工确认|用户已进入工作流|禁止自动删除)/i;
+
+export function getPublishedContentSubLabel(record = {}, options = {}) {
+  if (record?.contentCategory === 'non_word') return '宣传、活动或其他自选内容';
+  const meaning = String(options?.meaning || '').trim().slice(0, 240);
+  if (meaning && !INTERNAL_WORKFLOW_COPY_PATTERN.test(meaning)) return meaning;
+  if (record?.word) return '释义待补充';
+  return record?.contentLocked ? '正文已获取，主词待确认' : '等待从「笔记管理」点封面读取详情';
+}
+
 export function getPublishedUpdateState(record = {}, now = new Date()) {
   const ageDays = getPublishedAgeDays(record, now);
   const active = ageDays <= 15 && !record?.metricsFrozen;
