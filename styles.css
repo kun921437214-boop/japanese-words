@@ -3977,8 +3977,8 @@ body::before {
 .published-update-state.is-active i { background:#4bbf7b; box-shadow:0 0 0 4px rgba(75, 191, 123, 0.12); }
 
 .published-detail-shell {
-  width:min(1040px, calc(100vw - 32px));
-  max-width:1040px;
+  width:100%;
+  max-width:100%;
 }
 
 .published-detail-body {
@@ -3986,6 +3986,7 @@ body::before {
   flex-direction:column;
   gap:18px;
   min-width:0;
+  overflow-x:hidden;
   padding:22px;
 }
 
@@ -4070,7 +4071,7 @@ body::before {
 
 .published-detail-metrics {
   display:grid;
-  grid-template-columns:repeat(5, minmax(0, 1fr));
+  grid-template-columns:repeat(auto-fit, minmax(128px, 1fr));
   gap:9px;
   margin-top:16px;
 }
@@ -4094,7 +4095,7 @@ body::before {
 
 .published-comparison-strip {
   display:grid;
-  grid-template-columns:repeat(7, minmax(0, 1fr));
+  grid-template-columns:repeat(auto-fit, minmax(104px, 1fr));
   gap:8px;
   margin-top:10px;
 }
