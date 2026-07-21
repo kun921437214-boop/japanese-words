@@ -28,7 +28,7 @@ export function normalizePublishedCoverUrl(value) {
   }
 }
 
-export function getPublishedCoverCandidates(value) {
+export function getPublishedCoverCandidates(value, options = {}) {
   const primaryUrl = normalizePublishedCoverUrl(value);
   if (!primaryUrl) return [];
   try {
@@ -43,7 +43,11 @@ export function getPublishedCoverCandidates(value) {
     const stablePaths = sourceUsesNotesNamespace
       ? [`notes_pre_post/${assetKey}`, assetKey]
       : [assetKey, `notes_pre_post/${assetKey}`];
-    const stableUrls = stablePaths.map(path => `https://sns-na-i6.xhscdn.com/${path}?imageView2/2/w/1080/format/jpg&origin=0`);
+    const requestedWidth = Number.parseInt(options.width, 10);
+    const width = Number.isFinite(requestedWidth)
+      ? Math.max(240, Math.min(1600, requestedWidth))
+      : 1080;
+    const stableUrls = stablePaths.map(path => `https://sns-na-i6.xhscdn.com/${path}?imageView2/2/w/${width}/format/jpg&origin=0`);
 
     // Dated sns-webpic URLs expire with a 403. Prefer the namespace-aware
     // stable CDN URL so every cover does not begin with a failed request.

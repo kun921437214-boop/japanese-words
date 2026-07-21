@@ -363,7 +363,17 @@ test('favorites and published pages progressively render cards and open responsi
   await expect(page.locator('[data-progressive-list="published"]')).toContainText('已显示 10 / 25');
   await page.locator('[data-published-action="load-more"]').click();
   await expect(page.locator('#publishedGrid .published-card')).toHaveCount(20);
-  await page.locator('#publishedGrid .published-card').first().click();
+  const firstPublishedCard = page.locator('#publishedGrid .published-card').first();
+  await firstPublishedCard.scrollIntoViewIfNeeded();
+  await page.evaluate(() => new Promise(resolve => {
+    requestAnimationFrame(() => resolve());
+  }));
+  const detailOpenedIn = await firstPublishedCard.evaluate(card => {
+    const startedAt = performance.now();
+    card.click();
+    return performance.now() - startedAt;
+  });
+  expect(detailOpenedIn).toBeLessThan(100);
   await expect(page.locator('#modalOverlay')).toHaveClass(/open/);
   await expect(page.locator('.published-detail-shell')).toBeVisible();
   await expect(page.locator('#modalContainer')).toContainText('这是只读帖子正文');

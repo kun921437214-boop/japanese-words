@@ -1421,6 +1421,11 @@ test('published cover URLs recover stable Xiaohongshu assets and reject unsafe s
   const signedUrl = `https://sns-webpic-qc.xhscdn.com/202607201442/hash/${key}!nd_dft_wlteh_webp_3`;
   assert.deepEqual(getPublishedCoverCandidates(signedUrl), [rootStableUrl, namespacedStableUrl, signedUrl]);
   assert.deepEqual(getPublishedCoverCandidates(expiringUrl), [namespacedStableUrl, rootStableUrl, expiringUrl]);
+  assert.deepEqual(getPublishedCoverCandidates(expiringUrl, { width: 480 }), [
+    namespacedStableUrl.replace('/w/1080/', '/w/480/'),
+    rootStableUrl.replace('/w/1080/', '/w/480/'),
+    expiringUrl
+  ]);
   assert.deepEqual(getPublishedCoverCandidates(`http://sns-na-i6.xhscdn.com/notes_pre_post/${key}?old=1`), [
     namespacedStableUrl,
     rootStableUrl,
@@ -1683,8 +1688,9 @@ test('module migration removes inline handlers and the temporary window compatib
   assert.ok(appSource.includes('buildPublishedMetricRows'));
   assert.match(appSource, /const publishedMeaning = resolvePublishedContentSubLabel\(record, word\)/);
   assert.match(appSource, /published-detail-word[\s\S]*publishedMeaning/);
-  const publishedCoverSource = appSource.match(/function getPublishedCover\(record\) \{[\s\S]*?\n\}/)?.[0] || '';
-  assert.match(publishedCoverSource, /getPublishedCoverCandidates\(record\.coverUrl\)/);
+  const publishedCoverSource = appSource.match(/function getPublishedCover\(record, width = 1080\) \{[\s\S]*?\n\}/)?.[0] || '';
+  assert.match(publishedCoverSource, /getPublishedCoverCandidates\(record\.coverUrl, \{ width \}\)/);
+  assert.match(appSource, /getPublishedCover\(record, 480\)/);
   assert.doesNotMatch(publishedCoverSource, /candidatePool|referenceImage|word\.imageUrl/);
   assert.ok(appSource.includes('data-cover-source="published-record"'));
   assert.equal(appSource.includes('data-modal-action="save-published-record"'), false);
@@ -1701,6 +1707,12 @@ test('published page no longer exposes the legacy manual record form', () => {
 test('published detail uses one metric grid and marks its below-median values in place', () => {
   const appSource = fs.readFileSync(new URL('../app.js', import.meta.url), 'utf8');
   const stylesSource = fs.readFileSync(new URL('../styles.css', import.meta.url), 'utf8');
+  const openDetailSource = appSource.slice(
+    appSource.indexOf('function openPublishedDetail'),
+    appSource.indexOf('function renderPublishedDetail')
+  );
+  assert.match(openDetailSource, /renderPublishedDetail\(record, item\.word\)/);
+  assert.doesNotMatch(openDetailSource, /scheduleModalRender|showModalLoadingShell/);
   assert.match(appSource, /const comparisonByKey = new Map\(/);
   assert.match(appSource, /published-detail-metrics[\s\S]*?belowMedian \? 'is-below-median'/);
   assert.doesNotMatch(appSource, /class="published-comparison-strip"/);
