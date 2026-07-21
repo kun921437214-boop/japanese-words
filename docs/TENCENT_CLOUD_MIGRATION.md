@@ -9,7 +9,8 @@ Production uses the existing Tencent Cloud Lighthouse instance in Beijing:
 - `FileKV` replaces Cloudflare KV with atomic, mode-`0600` files under `/var/lib/japanese-words`.
 - `LocalWorkflowCoordinator` serializes workflow writes in the same process, preserving the existing revision, idempotency, and audit behavior.
 - The same process runs the current Worker schedule and records daily run markers. Daily promotion and the 14:30 published refresh have restart catch-up protection.
-- A systemd timer writes a validated workflow backup every day at 15:00 Asia/Shanghai.
+- Pages Functions receive a real `waitUntil` implementation, so long DeepSeek jobs are queued in the Node process instead of holding the Nginx request open until a 504.
+- A systemd timer writes a complete state bundle every day at 15:00 Asia/Shanghai. The bundle includes the main workflow, auxiliary workflow KV keys such as Codex drafts, and all reference images.
 - Cloudflare Pages, Worker, KV, and the coordinator remain unchanged during the rollback window.
 
 The public API paths and browser storage keys do not change.
@@ -53,6 +54,18 @@ node server/import-cloudflare-backup.mjs /path/to/workflow.json \
 The workflow is written only after every requested reference image has copied successfully. Existing image keys are skipped, so repeating the import is safe.
 When the production data directory is imported as `root`, the importer automatically restores ownership to the `japanese-words` service account before it exits. Use `--owner=<service-user>` only when a non-default service account is intentional.
 
+The workflow JSON does not contain standalone `codex-draft:*` records. Before cutover, explicitly download the current and next-day Codex drafts from the old origin, upload their referenced images to Tencent, submit the drafts to Tencent, and verify `wordCount`, `cardReadyCount`, and `imageReadyCount`. Do this before enabling the Tencent scheduler so midnight promotion cannot fall through to DeepSeek unnecessarily.
+
+Tencent backups are restorable state-bundle directories. Restoring a bundle copies every workflow KV record and every reference image before normalizing `favorites:global`:
+
+```bash
+node server/import-cloudflare-backup.mjs /var/backups/japanese-words/state-<timestamp>-r<revision> \
+  --data-dir=/var/lib/japanese-words-restore \
+  --apply --confirm=IMPORT
+```
+
+Legacy single-workflow JSON imports remain supported.
+
 ## Pre-Cutover Validation
 
 Keep `DISABLE_SCHEDULER=true` until the staging copy has passed all checks.
@@ -71,6 +84,7 @@ Before DNS changes:
 3. Test one favorite add/remove cycle against the staging copy and confirm the revision increments once.
 4. Restore the final Cloudflare backup into Tencent after the write test.
 5. Confirm the Tencent workflow revision and counts match the final Cloudflare backup.
+6. Confirm the current/next Codex draft status and every draft image on Tencent. A valid draft must not remain only in Cloudflare KV.
 
 ## Cutover
 

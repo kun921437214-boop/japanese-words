@@ -1,11 +1,15 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile } from 'node:fs/promises';
+import { execFile } from 'node:child_process';
+import { mkdtemp, readFile, readdir } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
+import { promisify } from 'node:util';
 import { FileKV } from '../server/file-kv.mjs';
 import { LocalWorkflowCoordinator } from '../server/local-coordinator.mjs';
-import { handleWebRequest, matchesSchedule } from '../server/tencent-runtime.mjs';
+import { dispatchPagesFunction, handleWebRequest, matchesSchedule } from '../server/tencent-runtime.mjs';
+
+const execFileAsync = promisify(execFile);
 
 async function makeEnv() {
   const root = await mkdtemp(path.join(os.tmpdir(), 'japanese-words-tencent-'));
@@ -71,6 +75,34 @@ test('Tencent runtime dispatches existing API handlers', async () => {
   await missing.arrayBuffer();
 });
 
+test('Tencent runtime exposes waitUntil so long Pages jobs return before background completion', async () => {
+  const env = await makeEnv();
+  let releaseBackground;
+  const background = new Promise(resolve => {
+    releaseBackground = resolve;
+  });
+  let trackedBackground;
+  const response = await dispatchPagesFunction(({ waitUntil }) => {
+    waitUntil(background);
+    return Response.json({ ok: true, queued: true });
+  }, new Request('https://bijinihaitan.cn/healthz'), env, {
+    waitUntil(promise) {
+      trackedBackground = promise;
+    }
+  });
+  assert.deepEqual(await response.json(), { ok: true, queued: true });
+  assert.ok(trackedBackground instanceof Promise);
+  let settled = false;
+  void trackedBackground.then(() => {
+    settled = true;
+  });
+  await Promise.resolve();
+  assert.equal(settled, false);
+  releaseBackground();
+  await trackedBackground;
+  assert.equal(settled, true);
+});
+
 test('Tencent scheduler matches the existing UTC cron definitions', () => {
   assert.equal(matchesSchedule('30 6 * * *', new Date('2026-07-20T06:30:00Z')), true);
   assert.equal(matchesSchedule('30 6 * * *', new Date('2026-07-20T06:29:00Z')), false);
@@ -110,4 +142,56 @@ test('Nginx serves browser modules with a JavaScript MIME type', async () => {
     assert.match(config, /location ~\* \\.mjs\$/);
     assert.match(config, /default_type application\/javascript/);
   }
+});
+
+test('Tencent backup bundles workflow keys, Codex drafts, images, and restores them locally', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'japanese-words-backup-'));
+  const dataDirectory = path.join(root, 'data');
+  const backupDirectory = path.join(root, 'backups');
+  const restoreDirectory = path.join(root, 'restore');
+  const workflowKv = new FileKV(path.join(dataDirectory, 'workflow-kv'));
+  const imageKv = new FileKV(path.join(dataDirectory, 'reference-images-kv'));
+  await workflowKv.put('favorites:global', JSON.stringify({
+    words: ['胸をなで下ろす'],
+    revision: 7,
+    candidatePool: {},
+    publishedRecords: []
+  }));
+  await workflowKv.put('codex-draft:global:2026-07-21', JSON.stringify({
+    targetDateKey: '2026-07-21',
+    status: 'valid',
+    wordCount: 10
+  }));
+  await imageKv.put('codex-daily/2026-07-21/example.webp', new Uint8Array([4, 3, 2, 1]), {
+    metadata: { contentType: 'image/webp' }
+  });
+
+  await execFileAsync(process.execPath, [new URL('../server/tencent-backup.mjs', import.meta.url).pathname], {
+    env: {
+      ...process.env,
+      JAPANESE_WORDS_DATA_DIR: dataDirectory,
+      JAPANESE_WORDS_BACKUP_DIR: backupDirectory
+    }
+  });
+  const bundleName = (await readdir(backupDirectory)).find(name => name.startsWith('state-'));
+  assert.ok(bundleName);
+  const bundleDirectory = path.join(backupDirectory, bundleName);
+  const manifest = JSON.parse(await readFile(path.join(bundleDirectory, 'manifest.json'), 'utf8'));
+  assert.equal(manifest.codexDraftCount, 1);
+  assert.equal(manifest.referenceImageCount, 1);
+
+  await execFileAsync(process.execPath, [
+    new URL('../server/import-cloudflare-backup.mjs', import.meta.url).pathname,
+    bundleDirectory,
+    `--data-dir=${restoreDirectory}`,
+    '--apply',
+    '--confirm=IMPORT'
+  ]);
+  const restoredWorkflowKv = new FileKV(path.join(restoreDirectory, 'workflow-kv'));
+  const restoredImageKv = new FileKV(path.join(restoreDirectory, 'reference-images-kv'));
+  assert.equal((await restoredWorkflowKv.get('favorites:global', 'json')).revision, 7);
+  assert.equal((await restoredWorkflowKv.get('codex-draft:global:2026-07-21', 'json')).status, 'valid');
+  const restoredImage = await restoredImageKv.getWithMetadata('codex-daily/2026-07-21/example.webp', { type: 'arrayBuffer' });
+  assert.deepEqual([...new Uint8Array(restoredImage.value)], [4, 3, 2, 1]);
+  assert.equal(restoredImage.metadata.contentType, 'image/webp');
 });

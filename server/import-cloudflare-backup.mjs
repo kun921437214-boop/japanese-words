@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { chown, lchown, mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
+import { chown, lchown, mkdir, readFile, readdir, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { cleanStoredWorkflow, workflowDateKey } from '../shared/workflow-schema.mjs';
 import { FileKV } from './file-kv.mjs';
@@ -104,11 +104,35 @@ async function copyReferenceImages(images, storage, originValue) {
   return copied;
 }
 
+async function copyKv(source, target) {
+  const copied = [];
+  let cursor;
+  do {
+    const page = await source.list({ cursor });
+    for (const keyInfo of page.keys) {
+      const stored = await source.getWithMetadata(keyInfo.name, { type: 'arrayBuffer' });
+      if (!stored) continue;
+      await target.put(keyInfo.name, stored.value, { metadata: stored.metadata || undefined });
+      copied.push(keyInfo.name);
+    }
+    cursor = page.list_complete ? undefined : page.cursor;
+  } while (cursor);
+  return copied;
+}
+
+async function requireDirectory(directory, label) {
+  const directoryStats = await stat(directory);
+  if (!directoryStats.isDirectory()) throw new Error(`${label} 不是目录：${directory}`);
+}
+
 const args = parseArgs(process.argv.slice(2));
 if (!args.file) {
   throw new Error('用法：node server/import-cloudflare-backup.mjs <backup.json> [--copy-images --apply --confirm=IMPORT]');
 }
-const sourceFile = path.resolve(args.file);
+const sourcePath = path.resolve(args.file);
+const sourceStats = await stat(sourcePath);
+const bundleDirectory = sourceStats.isDirectory() ? sourcePath : '';
+const sourceFile = bundleDirectory ? path.join(bundleDirectory, 'workflow.json') : sourcePath;
 const workflow = cleanStoredWorkflow(JSON.parse(await readFile(sourceFile, 'utf8')));
 const images = collectReferenceImages(workflow);
 const dataDirectory = path.resolve(args.dataDirectory || process.env.JAPANESE_WORDS_DATA_DIR || '/var/lib/japanese-words');
@@ -119,7 +143,8 @@ const dataOwner = String(args.owner || process.env.JAPANESE_WORDS_DATA_OWNER || 
 )).trim();
 const summary = {
   mode: args.apply ? 'apply' : 'dry-run',
-  sourceFile,
+  sourceFile: sourcePath,
+  bundle: Boolean(bundleDirectory),
   dataDirectory,
   revision: workflow.revision,
   favorites: workflow.words.length,
@@ -140,7 +165,18 @@ if (!args.confirmed) throw new Error('正式导入必须同时提供 --apply --c
 const workflowKv = new FileKV(path.join(dataDirectory, 'workflow-kv'));
 const imageKv = new FileKV(path.join(dataDirectory, 'reference-images-kv'));
 let imageResult = [];
-if (args.copyImages) {
+let bundledWorkflowKeys = [];
+let bundledImageKeys = [];
+if (bundleDirectory) {
+  const bundledWorkflowDirectory = path.join(bundleDirectory, 'workflow-kv');
+  const bundledImageDirectory = path.join(bundleDirectory, 'reference-images-kv');
+  await requireDirectory(bundledWorkflowDirectory, '备份 workflow-kv');
+  await requireDirectory(bundledImageDirectory, '备份 reference-images-kv');
+  const bundledWorkflowKv = new FileKV(bundledWorkflowDirectory);
+  const bundledImageKv = new FileKV(bundledImageDirectory);
+  bundledWorkflowKeys = await copyKv(bundledWorkflowKv, workflowKv);
+  bundledImageKeys = await copyKv(bundledImageKv, imageKv);
+} else if (args.copyImages) {
   imageResult = await copyReferenceImages(images, imageKv, args.imagesOrigin);
 }
 await workflowKv.put('favorites:global', JSON.stringify(workflow));
@@ -161,7 +197,9 @@ await writeFile(path.join(dataDirectory, 'imports', `cloudflare-r${workflow.revi
   revision: workflow.revision,
   sha256: digest,
   copiedImages: imageResult.filter(item => item.state === 'copied').length,
-  existingImages: imageResult.filter(item => item.state === 'existing').length
+  existingImages: imageResult.filter(item => item.state === 'existing').length,
+  restoredWorkflowKeys: bundledWorkflowKeys.length,
+  restoredImages: bundledImageKeys.length
 }, null, 2)}\n`, { mode: 0o600 });
 if (dataOwner) await setTreeOwner(dataDirectory, dataOwner);
 console.log(JSON.stringify({
@@ -170,5 +208,7 @@ console.log(JSON.stringify({
   sha256: digest,
   copiedImages: imageResult.filter(item => item.state === 'copied').length,
   existingImages: imageResult.filter(item => item.state === 'existing').length,
+  restoredWorkflowKeys: bundledWorkflowKeys.length,
+  restoredImages: bundledImageKeys.length,
   dataOwner: dataOwner || 'current-user'
 }, null, 2));

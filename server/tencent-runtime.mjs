@@ -131,13 +131,43 @@ async function writeWebResponse(response, outgoing, method = 'GET') {
   outgoing.end(Buffer.from(await response.arrayBuffer()));
 }
 
-export async function handleWebRequest(request, env) {
+function trackBackgroundTasks(tasks, options = {}) {
+  if (!tasks.length) return;
+  const settled = Promise.allSettled(tasks).then(results => {
+    results.forEach(result => {
+      if (result.status === 'rejected') {
+        console.error(JSON.stringify({
+          event: 'background_task_failure',
+          error: String(result.reason?.message || result.reason || 'Unknown background task error')
+        }));
+      }
+    });
+  });
+  if (typeof options.waitUntil === 'function') options.waitUntil(settled);
+  else void settled;
+}
+
+export async function dispatchPagesFunction(handler, request, env, options = {}) {
+  const backgroundTasks = [];
+  const waitUntil = promise => {
+    backgroundTasks.push(Promise.resolve(promise));
+  };
+  const handlerContext = { request, env, waitUntil };
+  const response = await middleware({
+    ...handlerContext,
+    next: () => handler(handlerContext)
+  });
+  trackBackgroundTasks(backgroundTasks, options);
+  return response;
+}
+
+export async function handleWebRequest(request, env, options = {}) {
   const url = new URL(request.url);
   const handler = ROUTES.get(url.pathname);
   if (!handler) {
     return Response.json({ ok: false, error: { code: 'NOT_FOUND', message: 'Not found', retryable: false } }, { status: 404 });
   }
-  return middleware({ request, env, next: () => handler({ request, env }) });
+  return dispatchPagesFunction(handler, request, env, options);
 }
 
 async function runScheduledCron(cron, env) {

@@ -89,6 +89,7 @@ Important workflow fields:
 - `candidatePool`
 - `aiBatches`
 - `todaySnapshot`
+- active `codex-draft:*` records and their reference images
 
 Any server write must preserve all major fields, even if the current endpoint only edits one of them. Workflow writes from Pages and the scheduled Worker are serialized by the external `WORKFLOW_COORDINATOR` Durable Object before the final KV write.
 
