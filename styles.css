@@ -4167,6 +4167,8 @@ body::before {
 }
 
 .published-detail-section {
+  content-visibility:auto;
+  contain-intrinsic-size:auto 280px;
   min-width:0;
   padding:18px;
   border-radius:20px;

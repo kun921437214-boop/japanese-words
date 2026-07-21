@@ -126,6 +126,8 @@ let modalRenderVersion = 0;
 let favoriteRenderLimit = FAVORITES_PAGE_SIZE;
 let publishedRenderLimit = PUBLISHED_PAGE_SIZE;
 let publishedPageModelCache = null;
+let publishedDisplayItemsCache = null;
+let publishedDisplayItemsById = new Map();
 let lastCloudSyncAt = '';
 let lastLocalCacheAt = '';
 let cloudWorkflowFailed = false;
@@ -2717,6 +2719,8 @@ function getCurrentWorkflowState() {
 
 function applyWorkflowData(workflow = {}) {
   publishedPageModelCache = null;
+  publishedDisplayItemsCache = null;
+  publishedDisplayItemsById = new Map();
   favorites = workflow.words;
   favoriteStatuses = workflow.statuses;
   wordFeedback = workflow.feedback;
@@ -2790,6 +2794,8 @@ function saveLocalWorkflow() {
   }, {});
   wordFeedback = cleanWordFeedback(wordFeedback);
   publishedRecords = cleanPublishedRecords(publishedRecords);
+  publishedDisplayItemsCache = null;
+  publishedDisplayItemsById = new Map();
   getProtectedLibraryWords().forEach(kanji => ensureManualKeepEntry(kanji));
   candidatePool = cleanCandidatePool(candidatePool);
   migrateOriginalWordsAfterAudit();
@@ -3306,6 +3312,8 @@ async function refreshPublishedMetrics(recordId = '') {
     if (!response.ok) throw createApiError(data, response.status);
     publishedRecords = mergePublishedRecords(publishedRecords, data.publishedRecords);
     publishedPageModelCache = null;
+    publishedDisplayItemsCache = null;
+    publishedDisplayItemsById = new Map();
     workflowStore.acceptRevision(data.revision);
     saveLocalWorkflow();
     updateAllBadges();
@@ -4070,11 +4078,14 @@ function getPublishedRecordsForWord(kanji) {
 }
 
 function getPublishedDisplayItems() {
-  return cleanPublishedRecords(publishedRecords).map(record => ({
+  if (publishedDisplayItemsCache) return publishedDisplayItemsCache;
+  publishedDisplayItemsCache = safeArray(publishedRecords).filter(Boolean).map(record => ({
     type: 'record',
     record,
     word: getDisplayWordByKanji(record.word) || findWord(record.word)
   })).sort((left, right) => String(right.record.publishedAt || right.record.updatedAt || '').localeCompare(String(left.record.publishedAt || left.record.updatedAt || '')));
+  publishedDisplayItemsById = new Map(publishedDisplayItemsCache.map(item => [item.record.id, item]));
+  return publishedDisplayItemsCache;
 }
 
 function daysBetweenIso(isoLeft, isoRight = nowIso()) {
@@ -7259,8 +7270,8 @@ function formatPublishedDate(value, includeTime = false) {
   }).replace(/\//g, '-');
 }
 
-function getPublishedCover(record) {
-  return getPublishedCoverCandidates(record.coverUrl);
+function getPublishedCover(record, width = 1080) {
+  return getPublishedCoverCandidates(record.coverUrl, { width });
 }
 
 const PUBLISHED_COVER_FALLBACK = 'data:image/svg+xml;charset=UTF-8,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 3 4%22%3E%3Crect width=%223%22 height=%224%22 fill=%22%23fff4f0%22/%3E%3Cpath d=%22M.6 2.25h1.8M.9 1.7h1.2%22 stroke=%22%23ef9caf%22 stroke-width=%22.12%22 stroke-linecap=%22round%22/%3E%3C/svg%3E';
@@ -7328,7 +7339,7 @@ function renderPublishedCard(item, medians, index = 0) {
   const word = item.word || getDisplayWordByKanji(record.word) || { kanji: record.word, reading: '', meaning: '' };
   const metricRows = buildPublishedMetricRows(record, medians);
   const updateState = getPublishedUpdateState(record);
-  const coverUrls = getPublishedCover(record);
+  const coverUrls = getPublishedCover(record, 480);
   const sourceType = String(record.selectionSource?.type || 'unknown').replace(/[^a-z_]/g, '');
   const safeRecordId = escapeHTML(record.id);
   const contentLabel = getPublishedContentLabel(record, word);
@@ -7338,7 +7349,7 @@ function renderPublishedCard(item, medians, index = 0) {
   return `
     <article class="published-card" data-published-action="open-detail" data-record-id="${safeRecordId}" tabindex="0" aria-label="查看 ${escapeHTML(record.title || record.word || '已发布内容')} 的详情">
       <div class="published-cover">
-        <img src="${escapeHTML(coverSrc)}" alt="${escapeHTML(record.title || record.word || '笔记封面')}" loading="${index < 2 ? 'eager' : 'lazy'}" fetchpriority="${index === 0 ? 'high' : 'auto'}" decoding="async" referrerpolicy="no-referrer" data-cover-source="published-record" data-image-fallback="fallback-list" data-fallback-list="${escapeHTML(JSON.stringify(coverFallbacks))}" />
+        <img src="${escapeHTML(coverSrc)}" alt="${escapeHTML(record.title || record.word || '笔记封面')}" loading="${index === 0 ? 'eager' : 'lazy'}" fetchpriority="${index === 0 ? 'high' : 'low'}" decoding="async" referrerpolicy="no-referrer" data-cover-source="published-record" data-image-fallback="fallback-list" data-fallback-list="${escapeHTML(JSON.stringify(coverFallbacks))}" />
         <div class="published-cover-overlay">
           <span class="published-source source-${sourceType}">${escapeHTML(getPublishedSourceLabel(record))}</span>
           <span class="published-type">${escapeHTML(record.contentType || '图文')}</span>
@@ -8236,29 +8247,18 @@ function openLibraryCleanupModal() {
 }
 
 function openPublishedDetail(recordId) {
-  const rawRecord = safeArray(publishedRecords).find(item => item?.id === recordId);
-  if (!rawRecord) return;
+  if (!publishedDisplayItemsCache) getPublishedDisplayItems();
+  const item = publishedDisplayItemsById.get(recordId);
+  const record = item?.record;
+  if (!record) return;
   currentPublishedRecordId = recordId;
   currentWordForModal = null;
-  const renderVersion = ++modalRenderVersion;
-  showModalLoadingShell({
-    eyebrow: '已发布详情',
-    title: rawRecord.word || rawRecord.title || '已发布内容',
-    message: '帖子详情已打开'
-  });
-  scheduleModalRender(() => {
-    if (renderVersion !== modalRenderVersion || currentPublishedRecordId !== recordId) return;
-    const record = cleanPublishedRecords([rawRecord]).find(item => item.id === recordId);
-    if (!record) {
-      closeModal();
-      return;
-    }
-    renderPublishedDetail(record);
-  });
+  modalRenderVersion += 1;
+  renderPublishedDetail(record, item.word);
 }
 
-function renderPublishedDetail(record) {
-  const word = findWord(record.word) || getDisplayWordByKanji(record.word) || {
+function renderPublishedDetail(record, cachedWord = null) {
+  const word = cachedWord || getDisplayWordByKanji(record.word) || {
     kanji: record.word,
     reading: '',
     meaning: ''
@@ -8314,7 +8314,7 @@ function renderPublishedDetail(record) {
       <div class="modal-body published-detail-body">
         <section class="published-detail-hero">
           <div class="published-detail-cover">
-            <img src="${escapeHTML(coverSrc)}" alt="${escapeHTML(record.title || record.word || '笔记封面')}" decoding="async" referrerpolicy="no-referrer" data-cover-source="published-record" data-image-fallback="fallback-list" data-fallback-list="${escapeHTML(JSON.stringify(coverFallbacks))}" />
+            <img src="${escapeHTML(coverSrc)}" alt="${escapeHTML(record.title || record.word || '笔记封面')}" loading="eager" fetchpriority="high" decoding="async" referrerpolicy="no-referrer" data-cover-source="published-record" data-image-fallback="fallback-list" data-fallback-list="${escapeHTML(JSON.stringify(coverFallbacks))}" />
           </div>
           <div class="published-detail-intro">
             <div class="published-detail-badges">
