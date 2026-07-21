@@ -2716,6 +2716,7 @@ function getCurrentWorkflowState() {
 }
 
 function applyWorkflowData(workflow = {}) {
+  publishedPageModelCache = null;
   favorites = workflow.words;
   favoriteStatuses = workflow.statuses;
   wordFeedback = workflow.feedback;
@@ -3304,6 +3305,7 @@ async function refreshPublishedMetrics(recordId = '') {
     const data = await response.json().catch(() => ({}));
     if (!response.ok) throw createApiError(data, response.status);
     publishedRecords = mergePublishedRecords(publishedRecords, data.publishedRecords);
+    publishedPageModelCache = null;
     workflowStore.acceptRevision(data.revision);
     saveLocalWorkflow();
     updateAllBadges();
@@ -7227,9 +7229,11 @@ function renderFavoritesGrid(words, pageModel = {}) {
     : '';
 }
 
+const PUBLISHED_NUMBER_FORMATTER = new Intl.NumberFormat('zh-CN');
+
 function formatPublishedNumber(value) {
   const number = Number(value || 0);
-  return Number.isFinite(number) ? new Intl.NumberFormat('zh-CN').format(Math.round(number)) : '—';
+  return Number.isFinite(number) ? PUBLISHED_NUMBER_FORMATTER.format(Math.round(number)) : '—';
 }
 
 function formatPublishedRate(value) {
@@ -7259,13 +7263,10 @@ function getPublishedCover(record) {
   return getPublishedCoverCandidates(record.coverUrl);
 }
 
-function buildPublishedCoverFallback(label = '') {
-  const safeLabel = String(label || '笔记封面').trim().slice(0, 18)
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;');
-  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="900" height="1200" viewBox="0 0 900 1200"><defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#ffdbe5"/><stop offset="0.52" stop-color="#fff4ee"/><stop offset="1" stop-color="#e7f3ff"/></linearGradient></defs><rect width="900" height="1200" rx="56" fill="url(#g)"/><circle cx="730" cy="170" r="170" fill="#fff" opacity=".4"/><circle cx="120" cy="1040" r="230" fill="#fff" opacity=".35"/><text x="450" y="560" text-anchor="middle" fill="#9f3654" font-family="-apple-system,BlinkMacSystemFont,'PingFang SC',sans-serif" font-size="72" font-weight="800">${safeLabel}</text><text x="450" y="650" text-anchor="middle" fill="#b67a8c" font-family="-apple-system,BlinkMacSystemFont,'PingFang SC',sans-serif" font-size="32" font-weight="600">封面暂不可用</text></svg>`;
-  return `data:image/svg+xml;charset=UTF-8,${encodeURIComponent(svg)}`;
+const PUBLISHED_COVER_FALLBACK = 'data:image/svg+xml;charset=UTF-8,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 3 4%22%3E%3Crect width=%223%22 height=%224%22 fill=%22%23fff4f0%22/%3E%3Cpath d=%22M.6 2.25h1.8M.9 1.7h1.2%22 stroke=%22%23ef9caf%22 stroke-width=%22.12%22 stroke-linecap=%22round%22/%3E%3C/svg%3E';
+
+function buildPublishedCoverFallback() {
+  return PUBLISHED_COVER_FALLBACK;
 }
 
 function getPublishedContentLabel(record = {}, word = {}) {
@@ -7322,7 +7323,7 @@ function renderPublishedMedianSummary(medians = {}) {
     <p class="published-insights-note">卡片中低于对应中位数的数据会显示醒目的红色边框与底色，方便快速定位需要复盘的内容。</p>`;
 }
 
-function renderPublishedCard(item, medians) {
+function renderPublishedCard(item, medians, index = 0) {
   const record = item.record;
   const word = item.word || getDisplayWordByKanji(record.word) || { kanji: record.word, reading: '', meaning: '' };
   const metricRows = buildPublishedMetricRows(record, medians);
@@ -7337,7 +7338,7 @@ function renderPublishedCard(item, medians) {
   return `
     <article class="published-card" data-published-action="open-detail" data-record-id="${safeRecordId}" tabindex="0" aria-label="查看 ${escapeHTML(record.title || record.word || '已发布内容')} 的详情">
       <div class="published-cover">
-        <img src="${escapeHTML(coverSrc)}" alt="${escapeHTML(record.title || record.word || '笔记封面')}" loading="lazy" decoding="async" referrerpolicy="no-referrer" data-cover-source="published-record" data-image-fallback="fallback-list" data-fallback-list="${escapeHTML(JSON.stringify(coverFallbacks))}" />
+        <img src="${escapeHTML(coverSrc)}" alt="${escapeHTML(record.title || record.word || '笔记封面')}" loading="${index < 2 ? 'eager' : 'lazy'}" fetchpriority="${index === 0 ? 'high' : 'auto'}" decoding="async" referrerpolicy="no-referrer" data-cover-source="published-record" data-image-fallback="fallback-list" data-fallback-list="${escapeHTML(JSON.stringify(coverFallbacks))}" />
         <div class="published-cover-overlay">
           <span class="published-source source-${sourceType}">${escapeHTML(getPublishedSourceLabel(record))}</span>
           <span class="published-type">${escapeHTML(record.contentType || '图文')}</span>
@@ -7390,7 +7391,7 @@ function renderPublished() {
     count.textContent = pageModel.countText;
   } else {
     empty.style.display = 'none';
-    grid.innerHTML = `${items.map(item => renderPublishedCard(item, pageModel.medians)).join('')}${renderProgressiveListFooter({
+    grid.innerHTML = `${items.map((item, index) => renderPublishedCard(item, pageModel.medians, index)).join('')}${renderProgressiveListFooter({
       scope: 'published',
       total: pageModel.count,
       rendered: pageModel.renderedCount,
@@ -7896,7 +7897,7 @@ function updateFavBadge() {
 function updatePublishedBadge() {
   const badge = document.getElementById('publishedBadge');
   if (!badge) return;
-  const count = getPublishedDisplayItems().length;
+  const count = publishedPageModelCache?.count ?? getPublishedDisplayItems().length;
   if (count > 0) {
     badge.style.display = '';
     badge.textContent = count;
@@ -8455,9 +8456,8 @@ function switchTab(tab) {
   const previousTab = document.body.dataset.activeTab || '';
   if (targetTab !== previousTab) {
     if (targetTab === 'favorites') favoriteRenderLimit = FAVORITES_PAGE_SIZE;
-    if (targetTab === 'published') {
+    if (targetTab === 'published' && !publishedPageModelCache) {
       publishedRenderLimit = PUBLISHED_PAGE_SIZE;
-      publishedPageModelCache = null;
     }
   }
   document.body.dataset.activeTab = targetTab;
@@ -8475,7 +8475,10 @@ function switchTab(tab) {
     renderToday();
   }
   else if (targetTab === 'favorites') renderFavorites();
-  else if (targetTab === 'published') renderPublished();
+  else if (targetTab === 'published') {
+    const publishedGrid = document.getElementById('publishedGrid');
+    if (!publishedPageModelCache || !publishedGrid?.childElementCount) renderPublished();
+  }
   document.getElementById('sidebar')?.classList.remove('open');
 }
 

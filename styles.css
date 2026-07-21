@@ -3876,6 +3876,8 @@ body::before {
 
 .published-card {
   display:grid;
+  content-visibility:auto;
+  contain-intrinsic-size:auto 430px;
   grid-template-columns:minmax(210px, 0.72fr) minmax(0, 1.5fr);
   gap:0;
   min-width:0;

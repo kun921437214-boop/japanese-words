@@ -38,8 +38,16 @@ export function getPublishedCoverCandidates(value) {
     if (!isXhsImageHost) return [primaryUrl];
     const assetMatch = parsed.pathname.match(/\/([a-z0-9_-]{30,160})(?:![^/]*)?$/i);
     if (!assetMatch) return [primaryUrl];
-    const stableUrl = `https://sns-na-i6.xhscdn.com/notes_pre_post/${assetMatch[1]}?imageView2/2/w/1080/format/jpg&origin=0`;
-    return [...new Set([primaryUrl, stableUrl])];
+    const assetKey = assetMatch[1];
+    const sourceUsesNotesNamespace = parsed.pathname.split('/').includes('notes_pre_post');
+    const stablePaths = sourceUsesNotesNamespace
+      ? [`notes_pre_post/${assetKey}`, assetKey]
+      : [assetKey, `notes_pre_post/${assetKey}`];
+    const stableUrls = stablePaths.map(path => `https://sns-na-i6.xhscdn.com/${path}?imageView2/2/w/1080/format/jpg&origin=0`);
+
+    // Dated sns-webpic URLs expire with a 403. Prefer the namespace-aware
+    // stable CDN URL so every cover does not begin with a failed request.
+    return [...new Set([...stableUrls, primaryUrl])];
   } catch {
     return [];
   }
