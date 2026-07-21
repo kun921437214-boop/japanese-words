@@ -11,7 +11,7 @@ Production uses the existing Tencent Cloud Lighthouse instance in Beijing:
 - The same process runs the current Worker schedule and records daily run markers. Daily promotion and the 14:30 published refresh have restart catch-up protection.
 - Pages Functions receive a real `waitUntil` implementation, so long DeepSeek jobs are queued in the Node process instead of holding the Nginx request open until a 504.
 - A systemd timer writes a complete state bundle every day at 15:00 Asia/Shanghai. The bundle includes the main workflow, auxiliary workflow KV keys such as Codex drafts, and all reference images.
-- Cloudflare Pages, Worker, KV, and the coordinator remain unchanged during the rollback window.
+- Cloudflare Pages, Worker, KV, and the coordinator remain intact during the rollback window; only Worker cron triggers are disabled after Tencent scheduling is verified.
 
 The public API paths and browser storage keys do not change.
 
@@ -93,7 +93,7 @@ Before DNS changes:
 3. Set `DISABLE_SCHEDULER=false`, `SITE_URL=https://bijinihaitan.cn`, and the matching allowed origins.
 4. Update `.env.codex-daily` so the 14:00/16:00/17:00 Codex task submits to `https://bijinihaitan.cn`.
 5. Restart the application and run `SITE_URL=https://bijinihaitan.cn npm run smoke:production`.
-6. Keep the Cloudflare Worker enabled only until the Tencent scheduler is confirmed. Do not let both schedulers run beyond the observation window.
+6. After Tencent logs confirm successful published refresh, daily promotion, and aiCard jobs, deploy `wrangler.worker.toml` with an empty cron list. Keep the Worker, coordinator, Pages project, and KV namespaces intact for rollback.
 
 ## Rollback
 
@@ -103,4 +103,4 @@ Before DNS changes:
 4. Keep all Tencent data files and backups; do not delete them during rollback.
 5. Compare revisions before deciding whether a guarded data restore is needed.
 
-Cloudflare resources must remain intact until the Tencent site has completed at least seven daily cycles.
+Cloudflare resources must remain intact until the Tencent site has completed at least seven daily cycles. During rollback, re-enable the reviewed cron list only after Tencent scheduling has been disabled.

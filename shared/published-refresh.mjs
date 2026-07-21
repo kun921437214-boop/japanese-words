@@ -210,7 +210,7 @@ async function fetchAllowedXiaohongshuPage(link, fetchImpl, signal) {
     const response = await fetchImpl(currentUrl, {
       headers: {
         Accept: 'text/html,application/xhtml+xml',
-        'User-Agent': 'Mozilla/5.0 (compatible; KotobaBreadBot/1.0; +https://jiyimianbao.pages.dev)'
+        'User-Agent': 'Mozilla/5.0 (compatible; KotobaBreadBot/1.0; +https://bijinihaitan.cn)'
       },
       redirect: 'manual',
       signal

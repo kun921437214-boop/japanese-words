@@ -377,15 +377,22 @@ test('Codex 参考图在列表卡和详情卡中完整展示', () => {
   assert.ok(styleSource.includes('aspect-ratio:3 / 4;'));
 });
 
-test('scheduled Worker 分离日更和 aiCard 批量 cron', () => {
+test('Tencent runtime owns scheduled jobs while Cloudflare rollback cron stays disabled', () => {
   const workerConfig = fs.readFileSync(new URL('../wrangler.worker.toml', import.meta.url), 'utf8');
   const workerSource = fs.readFileSync(new URL('../worker/favorites-worker.js', import.meta.url), 'utf8');
+  const tencentSource = fs.readFileSync(new URL('../server/tencent-runtime.mjs', import.meta.url), 'utf8');
 
-  assert.ok(workerConfig.includes('"0 16 * * *"'));
-  assert.ok(workerConfig.includes('"30 6 * * *"'));
-  assert.ok(workerConfig.includes('"5,25,45 * * * *"'));
-  assert.ok(workerConfig.includes('"10,20,30,40,50 16 * * *"'));
-  assert.ok(workerConfig.includes('"0 17 * * *"'));
+  assert.ok(workerConfig.includes('crons = []'));
+  assert.equal(workerConfig.includes('"0 16 * * *"'), false);
+  assert.equal(workerConfig.includes('"30 6 * * *"'), false);
+  assert.equal(workerConfig.includes('"5,25,45 * * * *"'), false);
+  assert.equal(workerConfig.includes('"10,20,30,40,50 16 * * *"'), false);
+  assert.equal(workerConfig.includes('"0 17 * * *"'), false);
+  assert.ok(tencentSource.includes("'0 16 * * *'"));
+  assert.ok(tencentSource.includes("'30 6 * * *'"));
+  assert.ok(tencentSource.includes("'5,25,45 * * * *'"));
+  assert.ok(tencentSource.includes("'10,20,30,40,50 16 * * *'"));
+  assert.ok(tencentSource.includes("'0 17 * * *'"));
   assert.ok(workerSource.includes("const DAILY_REFRESH_CRON = '0 16 * * *';"));
   assert.ok(workerSource.includes("const PUBLISHED_REFRESH_CRON = '30 6 * * *';"));
   assert.ok(workerSource.includes("const CODEX_LATE_PROMOTION_CRON = '5,25,45 * * * *';"));
