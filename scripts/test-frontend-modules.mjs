@@ -1432,6 +1432,9 @@ test('published cover URLs recover stable Xiaohongshu assets and reject unsafe s
     `https://sns-na-i6.xhscdn.com/notes_pre_post/${key}?old=1`
   ]);
   assert.equal(normalizePublishedCoverUrl('https://images.example.com/cover.jpg'), 'https://images.example.com/cover.jpg');
+  const storedCoverUrl = `/published-cover?key=${encodeURIComponent(`published-covers/v1/${'a'.repeat(32)}`)}`;
+  assert.equal(normalizePublishedCoverUrl(storedCoverUrl), storedCoverUrl);
+  assert.deepEqual(getPublishedCoverCandidates(storedCoverUrl, { width: 480 }), [storedCoverUrl]);
   assert.equal(normalizePublishedCoverUrl('javascript:alert(1)'), '');
   assert.equal(normalizePublishedCoverUrl('https://user:pass@images.example.com/cover.jpg'), '');
 });
@@ -1680,6 +1683,10 @@ test('module migration removes inline handlers and the temporary window compatib
   assert.ok(indexSource.includes('data-manage-action="audit"'));
   assert.ok(indexSource.includes('data-manage-action="exportAudit"'));
   assert.ok(indexSource.includes('data-image-fallback="parent-text"'));
+  assert.doesNotMatch(indexSource, /assets\/illustrations\/[^"']+\.png/);
+  assert.doesNotMatch(indexSource, /<link[^>]+fonts\.googleapis\.com[^>]+rel="stylesheet"/);
+  assert.match(indexSource, /rel="modulepreload" href="app\.js" fetchpriority="high"/);
+  assert.doesNotMatch(indexSource, /fonts\.googleapis\.com/);
   assert.ok(appSource.includes('data-manual-word-action="submit"'));
   assert.ok(appSource.includes('data-workflow-action="generate-deepseek-card"'));
   assert.equal(appSource.includes('data-workflow-action="candidate-state"'), false);

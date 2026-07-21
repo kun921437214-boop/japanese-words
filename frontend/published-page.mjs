@@ -12,6 +12,10 @@ function safeArray(value) {
 export function normalizePublishedCoverUrl(value) {
   const rawUrl = String(value || '').trim();
   if (!rawUrl) return '';
+  if (/^\/published-cover\?key=published-covers%2Fv1%2F[a-f0-9]{32}$/i.test(rawUrl)
+    || /^\/published-cover\?key=published-covers\/v1\/[a-f0-9]{32}$/i.test(rawUrl)) {
+    return rawUrl;
+  }
   try {
     const parsed = new URL(rawUrl);
     if (parsed.username || parsed.password || (parsed.port && !['80', '443'].includes(parsed.port))) return '';
@@ -31,6 +35,7 @@ export function normalizePublishedCoverUrl(value) {
 export function getPublishedCoverCandidates(value, options = {}) {
   const primaryUrl = normalizePublishedCoverUrl(value);
   if (!primaryUrl) return [];
+  if (primaryUrl.startsWith('/published-cover?')) return [primaryUrl];
   try {
     const parsed = new URL(primaryUrl);
     const hostname = parsed.hostname.toLowerCase();

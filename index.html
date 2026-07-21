@@ -4,10 +4,8 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>记忆面包 — 每日日语热词口袋站</title>
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Noto+Serif+JP:wght@400;700;900&family=Zen+Kaku+Gothic+New:wght@300;400;500;700&family=Shippori+Mincho:wght@400;600;800&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="styles.css">
+<link rel="modulepreload" href="app.js" fetchpriority="high">
 </head>
 <body>
 <div class="app-layout">
@@ -20,29 +18,29 @@
         <div class="sidebar-logo-sub">Daily Japanese Trending Words</div>
       </div>
       <div class="sidebar-illustration sidebar-illustration-top" aria-hidden="true">
-        <img class="design-asset design-asset-sidebar-top" src="assets/illustrations/doraemon-propeller.png" alt="" data-image-fallback="parent-class-remove" data-parent-class="asset-missing">
+        <img class="design-asset design-asset-sidebar-top" src="assets/illustrations/doraemon-propeller.webp" alt="" decoding="async" fetchpriority="high" data-image-fallback="parent-class-remove" data-parent-class="asset-missing">
       </div>
     </div>
     <nav class="sidebar-nav">
       <div class="nav-item active" data-app-shell-action="switch-tab" data-tab="today" role="button" tabindex="0">
-        <span class="nav-icon"><img src="assets/illustrations/memory-bread.png" alt=""></span>
+        <span class="nav-icon"><img src="assets/illustrations/memory-bread.webp" alt="" decoding="async"></span>
         <span class="nav-label">每日热门</span>
         <span class="nav-badge" id="todayBadge">20</span>
       </div>
       <div class="nav-item" data-app-shell-action="switch-tab" data-tab="favorites" role="button" tabindex="0">
-        <span class="nav-icon"><img src="assets/illustrations/anywhere-door.png" alt=""></span>
+        <span class="nav-icon"><img src="assets/illustrations/anywhere-door.webp" alt="" decoding="async"></span>
         <span class="nav-label">我的收藏 / 选题池</span>
         <span class="nav-badge" id="favBadge" style="display:none">0</span>
       </div>
       <div class="nav-item" data-app-shell-action="switch-tab" data-tab="published" role="button" tabindex="0">
-        <span class="nav-icon"><img src="assets/illustrations/time-machine.png" alt=""></span>
+        <span class="nav-icon"><img src="assets/illustrations/time-machine.webp" alt="" decoding="async"></span>
         <span class="nav-label">已发布</span>
         <span class="nav-badge" id="publishedBadge" style="display:none">0</span>
       </div>
     </nav>
     <div class="sidebar-footer">
       <div class="sidebar-illustration sidebar-illustration-bottom" aria-hidden="true">
-        <img class="design-asset design-asset-sidebar-bottom" src="assets/illustrations/doraemon-door-bread.png" alt="" data-image-fallback="parent-class-remove" data-parent-class="asset-missing">
+        <img class="design-asset design-asset-sidebar-bottom" src="assets/illustrations/doraemon-door-bread.webp" alt="" loading="lazy" decoding="async" data-image-fallback="parent-class-remove" data-parent-class="asset-missing">
       </div>
       <button class="settings-btn" data-app-shell-action="open-settings" title="设置">⚙️ 设置</button>
       记忆面包 × 热门日语口袋道具<br>© 2026 每日灵感，为你而来
@@ -53,7 +51,7 @@
       <div class="page-header">
         <div class="page-header-inner">
           <div class="page-heading">
-            <div class="page-title-icon"><img src="assets/illustrations/memory-bread.png" alt="" data-image-fallback="parent-text" data-fallback-text="🍞"></div>
+            <div class="page-title-icon"><img src="assets/illustrations/memory-bread.webp" alt="" decoding="async" data-image-fallback="parent-text" data-fallback-text="🍞"></div>
             <div>
               <h1 class="page-title">每日热门</h1>
               <p class="page-date" id="todayDate">按日期查看系统推荐的日语热门词，从中收藏适合进入团队选题池的内容。</p>
@@ -85,9 +83,9 @@
       <div class="word-grid" id="todayGrid"></div>
       <div class="page-scene">
         <div class="scene-assets" aria-hidden="true">
-          <img class="design-asset design-asset-scene-small" src="assets/illustrations/propeller.png" alt="" data-image-fallback="remove">
-          <img class="design-asset design-asset-scene-small" src="assets/illustrations/dorayaki.png" alt="" data-image-fallback="remove">
-          <img class="design-asset design-asset-scene-small" src="assets/illustrations/memory-bread.png" alt="" data-image-fallback="remove">
+          <img class="design-asset design-asset-scene-small" src="assets/illustrations/propeller.webp" alt="" loading="lazy" decoding="async" data-image-fallback="remove">
+          <img class="design-asset design-asset-scene-small" src="assets/illustrations/dorayaki.webp" alt="" loading="lazy" decoding="async" data-image-fallback="remove">
+          <img class="design-asset design-asset-scene-small" src="assets/illustrations/memory-bread.webp" alt="" loading="lazy" decoding="async" data-image-fallback="remove">
         </div>
         <div class="scene-trail" aria-hidden="true">✦　🍞　✦　✦</div>
         <div class="scene-bubble">系统会把新词和历史词统一评分，再把最值得做成小红书内容的词放到这里。</div>
@@ -97,7 +95,7 @@
       <div class="page-header">
         <div class="page-header-inner">
           <div class="page-heading">
-            <div class="page-title-icon"><img src="assets/illustrations/propeller.png" alt="" data-image-fallback="parent-text" data-fallback-text="📚"></div>
+            <div class="page-title-icon"><img src="assets/illustrations/propeller.webp" alt="" loading="lazy" decoding="async" data-image-fallback="parent-text" data-fallback-text="📚"></div>
             <div>
               <h1 class="page-title">每日热门归档</h1>
               <p class="page-date">历史推荐已合并到每日热门页面的日期选择</p>
@@ -118,7 +116,7 @@
       <div class="page-header">
         <div class="page-header-inner">
           <div class="page-heading">
-            <div class="page-title-icon page-title-icon-door"><img src="assets/illustrations/anywhere-door.png" alt="" data-image-fallback="parent-text" data-fallback-text="🚪"></div>
+            <div class="page-title-icon page-title-icon-door"><img src="assets/illustrations/anywhere-door.webp" alt="" loading="lazy" decoding="async" data-image-fallback="parent-text" data-fallback-text="🚪"></div>
             <div>
               <h1 class="page-title">我的收藏 / 选题池</h1>
               <p class="page-date" id="favCount">保存你感兴趣、准备发布和已进入工作流的词</p>
@@ -140,8 +138,8 @@
       <div class="word-grid" id="favGrid"></div>
       <div class="page-scene favorites-scene">
         <div class="scene-assets" aria-hidden="true">
-          <img class="design-asset design-asset-scene-medium" src="assets/illustrations/doraemon-peek.png" alt="" data-image-fallback="remove">
-          <img class="design-asset design-asset-scene-small" src="assets/illustrations/memory-bread.png" alt="" data-image-fallback="remove">
+          <img class="design-asset design-asset-scene-medium" src="assets/illustrations/doraemon-peek.webp" alt="" loading="lazy" decoding="async" data-image-fallback="remove">
+          <img class="design-asset design-asset-scene-small" src="assets/illustrations/memory-bread.webp" alt="" loading="lazy" decoding="async" data-image-fallback="remove">
         </div>
         <div class="scene-bubble">这里是你的选题池：先收藏，确定要做时标记待发布，发出后再补数据。</div>
         <div class="scene-trail" aria-hidden="true">🍞　✦　💗　✦</div>
@@ -156,7 +154,7 @@
       <div class="page-header">
         <div class="page-header-inner">
           <div class="page-heading">
-            <div class="page-title-icon"><img src="assets/illustrations/time-machine.png" alt="" data-image-fallback="parent-text" data-fallback-text="📝"></div>
+            <div class="page-title-icon"><img src="assets/illustrations/time-machine.webp" alt="" loading="lazy" decoding="async" data-image-fallback="parent-text" data-fallback-text="📝"></div>
             <div>
               <h1 class="page-title">已发布</h1>
               <p class="page-date" id="publishedCount">管理已经发到小红书的内容和表现</p>
@@ -173,8 +171,8 @@
       <div class="published-grid" id="publishedGrid"></div>
       <div class="page-scene">
         <div class="scene-assets" aria-hidden="true">
-          <img class="design-asset design-asset-scene-medium" src="assets/illustrations/time-machine.png" alt="" data-image-fallback="remove">
-          <img class="design-asset design-asset-scene-small" src="assets/illustrations/propeller.png" alt="" data-image-fallback="remove">
+          <img class="design-asset design-asset-scene-medium" src="assets/illustrations/time-machine.webp" alt="" loading="lazy" decoding="async" data-image-fallback="remove">
+          <img class="design-asset design-asset-scene-small" src="assets/illustrations/propeller.webp" alt="" loading="lazy" decoding="async" data-image-fallback="remove">
         </div>
         <div class="scene-bubble">新帖子从「笔记管理」点封面读取一次，内容固定保存；数据每天 14:30 更新，发布超过 15 天后自动定格。</div>
       </div>
@@ -192,9 +190,9 @@
 <div class="modal-overlay" id="settingsOverlay" data-app-shell-action="close-settings-outside">
   <div class="modal-container settings-modal">
     <div class="settings-decor" aria-hidden="true">
-      <img class="design-asset design-asset-settings-left" src="assets/illustrations/doraemon-door-bread.png" alt="" data-image-fallback="remove">
-      <img class="design-asset design-asset-settings-door" src="assets/illustrations/anywhere-door.png" alt="" data-image-fallback="remove">
-      <img class="design-asset design-asset-settings-bread" src="assets/illustrations/memory-bread.png" alt="" data-image-fallback="remove">
+      <img class="design-asset design-asset-settings-left" src="assets/illustrations/doraemon-door-bread.webp" alt="" loading="lazy" decoding="async" data-image-fallback="remove">
+      <img class="design-asset design-asset-settings-door" src="assets/illustrations/anywhere-door.webp" alt="" loading="lazy" decoding="async" data-image-fallback="remove">
+      <img class="design-asset design-asset-settings-bread" src="assets/illustrations/memory-bread.webp" alt="" loading="lazy" decoding="async" data-image-fallback="remove">
       <span class="settings-star star-a">✦</span>
       <span class="settings-star star-b">💗</span>
       <span class="settings-star star-c">✦</span>
@@ -220,7 +218,9 @@
 </div>
 <div class="toast" id="toast"></div>
 <script src="words-data.js"></script>
-<script src="sync-config.js"></script>
+<script>
+  window.KOTOBA_SYNC_API_URL = window.KOTOBA_SYNC_API_URL || window.location.origin || '';
+</script>
 <script type="module" src="app.js"></script>
 </body>
 </html>

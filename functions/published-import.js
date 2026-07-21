@@ -19,6 +19,7 @@ import {
   inspectWorkflowMutation
 } from '../shared/workflow-mutation.mjs';
 import { commitWorkflowMutation } from '../shared/workflow-coordinator.mjs';
+import { persistPublishedRecordCovers } from './published-cover.js';
 
 function cleanSyncCode(value) {
   return String(value || '').trim().replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 64);
@@ -119,7 +120,14 @@ export async function onRequest({ request, env }) {
     });
   }
 
-  const candidateWorkflow = buildPublishedWorkflow(current, imported);
+  const persistedCovers = await persistPublishedRecordCovers(imported.records, env, {
+    fetchImpl: fetch,
+    nowIso: new Date().toISOString()
+  });
+  const candidateWorkflow = buildPublishedWorkflow(current, {
+    ...imported,
+    records: persistedCovers.records
+  });
   const mutation = await commitWorkflowMutation(env, key, candidateWorkflow, mutationMetadata, { strategy: 'merge' });
   if (mutation.conflict) {
     return respond({
@@ -134,6 +142,7 @@ export async function onRequest({ request, env }) {
     mode,
     batch: imported.batch,
     summary: imported.summary,
+    coverSummary: persistedCovers.summary,
     publishedRecords: mutation.workflow.publishedRecords,
     updated: mutation.workflow.updated,
     revision: mutation.workflow.revision,

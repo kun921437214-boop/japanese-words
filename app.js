@@ -6883,7 +6883,7 @@ function renderTodayCard(word) {
         </div>
         <div class="card-top-actions" data-daily-hot-stop>
           <button class="card-fav-btn ${favoriteButton.className}" title="${escapeHTML(favoriteButton.label)}" aria-label="${escapeHTML(favoriteButton.label)}" ${favoriteButton.disabled ? 'disabled' : ''} data-daily-hot-action="toggle-favorite" data-kanji="${safeKanjiAction}">
-            <img class="fav-icon" src="assets/illustrations/dorayaki.png" alt="收藏">
+            <img class="fav-icon" src="assets/illustrations/dorayaki.webp" alt="收藏">
           </button>
           <button class="card-dismiss-btn" title="不感兴趣" aria-label="不感兴趣" data-daily-hot-action="dismiss" data-kanji="${safeKanjiAction}">×</button>
         </div>`}
@@ -6896,7 +6896,7 @@ function renderTodayCard(word) {
           </div>
           <div class="daily-hot-reference-controls" data-daily-hot-stop>
             <button class="card-fav-btn ${favoriteButton.className}" title="${escapeHTML(favoriteButton.label)}" aria-label="${escapeHTML(favoriteButton.label)}" ${favoriteButton.disabled ? 'disabled' : ''} data-daily-hot-action="toggle-favorite" data-kanji="${safeKanjiAction}">
-              <img class="fav-icon" src="assets/illustrations/dorayaki.png" alt="收藏">
+              <img class="fav-icon" src="assets/illustrations/dorayaki.webp" alt="收藏">
             </button>
             <button class="card-dismiss-btn" title="不感兴趣" aria-label="不感兴趣" data-daily-hot-action="dismiss" data-kanji="${safeKanjiAction}">×</button>
           </div>
@@ -7012,7 +7012,7 @@ function renderCodexDraftPreviewCard(item, index) {
         <span class="codex-preview-readonly-badge">草稿内容只读</span>
         <div class="card-top-actions" data-daily-hot-stop>
           <button class="card-fav-btn ${favoriteButton.className}" title="${escapeHTML(favoriteButton.label)}" aria-label="${escapeHTML(favoriteButton.label)}" ${favoriteButton.disabled ? 'disabled' : ''} data-daily-hot-action="toggle-codex-favorite" data-kanji="${safeKanjiAction}">
-            <img class="fav-icon" src="assets/illustrations/dorayaki.png" alt="收藏">
+            <img class="fav-icon" src="assets/illustrations/dorayaki.webp" alt="收藏">
           </button>
           <button class="card-dismiss-btn" title="不感兴趣（记录负反馈）" aria-label="不感兴趣" data-daily-hot-action="codex-feedback" data-kanji="${safeKanjiAction}" data-reason="uninterested">×</button>
         </div>
@@ -7154,7 +7154,7 @@ function renderFavoriteCard(word) {
         </div>
         <div class="card-top-actions" data-favorites-stop>
           <button class="card-fav-btn ${favoriteButton.className}" title="${escapeHTML(favoriteButton.label)}" aria-label="${escapeHTML(favoriteButton.label)}" ${favoriteButton.disabled ? 'disabled' : ''} data-favorites-action="toggle-favorite" data-kanji="${escapeHTML(word.kanji)}" data-force-state="false">
-            <img class="fav-icon" src="assets/illustrations/dorayaki.png" alt="取消收藏">
+            <img class="fav-icon" src="assets/illustrations/dorayaki.webp" alt="取消收藏">
           </button>
         </div>
       </div>
