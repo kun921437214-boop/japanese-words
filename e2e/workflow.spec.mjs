@@ -365,7 +365,9 @@ test('favorites and published pages progressively render cards and open responsi
   await expect(page.locator('#publishedGrid .published-card')).toHaveCount(20);
   const firstPublishedCard = page.locator('#publishedGrid .published-card').first();
   await firstPublishedCard.scrollIntoViewIfNeeded();
-  await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => resolve())));
+  await page.evaluate(() => new Promise(resolve => {
+    requestAnimationFrame(() => resolve());
+  }));
   const detailOpenedIn = await firstPublishedCard.evaluate(card => {
     const startedAt = performance.now();
     card.click();
