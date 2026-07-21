@@ -1,0 +1,23 @@
+[Unit]
+Description=Japanese Words Tencent Cloud runtime
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=japanese-words
+Group=japanese-words
+WorkingDirectory=/opt/japanese-words/app
+EnvironmentFile=/etc/japanese-words.env
+ExecStart=/usr/bin/node server/tencent-runtime.mjs
+Restart=always
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/japanese-words /var/backups/japanese-words
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

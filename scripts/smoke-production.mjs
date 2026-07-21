@@ -1,7 +1,7 @@
 import { getExpectedDailyWordCount } from '../shared/daily-config.mjs';
 import { summarizeFavoriteCandidateCoverage } from './smoke-production-model.mjs';
 
-const SITE_URL = String(process.env.SITE_URL || 'https://jiyimianbao.pages.dev').replace(/\/+$/, '');
+const SITE_URL = String(process.env.SITE_URL || 'https://bijinihaitan.cn').replace(/\/+$/, '');
 const TIMEOUT_MS = 30000;
 
 function fail(message, details = {}) {

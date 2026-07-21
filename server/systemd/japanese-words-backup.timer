@@ -1,0 +1,11 @@
+[Unit]
+Description=Daily Japanese Words workflow backup
+
+[Timer]
+OnCalendar=*-*-* 15:00:00 Asia/Shanghai
+Persistent=true
+RandomizedDelaySec=120
+Unit=japanese-words-backup.service
+
+[Install]
+WantedBy=timers.target

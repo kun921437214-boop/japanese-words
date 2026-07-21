@@ -32,6 +32,7 @@ import {
   normalizeDailyHotDateSelection
 } from '../frontend/daily-hot-page.mjs';
 import {
+  FAVORITES_PAGE_SIZE,
   buildFavoritesPageModel,
   createFavoritesPageController,
   normalizeFavoriteStatusFilter,
@@ -52,6 +53,7 @@ import {
   parseXiaohongshuSharePayload
 } from '../frontend/published-record-parser.mjs';
 import {
+  PUBLISHED_PAGE_SIZE,
   buildPublishedMetricRows,
   buildPublishedPageModel,
   createPublishedPageController,
@@ -1252,6 +1254,20 @@ test('favorites page model applies source and status filters without changing th
   assert.equal(words.length, 3);
 });
 
+test('favorites page model limits the first paint and exposes the next batch', () => {
+  const words = Array.from({ length: 30 }, (_, index) => ({ kanji: `收藏词${index + 1}`, source: '每日热门' }));
+  const firstPage = buildFavoritesPageModel({ words });
+  assert.equal(firstPage.renderedWords.length, FAVORITES_PAGE_SIZE);
+  assert.equal(firstPage.remaining, 18);
+  assert.equal(firstPage.hasMore, true);
+  assert.equal(firstPage.nextLimit, 24);
+  assert.equal(firstPage.renderedAutoGenerateWords.length, FAVORITES_PAGE_SIZE);
+
+  const nextPage = buildFavoritesPageModel({ words, visibleLimit: 24 });
+  assert.equal(nextPage.renderedWords.length, 24);
+  assert.equal(nextPage.nextLimit, 30);
+});
+
 test('production smoke coverage ignores published history but catches missing active favorites', () => {
   const complete = summarizeFavoriteCandidateCoverage({
     words: ['活跃收藏', '待发布', '历史发布'],
@@ -1324,6 +1340,7 @@ test('favorites page controller delegates card and filter actions without window
   const controller = createFavoritesPageController({
     root,
     onOpenDetail: id => calls.push(['detail', id]),
+    onLoadMore: () => calls.push(['load-more']),
     onToggleFavorite: (kanji, forceState) => calls.push(['favorite', kanji, forceState]),
     onSelectStatus: (kanji, status) => calls.push(['status', kanji, status]),
     onSourceFilter: value => calls.push(['source', value]),
@@ -1346,6 +1363,7 @@ test('favorites page controller delegates card and filter actions without window
   };
 
   dispatch('click', { dataset: { favoritesAction: 'open-detail', wordId: 'favorite-card-1' } });
+  dispatch('click', { dataset: { favoritesAction: 'load-more' } });
   const stopped = dispatch('click', {
     dataset: { favoritesAction: 'toggle-favorite', kanji: '思い切って', forceState: 'false' }
   }, { stop: true });
@@ -1356,6 +1374,7 @@ test('favorites page controller delegates card and filter actions without window
   assert.equal(stopped, true);
   assert.deepEqual(calls, [
     ['detail', 'favorite-card-1'],
+    ['load-more'],
     ['favorite', '思い切って', false],
     ['status', '詰めが甘い', 'pending'],
     ['source', '每日热门'],
@@ -1396,13 +1415,16 @@ test('published rating remains a derived compatibility signal instead of a store
 test('published cover URLs recover stable Xiaohongshu assets and reject unsafe sources', () => {
   const key = '1040g3k0322q8fokun2105obdjf8gjbkpcttk3vo';
   const expiringUrl = `https://sns-webpic-qc.xhscdn.com/202607201442/example/notes_pre_post/${key}!nd_dft_wlteh_webp_3`;
-  const stableUrl = `https://sns-na-i6.xhscdn.com/notes_pre_post/${key}?imageView2/2/w/1080/format/jpg&origin=0`;
+  const namespacedStableUrl = `https://sns-na-i6.xhscdn.com/notes_pre_post/${key}?imageView2/2/w/1080/format/jpg&origin=0`;
+  const rootStableUrl = `https://sns-na-i6.xhscdn.com/${key}?imageView2/2/w/1080/format/jpg&origin=0`;
   assert.equal(normalizePublishedCoverUrl(expiringUrl), expiringUrl);
   const signedUrl = `https://sns-webpic-qc.xhscdn.com/202607201442/hash/${key}!nd_dft_wlteh_webp_3`;
-  assert.deepEqual(getPublishedCoverCandidates(signedUrl), [signedUrl, stableUrl]);
+  assert.deepEqual(getPublishedCoverCandidates(signedUrl), [rootStableUrl, namespacedStableUrl, signedUrl]);
+  assert.deepEqual(getPublishedCoverCandidates(expiringUrl), [namespacedStableUrl, rootStableUrl, expiringUrl]);
   assert.deepEqual(getPublishedCoverCandidates(`http://sns-na-i6.xhscdn.com/notes_pre_post/${key}?old=1`), [
-    `https://sns-na-i6.xhscdn.com/notes_pre_post/${key}?old=1`,
-    stableUrl
+    namespacedStableUrl,
+    rootStableUrl,
+    `https://sns-na-i6.xhscdn.com/notes_pre_post/${key}?old=1`
   ]);
   assert.equal(normalizePublishedCoverUrl('https://images.example.com/cover.jpg'), 'https://images.example.com/cover.jpg');
   assert.equal(normalizePublishedCoverUrl('javascript:alert(1)'), '');
@@ -1423,6 +1445,26 @@ test('published page model exposes 30-day medians, 15-day state and red-card com
   assert.equal(model.medians.impressions, 1000);
   assert.equal(getPublishedUpdateState(record, new Date('2026-07-20T14:30:00+08:00')).active, true);
   assert.equal(buildPublishedMetricRows(record, { ...model.medians, impressions: 2000 })[0].belowMedian, true);
+});
+
+test('published page model keeps the initial DOM small and exposes later batches', () => {
+  const items = Array.from({ length: 25 }, (_, index) => ({
+    type: 'record',
+    record: {
+      id: `record-${index + 1}`,
+      publishedAt: `2026-07-${String(20 - (index % 10)).padStart(2, '0')}T09:00:00+08:00`,
+      latestMetrics: { views: index + 1 }
+    }
+  }));
+  const firstPage = buildPublishedPageModel(items, { now: new Date('2026-07-21T14:30:00+08:00') });
+  assert.equal(firstPage.renderItems.length, PUBLISHED_PAGE_SIZE);
+  assert.equal(firstPage.remainingCount, 15);
+  assert.equal(firstPage.hasMore, true);
+  assert.equal(firstPage.nextLimit, 20);
+
+  const nextPage = buildPublishedPageModel(items, { visibleLimit: 20, now: new Date('2026-07-21T14:30:00+08:00') });
+  assert.equal(nextPage.renderItems.length, 20);
+  assert.equal(nextPage.nextLimit, 25);
 });
 
 test('published card sublabel never exposes internal workflow reasons as word meanings', () => {
@@ -1486,6 +1528,7 @@ test('published page controller routes detail, refresh and render actions', () =
   const controller = createPublishedPageController({
     root,
     onOpenDetail: recordId => calls.push(['detail', recordId]),
+    onLoadMore: () => calls.push(['load-more']),
     onRefresh: recordId => calls.push(['refresh', recordId]),
     onRender: () => calls.push(['render'])
   });
@@ -1499,10 +1542,12 @@ test('published page controller routes detail, refresh and render actions', () =
   };
 
   dispatch({ dataset: { publishedAction: 'open-detail', recordId: 'record-1' } });
+  dispatch({ dataset: { publishedAction: 'load-more' } });
   dispatch({ dataset: { publishedAction: 'refresh', recordId: 'record-1' } });
   dispatch({ dataset: { publishedAction: 'render' } });
   assert.deepEqual(calls, [
     ['detail', 'record-1'],
+    ['load-more'],
     ['refresh', 'record-1'],
     ['render']
   ]);
@@ -1636,7 +1681,7 @@ test('module migration removes inline handlers and the temporary window compatib
   assert.equal(appSource.includes('data-workflow-action="ai-preview-selection"'), false);
   assert.ok(indexSource.includes('id="publishedInsightsSummary"'));
   assert.ok(appSource.includes('buildPublishedMetricRows'));
-  assert.match(appSource, /const publishedMeaning = getPublishedContentSubLabel\(record,/);
+  assert.match(appSource, /const publishedMeaning = resolvePublishedContentSubLabel\(record, word\)/);
   assert.match(appSource, /published-detail-word[\s\S]*publishedMeaning/);
   const publishedCoverSource = appSource.match(/function getPublishedCover\(record\) \{[\s\S]*?\n\}/)?.[0] || '';
   assert.match(publishedCoverSource, /getPublishedCoverCandidates\(record\.coverUrl\)/);

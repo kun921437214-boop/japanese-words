@@ -3,6 +3,8 @@ import {
   getPublishedAgeDays
 } from '../shared/published-import.mjs';
 
+export const PUBLISHED_PAGE_SIZE = 10;
+
 function safeArray(value) {
   return Array.isArray(value) ? value : [];
 }
@@ -36,8 +38,16 @@ export function getPublishedCoverCandidates(value) {
     if (!isXhsImageHost) return [primaryUrl];
     const assetMatch = parsed.pathname.match(/\/([a-z0-9_-]{30,160})(?:![^/]*)?$/i);
     if (!assetMatch) return [primaryUrl];
-    const stableUrl = `https://sns-na-i6.xhscdn.com/notes_pre_post/${assetMatch[1]}?imageView2/2/w/1080/format/jpg&origin=0`;
-    return [...new Set([primaryUrl, stableUrl])];
+    const assetKey = assetMatch[1];
+    const sourceUsesNotesNamespace = parsed.pathname.split('/').includes('notes_pre_post');
+    const stablePaths = sourceUsesNotesNamespace
+      ? [`notes_pre_post/${assetKey}`, assetKey]
+      : [assetKey, `notes_pre_post/${assetKey}`];
+    const stableUrls = stablePaths.map(path => `https://sns-na-i6.xhscdn.com/${path}?imageView2/2/w/1080/format/jpg&origin=0`);
+
+    // Dated sns-webpic URLs expire with a 403. Prefer the namespace-aware
+    // stable CDN URL so every cover does not begin with a failed request.
+    return [...new Set([...stableUrls, primaryUrl])];
   } catch {
     return [];
   }
@@ -220,10 +230,19 @@ export function buildPublishedPageModel(items = [], options = {}) {
   const records = visibleItems.map(item => item.record || item).filter(Boolean);
   const medians = computePublishedThirtyDayMedians(records, now);
   const activeCount = records.filter(record => getPublishedUpdateState(record, now).active).length;
+  const pageSize = Math.max(1, Number.parseInt(options.pageSize, 10) || PUBLISHED_PAGE_SIZE);
+  const visibleLimit = Math.max(pageSize, Number.parseInt(options.visibleLimit, 10) || pageSize);
+  const renderItems = visibleItems.slice(0, visibleLimit);
   return {
     items: visibleItems,
+    renderItems,
     medians,
     count: visibleItems.length,
+    renderedCount: renderItems.length,
+    remainingCount: Math.max(0, visibleItems.length - renderItems.length),
+    hasMore: renderItems.length < visibleItems.length,
+    nextLimit: Math.min(visibleItems.length, renderItems.length + pageSize),
+    pageSize,
     activeCount,
     frozenCount: Math.max(0, visibleItems.length - activeCount),
     isEmpty: visibleItems.length === 0,
@@ -254,6 +273,7 @@ export function createPublishedPageController(options = {}) {
     if (!action) return;
     event.preventDefault?.();
     if (action === 'open-detail') invoke(options.onOpenDetail, actionElement.dataset.recordId || '');
+    else if (action === 'load-more') invoke(options.onLoadMore);
     else if (action === 'refresh') invoke(options.onRefresh, actionElement.dataset.recordId || '');
     else if (action === 'render') invoke(options.onRender);
   }

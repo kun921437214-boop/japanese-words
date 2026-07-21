@@ -426,44 +426,82 @@ function compactSnapshotForApp(snapshot = {}, includeAudit = false) {
 }
 
 export function buildAppWorkflowView(data = {}, options = {}) {
-  const workflow = cleanStoredData(data);
+  const source = data && typeof data === 'object' && !Array.isArray(data) ? data : {};
   const requestedScope = String(options.scope || 'all');
   const scope = APP_VIEW_SCOPES.has(requestedScope) ? requestedScope : 'all';
   const historyDate = /^\d{4}-\d{2}-\d{2}$/.test(String(options.historyDate || ''))
     ? String(options.historyDate)
     : '';
+  const sourceHistorySnapshots = source.historySnapshots && typeof source.historySnapshots === 'object'
+    ? source.historySnapshots
+    : {};
+  const sourceTodaySnapshotHistory = Array.isArray(source.todaySnapshotHistory)
+    ? source.todaySnapshotHistory
+    : [];
   const requestedHistory = historyDate
-    ? (workflow.historySnapshots[historyDate]
-      || workflow.todaySnapshotHistory.find(snapshot => snapshot.dateKey === historyDate)
+    ? (sourceHistorySnapshots[historyDate]
+      || sourceTodaySnapshotHistory.find(snapshot => snapshot?.dateKey === historyDate)
       || {})
     : {};
   const todayWords = historyDate && requestedHistory.words?.length
-    ? requestedHistory.words
-    : workflow.todaySnapshot.words;
+    ? cleanWords(requestedHistory.words)
+    : cleanWords(source.todaySnapshot?.words);
+  const favoriteWords = cleanWords(source.words);
+  const publishedRecords = Array.isArray(source.publishedRecords) ? source.publishedRecords : [];
   const scopeWords = {
     today: todayWords,
-    favorites: workflow.words,
+    favorites: favoriteWords,
     published: cleanWords([
-      ...workflow.publishedRecords.map(record => record.word),
-      ...workflow.words.filter(word => workflow.statuses[word] === 'published')
+      ...publishedRecords.map(record => record?.word),
+      ...favoriteWords.filter(word => source.statuses?.[word] === 'published')
     ])
   };
   const appWords = cleanWords(scope === 'all'
     ? [
-      ...workflow.todaySnapshot.words,
+      ...cleanWords(source.todaySnapshot?.words),
       ...(requestedHistory.words || []),
-      ...workflow.words,
-      ...workflow.publishedRecords.map(record => record.word)
+      ...favoriteWords,
+      ...publishedRecords.map(record => record?.word)
     ]
     : scopeWords[scope]).slice(0, APP_CANDIDATE_LIMIT);
-  const candidatePool = appWords.reduce((result, word) => {
-    if (workflow.candidatePool[word]) {
-      result[word] = {
-        ...workflow.candidatePool[word],
-        aiCardHistory: [],
-        sourceText: ''
-      };
-    }
+  const selectedCandidatePool = appWords.reduce((result, word) => {
+    if (source.candidatePool?.[word]) result[word] = source.candidatePool[word];
+    return result;
+  }, {});
+  const selectedHistorySnapshots = scope === 'all'
+    ? sourceHistorySnapshots
+    : (scope === 'today'
+      ? Object.entries(sourceHistorySnapshots).reduce((result, [dateKey, snapshot]) => {
+        result[dateKey] = compactSnapshotForApp(snapshot, dateKey === historyDate);
+        return result;
+      }, {})
+      : {});
+  if (scope === 'today' && historyDate && requestedHistory.words?.length && !selectedHistorySnapshots[historyDate]) {
+    selectedHistorySnapshots[historyDate] = compactSnapshotForApp(requestedHistory, true);
+  }
+  const selectedTodaySnapshotHistory = scope === 'all'
+    ? sourceTodaySnapshotHistory
+    : (scope === 'today'
+      ? sourceTodaySnapshotHistory.map(snapshot => compactSnapshotForApp(snapshot, snapshot?.dateKey === historyDate))
+      : []);
+
+  // Project the stored workflow before schema cleaning. The production candidate
+  // pool can contain hundreds of full AI cards, while an app view needs at most
+  // the words visible in the current tab. Cleaning the full pool first made the
+  // first request CPU-heavy even though those entries were discarded afterwards.
+  const workflow = cleanStoredData({
+    ...source,
+    candidatePool: selectedCandidatePool,
+    aiBatches: [],
+    historySnapshots: selectedHistorySnapshots,
+    todaySnapshotHistory: selectedTodaySnapshotHistory
+  });
+  const candidatePool = Object.entries(workflow.candidatePool).reduce((result, [word, entry]) => {
+    result[word] = {
+      ...entry,
+      aiCardHistory: [],
+      sourceText: ''
+    };
     return result;
   }, {});
   const historySnapshots = scope === 'all'
@@ -474,9 +512,6 @@ export function buildAppWorkflowView(data = {}, options = {}) {
         return result;
       }, {})
       : {});
-  if (scope === 'today' && historyDate && requestedHistory.words?.length && !historySnapshots[historyDate]) {
-    historySnapshots[historyDate] = compactSnapshotForApp(requestedHistory, true);
-  }
   const todaySnapshotHistory = scope === 'all'
     ? workflow.todaySnapshotHistory
     : (scope === 'today'

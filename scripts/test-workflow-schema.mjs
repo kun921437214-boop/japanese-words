@@ -97,7 +97,8 @@ test('移动端本地缓存超额不会把成功的云端同步误判为失败',
 test('首屏先渲染本地缓存并并行刷新非依赖数据源', () => {
   const appSource = fs.readFileSync(new URL('../app.js', import.meta.url), 'utf8');
   assert.ok(appSource.includes("loadLocalWorkflow({ deferLibraryAudit: true })"));
-  assert.ok(appSource.includes('const [libraryReviewLoaded, rankingsLoaded, cloudLoaded] = await Promise.all(['));
+  assert.ok(appSource.includes('const [rankingsLoaded, cloudLoaded] = await Promise.all(['));
+  assert.ok(appSource.includes('void scheduleLibraryReviewHydration();'));
   assert.ok(appSource.includes("apiFetch('data/library-review.json', { cache: 'default' }"));
   assert.ok(appSource.includes('const [synced, workflowSynced] = await Promise.all(['));
   assert.equal(appSource.includes('void loadCodexTomorrowDraftStatus();'), false);
@@ -193,6 +194,18 @@ test('app 工作流只返回页面所需候选且不改变云端完整候选池'
   assert.deepEqual(favoritesScope.todaySnapshotHistory, []);
   const publishedScope = buildAppWorkflowView(fullWorkflow, { scope: 'published' });
   assert.deepEqual(Object.keys(publishedScope.candidatePool), ['发布词']);
+  const unrelatedCandidatePool = { ...candidatePool };
+  Object.defineProperty(unrelatedCandidatePool, '大型无关词', {
+    enumerable: true,
+    get() {
+      throw new Error('今日视图不应清洗无关候选');
+    }
+  });
+  const projectedTodayScope = buildAppWorkflowView({
+    ...fullWorkflow,
+    candidatePool: unrelatedCandidatePool
+  }, { scope: 'today' });
+  assert.deepEqual(Object.keys(projectedTodayScope.candidatePool), ['今日词']);
   const savedFromCompactCandidate = applyFavoriteAction(fullWorkflow, {
     action: 'status',
     word: '今日词',
@@ -225,6 +238,8 @@ test('前端按页面加载候选并在收藏数据到齐前禁止渲染', () =>
   assert.ok(storeSource.includes('const mergePartialState = Boolean(config.mergeCandidatePool || data.appView?.partialCandidatePool);'));
   assert.ok(storeSource.includes('? mergeHistorySnapshots(currentState.historySnapshots, data.historySnapshots)'));
   assert.ok(appSource.includes('applyWorkflowData(prepared.state);'));
+  assert.ok(appSource.includes('scheduleWorkflowCacheWrite(prepared.data.updated || lastCloudSyncAt);'));
+  assert.ok(appSource.includes('void scheduleLibraryReviewHydration();'));
 });
 
 test('收藏命令只返回小响应且状态操作可补回缺失收藏', () => {
@@ -362,15 +377,22 @@ test('Codex 参考图在列表卡和详情卡中完整展示', () => {
   assert.ok(styleSource.includes('aspect-ratio:3 / 4;'));
 });
 
-test('scheduled Worker 分离日更和 aiCard 批量 cron', () => {
+test('Tencent runtime owns scheduled jobs while Cloudflare rollback cron stays disabled', () => {
   const workerConfig = fs.readFileSync(new URL('../wrangler.worker.toml', import.meta.url), 'utf8');
   const workerSource = fs.readFileSync(new URL('../worker/favorites-worker.js', import.meta.url), 'utf8');
+  const tencentSource = fs.readFileSync(new URL('../server/tencent-runtime.mjs', import.meta.url), 'utf8');
 
-  assert.ok(workerConfig.includes('"0 16 * * *"'));
-  assert.ok(workerConfig.includes('"30 6 * * *"'));
-  assert.ok(workerConfig.includes('"5,25,45 * * * *"'));
-  assert.ok(workerConfig.includes('"10,20,30,40,50 16 * * *"'));
-  assert.ok(workerConfig.includes('"0 17 * * *"'));
+  assert.ok(workerConfig.includes('crons = []'));
+  assert.equal(workerConfig.includes('"0 16 * * *"'), false);
+  assert.equal(workerConfig.includes('"30 6 * * *"'), false);
+  assert.equal(workerConfig.includes('"5,25,45 * * * *"'), false);
+  assert.equal(workerConfig.includes('"10,20,30,40,50 16 * * *"'), false);
+  assert.equal(workerConfig.includes('"0 17 * * *"'), false);
+  assert.ok(tencentSource.includes("'0 16 * * *'"));
+  assert.ok(tencentSource.includes("'30 6 * * *'"));
+  assert.ok(tencentSource.includes("'5,25,45 * * * *'"));
+  assert.ok(tencentSource.includes("'10,20,30,40,50 16 * * *'"));
+  assert.ok(tencentSource.includes("'0 17 * * *'"));
   assert.ok(workerSource.includes("const DAILY_REFRESH_CRON = '0 16 * * *';"));
   assert.ok(workerSource.includes("const PUBLISHED_REFRESH_CRON = '30 6 * * *';"));
   assert.ok(workerSource.includes("const CODEX_LATE_PROMOTION_CRON = '5,25,45 * * * *';"));
