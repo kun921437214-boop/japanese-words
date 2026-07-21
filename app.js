@@ -8450,6 +8450,14 @@ function ensureWorkflowScopeLoaded(scope, options = {}) {
   }));
 }
 
+function releaseExpandedPublishedView() {
+  if (!publishedPageModelCache || publishedPageModelCache.renderedCount <= PUBLISHED_PAGE_SIZE) return;
+  publishedRenderLimit = PUBLISHED_PAGE_SIZE;
+  publishedPageModelCache = null;
+  const publishedGrid = document.getElementById('publishedGrid');
+  if (publishedGrid) publishedGrid.innerHTML = '';
+}
+
 function switchTab(tab) {
   const normalizedTab = tab === 'history' ? 'today' : tab;
   const targetTab = ['today', 'favorites', 'published'].includes(normalizedTab) ? normalizedTab : 'today';
@@ -8463,6 +8471,7 @@ function switchTab(tab) {
   document.body.dataset.activeTab = targetTab;
   document.querySelectorAll('.nav-item').forEach(element => element.classList.toggle('active', element.dataset.tab === targetTab));
   document.querySelectorAll('.page').forEach(element => element.classList.toggle('active', element.id === `page-${targetTab}`));
+  if (previousTab === 'published' && targetTab !== 'published') releaseExpandedPublishedView();
   localStorage.setItem(ACTIVE_TAB_STORAGE_KEY, targetTab);
   const historyDate = getWorkflowScopeHistoryDate(targetTab);
   if (!isWorkflowScopeLoaded(targetTab, historyDate)) {

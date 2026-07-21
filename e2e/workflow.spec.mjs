@@ -367,5 +367,13 @@ test('favorites and published pages progressively render cards and open responsi
   await expect(page.locator('#modalOverlay')).toHaveClass(/open/);
   await expect(page.locator('.published-detail-shell')).toBeVisible();
   await expect(page.locator('#modalContainer')).toContainText('这是只读帖子正文');
+  await page.locator('#modalContainer [data-modal-action="close"]').first().click();
+  await expect(page.locator('#modalOverlay')).not.toHaveClass(/open/);
+  await openMobileMenu();
+  await page.locator('[data-app-shell-action="switch-tab"][data-tab="today"]').click();
+  await openMobileMenu();
+  await page.locator('[data-app-shell-action="switch-tab"][data-tab="published"]').click();
+  await expect(page.locator('#publishedGrid .published-card')).toHaveCount(10);
+  await expect(page.locator('[data-progressive-list="published"]')).toContainText('已显示 10 / 25');
   expect(controls.pageErrors).toEqual([]);
 });
