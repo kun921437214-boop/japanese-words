@@ -7,6 +7,7 @@ import {
 } from '../shared/rankings.mjs';
 import { isStoredDailyWordCount } from '../shared/daily-config.mjs';
 import { refreshPublishedRecords } from '../shared/published-refresh.mjs';
+import { persistPublishedRecordCovers } from '../functions/published-cover.js';
 import {
   cleanPublishedRecords as cleanWorkflowPublishedRecords,
   cleanStoredWorkflow,
@@ -439,8 +440,13 @@ async function refreshWorkflowPublishedData(env, key, data, options = {}) {
     fetchImpl: fetch,
     now: new Date()
   });
+  const persistedCovers = await persistPublishedRecordCovers(result.records, env, {
+    recordId: options.recordId || '',
+    fetchImpl: fetch,
+    nowIso: new Date().toISOString()
+  });
   const nextData = mergeWorkflow(data, {
-    publishedRecords: cleanWorkflowPublishedRecords(result.records),
+    publishedRecords: cleanWorkflowPublishedRecords(persistedCovers.records),
     updated: new Date().toISOString()
   });
   const mutation = await commitWorkflowMutation(env, key, nextData, options.mutationMetadata || {
@@ -454,6 +460,7 @@ async function refreshWorkflowPublishedData(env, key, data, options = {}) {
   return {
     data: mutation.workflow,
     summary: result.summary,
+    coverSummary: persistedCovers.summary,
     mutation
   };
 }

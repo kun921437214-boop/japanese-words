@@ -6,7 +6,11 @@ import {
   inferPublishedSelectionSource,
   normalizePublishedImportRow
 } from '../shared/published-import.mjs';
-import { cleanPublishedRecord } from '../shared/workflow-schema.mjs';
+import { cleanPublishedRecord, mergeWorkflow } from '../shared/workflow-schema.mjs';
+import {
+  onRequest as getPublishedCover,
+  persistPublishedRecordCovers
+} from '../functions/published-cover.js';
 import {
   buildPublishedMetricRows,
   buildPublishedPageModel,
@@ -112,6 +116,84 @@ test('同一批次可幂等重放，内容只保存一次，超过 15 天的数�
   assert.equal(active.metricSnapshots.length, 2);
   assert.equal(frozen.latestMetrics.views, 9000);
   assert.equal(frozen.metricSnapshots.length, 1);
+});
+
+test('已发布封面首次同步到本站后永久复用，不再重新下载或覆盖', async () => {
+  const stored = new Map();
+  const imageKv = {
+    async getWithMetadata(key) {
+      return stored.get(key) || null;
+    },
+    async put(key, value, options = {}) {
+      stored.set(key, { value, metadata: options.metadata || null });
+    }
+  };
+  let fetchCount = 0;
+  const fetchImpl = async () => {
+    fetchCount += 1;
+    return new Response(new Uint8Array([255, 216, 255, 217]), {
+      status: 200,
+      headers: { 'Content-Type': 'image/jpeg', 'Content-Length': '4' }
+    });
+  };
+  const sourceRecord = cleanPublishedRecord({
+    id: 'published-cover-once',
+    word: '尊い',
+    description: '首次获取的正文',
+    coverUrl: `https://sns-webpic-qc.xhscdn.com/${'a'.repeat(40)}`,
+    contentLocked: true,
+    contentImportedAt: '2026-07-20T06:30:00.000Z'
+  });
+  const first = await persistPublishedRecordCovers([sourceRecord], { REFERENCE_IMAGES_KV: imageKv }, {
+    fetchImpl,
+    nowIso: '2026-07-20T06:31:00.000Z'
+  });
+  assert.equal(first.summary.storedCount, 1);
+  assert.equal(fetchCount, 1);
+  assert.match(first.records[0].coverUrl, /^\/published-cover\?key=/);
+  assert.match(first.records[0].coverStorageKey, /^published-covers\/v1\/[a-f0-9]{32}$/);
+  assert.equal(first.records[0].coverStoredAt, '2026-07-20T06:31:00.000Z');
+
+  const second = await persistPublishedRecordCovers(first.records, { REFERENCE_IMAGES_KV: imageKv }, {
+    fetchImpl: async () => {
+      throw new Error('冻结后的封面不应再次下载');
+    },
+    nowIso: '2026-07-21T06:30:00.000Z'
+  });
+  assert.equal(second.summary.reusedCount, 1);
+  assert.equal(second.records[0].coverStorageKey, first.records[0].coverStorageKey);
+  assert.equal(second.records[0].coverStoredAt, first.records[0].coverStoredAt);
+
+  const response = await getPublishedCover({
+    request: new Request(`https://bijinihaitan.cn${first.records[0].coverUrl}`),
+    env: { REFERENCE_IMAGES_KV: imageKv }
+  });
+  assert.equal(response.status, 200);
+  assert.equal(response.headers.get('Content-Type'), 'image/jpeg');
+  assert.equal((await response.arrayBuffer()).byteLength, 4);
+
+  const merged = mergeWorkflow({ publishedRecords: [sourceRecord] }, { publishedRecords: second.records });
+  assert.equal(merged.publishedRecords[0].coverStorageKey, first.records[0].coverStorageKey);
+  assert.equal(merged.publishedRecords[0].coverUrl, first.records[0].coverUrl);
+});
+
+test('未锁定内容和非小红书外链不会触发封面下载', async () => {
+  let fetchCount = 0;
+  const imageKv = {
+    async getWithMetadata() { return null; },
+    async put() {}
+  };
+  const result = await persistPublishedRecordCovers([
+    cleanPublishedRecord({ id: 'pending', coverUrl: `https://sns-webpic-qc.xhscdn.com/${'b'.repeat(40)}` }),
+    cleanPublishedRecord({ id: 'external', coverUrl: 'https://example.com/cover.jpg', contentLocked: true })
+  ], { REFERENCE_IMAGES_KV: imageKv }, {
+    fetchImpl: async () => {
+      fetchCount += 1;
+      throw new Error('不应下载');
+    }
+  });
+  assert.equal(fetchCount, 0);
+  assert.equal(result.summary.skippedCount, 2);
 });
 
 test('近 30 天中位数与卡片红底判断使用曝光、观看、点击率和评论等独立指标', () => {

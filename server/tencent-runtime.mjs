@@ -10,19 +10,13 @@ import { onRequest as dailyRefresh } from '../functions/daily-refresh.js';
 import { onRequest as favorites } from '../functions/favorites.js';
 import { onRequest as healthz } from '../functions/healthz.js';
 import { onRequest as publishedImport } from '../functions/published-import.js';
+import { onRequest as publishedCover } from '../functions/published-cover.js';
 import { onRequest as publishedRefresh } from '../functions/published-refresh.js';
 import { onRequest as rankings } from '../functions/rankings.js';
 import { onRequest as todaySnapshot } from '../functions/today-snapshot.js';
 import scheduledWorker from '../worker/favorites-worker.js';
 import { FileKV } from './file-kv.mjs';
 import { LocalWorkflowCoordinator } from './local-coordinator.mjs';
-
-let publishedCover;
-try {
-  ({ onRequest: publishedCover } = await import('../functions/published-cover.js'));
-} catch (error) {
-  if (error?.code !== 'ERR_MODULE_NOT_FOUND') throw error;
-}
 
 const ROUTES = new Map([
   ['/ai-candidates', aiCandidates],
@@ -32,7 +26,7 @@ const ROUTES = new Map([
   ['/daily-refresh', dailyRefresh],
   ['/favorites', favorites],
   ['/healthz', healthz],
-  ...(publishedCover ? [['/published-cover', publishedCover]] : []),
+  ['/published-cover', publishedCover],
   ['/published-import', publishedImport],
   ['/published-refresh', publishedRefresh],
   ['/rankings', rankings],

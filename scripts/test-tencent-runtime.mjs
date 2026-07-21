@@ -73,6 +73,15 @@ test('Tencent runtime dispatches existing API handlers', async () => {
   const missing = await handleWebRequest(new Request('https://bijinihaitan.cn/unknown'), env);
   assert.equal(missing.status, 404);
   await missing.arrayBuffer();
+
+  const coverKey = `published-covers/v1/${'a'.repeat(32)}`;
+  await env.REFERENCE_IMAGES_KV.put(coverKey, new Uint8Array([1, 2, 3]), {
+    metadata: { contentType: 'image/webp' }
+  });
+  const cover = await handleWebRequest(new Request(`https://bijinihaitan.cn/published-cover?key=${coverKey}`), env);
+  assert.equal(cover.status, 200);
+  assert.equal(cover.headers.get('Content-Type'), 'image/webp');
+  assert.equal((await cover.arrayBuffer()).byteLength, 3);
 });
 
 test('Tencent runtime exposes waitUntil so long Pages jobs return before background completion', async () => {

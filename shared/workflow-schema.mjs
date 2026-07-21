@@ -254,6 +254,10 @@ export function cleanPublishedRecord(record = {}, index = 0) {
     title: cleanText(record?.title, 200),
     description: cleanText(record?.description, 12000),
     coverUrl: cleanText(record?.coverUrl, 1000),
+    coverStorageKey: /^published-covers\/v1\/[a-f0-9]{32}$/.test(String(record?.coverStorageKey || '').trim())
+      ? String(record.coverStorageKey).trim()
+      : '',
+    coverStoredAt: isIsoLike(record?.coverStoredAt) ? record.coverStoredAt : '',
     contentType: cleanEnum(record?.contentType, CONTENT_TYPE_OPTIONS, '图文'),
     contentCategory,
     authorName: cleanText(record?.authorName, 120),
@@ -1024,6 +1028,10 @@ function mergePublishedRecord(localRecord = {}, remoteRecord = {}) {
     .filter(record => record.contentLocked)
     .sort((left, right) => cleanText(left.contentImportedAt, 80).localeCompare(cleanText(right.contentImportedAt, 80)));
   const contentWinner = lockedCandidates[0] || winner;
+  const storedCoverCandidates = [local, remote]
+    .filter(record => record.coverStorageKey)
+    .sort((left, right) => cleanText(left.coverStoredAt, 80).localeCompare(cleanText(right.coverStoredAt, 80)));
+  const coverWinner = storedCoverCandidates[0] || contentWinner;
   const metricSource = cleanText(remote.lastMetricsImportedAt, 80) >= cleanText(local.lastMetricsImportedAt, 80) ? remote : local;
   return cleanPublishedRecord({
     ...fallback,
@@ -1035,7 +1043,9 @@ function mergePublishedRecord(localRecord = {}, remoteRecord = {}) {
     link: nonEmptyText(winner.link, fallback.link, 1000),
     title: contentWinner.title || nonEmptyText(winner.title, fallback.title, 200),
     description: contentWinner.description || nonEmptyText(winner.description, fallback.description, 12000),
-    coverUrl: contentWinner.coverUrl || nonEmptyText(winner.coverUrl, fallback.coverUrl, 1000),
+    coverUrl: coverWinner.coverUrl || contentWinner.coverUrl || nonEmptyText(winner.coverUrl, fallback.coverUrl, 1000),
+    coverStorageKey: coverWinner.coverStorageKey,
+    coverStoredAt: coverWinner.coverStoredAt,
     authorName: nonEmptyText(winner.authorName, fallback.authorName, 120),
     publishedAt: winner.publishedAt || fallback.publishedAt,
     contentStatus: contentWinner.contentStatus,
