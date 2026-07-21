@@ -3,6 +3,8 @@ import {
   getPublishedAgeDays
 } from '../shared/published-import.mjs';
 
+export const PUBLISHED_PAGE_SIZE = 10;
+
 function safeArray(value) {
   return Array.isArray(value) ? value : [];
 }
@@ -220,10 +222,19 @@ export function buildPublishedPageModel(items = [], options = {}) {
   const records = visibleItems.map(item => item.record || item).filter(Boolean);
   const medians = computePublishedThirtyDayMedians(records, now);
   const activeCount = records.filter(record => getPublishedUpdateState(record, now).active).length;
+  const pageSize = Math.max(1, Number.parseInt(options.pageSize, 10) || PUBLISHED_PAGE_SIZE);
+  const visibleLimit = Math.max(pageSize, Number.parseInt(options.visibleLimit, 10) || pageSize);
+  const renderItems = visibleItems.slice(0, visibleLimit);
   return {
     items: visibleItems,
+    renderItems,
     medians,
     count: visibleItems.length,
+    renderedCount: renderItems.length,
+    remainingCount: Math.max(0, visibleItems.length - renderItems.length),
+    hasMore: renderItems.length < visibleItems.length,
+    nextLimit: Math.min(visibleItems.length, renderItems.length + pageSize),
+    pageSize,
     activeCount,
     frozenCount: Math.max(0, visibleItems.length - activeCount),
     isEmpty: visibleItems.length === 0,
@@ -254,6 +265,7 @@ export function createPublishedPageController(options = {}) {
     if (!action) return;
     event.preventDefault?.();
     if (action === 'open-detail') invoke(options.onOpenDetail, actionElement.dataset.recordId || '');
+    else if (action === 'load-more') invoke(options.onLoadMore);
     else if (action === 'refresh') invoke(options.onRefresh, actionElement.dataset.recordId || '');
     else if (action === 'render') invoke(options.onRender);
   }

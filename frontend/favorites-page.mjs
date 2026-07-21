@@ -1,5 +1,6 @@
 const FAVORITE_STATUSES = ['none', 'pending', 'published'];
 const FAVORITE_STATUS_FILTERS = ['all', 'none', 'pending'];
+export const FAVORITES_PAGE_SIZE = 12;
 
 function uniqueWords(words = []) {
   const seen = new Set();
@@ -35,17 +36,28 @@ export function buildFavoritesPageModel(options = {}) {
     : sourceFilteredWords.filter(word => normalizeFavoriteStatus(getStatus(word)) === statusFilter);
   const total = allWords.length;
   const visible = visibleWords.length;
+  const pageSize = Math.max(1, Number.parseInt(options.pageSize, 10) || FAVORITES_PAGE_SIZE);
+  const visibleLimit = Math.max(pageSize, Number.parseInt(options.visibleLimit, 10) || pageSize);
+  const renderedWords = visibleWords.slice(0, visibleLimit);
+  const rendered = renderedWords.length;
 
   return {
     allWords,
     visibleWords,
+    renderedWords,
     total,
     visible,
+    rendered,
+    remaining: Math.max(0, visible - rendered),
+    hasMore: rendered < visible,
+    nextLimit: Math.min(visible, rendered + pageSize),
+    pageSize,
     isEmpty: visible === 0,
     countText: visible === 0
       ? (total ? '当前筛选条件下没有词' : '保存你感兴趣、准备发布和已进入工作流的词')
       : (visible === total ? `当前选题池 ${visible} 个词` : `筛选显示 ${visible} / ${total} 个词`),
-    autoGenerateWords: visibleWords.map(word => word?.kanji).filter(Boolean)
+    autoGenerateWords: visibleWords.map(word => word?.kanji).filter(Boolean),
+    renderedAutoGenerateWords: renderedWords.map(word => word?.kanji).filter(Boolean)
   };
 }
 
@@ -132,6 +144,7 @@ export function createFavoritesPageController(options = {}) {
     event.preventDefault?.();
 
     if (action === 'open-detail') invoke(options.onOpenDetail, actionElement.dataset.wordId || actionElement.dataset.kanji || '');
+    else if (action === 'load-more') invoke(options.onLoadMore);
     else if (action === 'toggle-favorite') invoke(options.onToggleFavorite, actionElement.dataset.kanji || '', parseForceState(actionElement.dataset.forceState));
     else if (action === 'toggle-status') invoke(options.onToggleStatus, actionElement.dataset.kanji || '');
     else if (action === 'select-status') invoke(options.onSelectStatus, actionElement.dataset.kanji || '', actionElement.dataset.status || 'none');

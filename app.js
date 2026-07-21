@@ -27,6 +27,7 @@ import {
   normalizeDailyHotDateSelection
 } from './frontend/daily-hot-page.mjs';
 import {
+  FAVORITES_PAGE_SIZE,
   buildFavoritesPageModel,
   createFavoritesPageController,
   normalizeFavoriteStatus,
@@ -41,6 +42,7 @@ import { createImageFallbackController } from './frontend/image-fallback.mjs';
 import { createManualWordModalController } from './frontend/manual-word-modal.mjs';
 import { createModalActionsController } from './frontend/modal-actions.mjs';
 import {
+  PUBLISHED_PAGE_SIZE,
   buildPublishedMetricRows,
   buildPublishedPageModel,
   createPublishedPageController,
@@ -120,6 +122,10 @@ let currentWordForModal = null;
 let currentPublishedRecordId = null;
 let activeStatusMenuKanji = null;
 let activeFeedbackMenuKanji = null;
+let modalRenderVersion = 0;
+let favoriteRenderLimit = FAVORITES_PAGE_SIZE;
+let publishedRenderLimit = PUBLISHED_PAGE_SIZE;
+let publishedPageModelCache = null;
 let lastCloudSyncAt = '';
 let lastLocalCacheAt = '';
 let cloudWorkflowFailed = false;
@@ -5543,12 +5549,14 @@ function setSourceFilter(tab, value) {
     renderHistory();
     return;
   }
+  if (tab === 'favorites') favoriteRenderLimit = FAVORITES_PAGE_SIZE;
   refreshCurrentGrid();
 }
 
 function setStatusFilter(value) {
   statusFilter = cleanStatusFilter(value);
   localStorage.setItem(STATUS_FILTER_STORAGE_KEY, statusFilter);
+  favoriteRenderLimit = FAVORITES_PAGE_SIZE;
   renderFavorites();
 }
 
@@ -7125,7 +7133,7 @@ function renderFavoriteCard(word) {
   return `
     <div class="word-card workflow-card" data-favorites-action="open-detail" data-word-id="${escapeHTML(word.id || word.kanji)}">
       <div class="card-image-wrapper">
-        <img class="card-image" src="${escapeHTML(word.imageUrl)}" alt="${escapeHTML(word.kanji)}" loading="lazy" data-image-fallback="fallback-src" data-fallback-src="${escapeHTML(fallbackSvg)}">
+        <img class="card-image" src="${escapeHTML(word.imageUrl)}" alt="${escapeHTML(word.kanji)}" loading="lazy" decoding="async" data-image-fallback="fallback-src" data-fallback-src="${escapeHTML(fallbackSvg)}">
         <div class="card-image-overlay"></div>
         <div class="card-word-overlay">
           <div class="card-kanji">${escapeHTML(word.kanji)}</div>
@@ -7192,9 +7200,31 @@ function renderHistoryGrid(words) {
   grid.innerHTML = words.length ? words.map(renderTodayCard).join('') : '<div class="empty-state inline-empty"><div class="empty-title">这一天暂无历史推荐</div><div class="empty-desc">可以切换到别的日期看看，或者等云端榜单同步完成。</div></div>';
 }
 
-function renderFavoritesGrid(words) {
+function renderProgressiveListFooter(options = {}) {
+  const total = Math.max(0, Number(options.total) || 0);
+  const rendered = Math.min(total, Math.max(0, Number(options.rendered) || 0));
+  const remaining = Math.max(0, total - rendered);
+  if (!remaining) return '';
+  const step = Math.min(remaining, Math.max(1, Number(options.pageSize) || remaining));
+  return `
+    <div class="progressive-list-footer" data-progressive-list="${escapeHTML(options.scope || '')}">
+      <span>已显示 ${rendered} / ${total}</span>
+      <button class="btn btn-ghost" ${options.actionAttribute || ''}>继续查看 ${step} ${escapeHTML(options.unit || '条')}</button>
+    </div>`;
+}
+
+function renderFavoritesGrid(words, pageModel = {}) {
   const grid = document.getElementById('favGrid');
-  grid.innerHTML = words.length ? words.map(renderFavoriteCard).join('') : '';
+  grid.innerHTML = words.length
+    ? `${words.map(renderFavoriteCard).join('')}${renderProgressiveListFooter({
+        scope: 'favorites',
+        total: pageModel.visible,
+        rendered: pageModel.rendered,
+        pageSize: pageModel.pageSize,
+        unit: '个词',
+        actionAttribute: 'data-favorites-action="load-more"'
+      })}`
+    : '';
 }
 
 function formatPublishedNumber(value) {
@@ -7243,6 +7273,25 @@ function getPublishedContentLabel(record = {}, word = {}) {
   return word.kanji || record.word || (record.contentLocked ? '主词待确认' : '等待内容');
 }
 
+function resolvePublishedContentSubLabel(record = {}, word = {}) {
+  const fallbackLabels = new Set([
+    '释义待补充',
+    '正文已获取，主词待确认',
+    '等待从「笔记管理」点封面读取详情'
+  ]);
+  const meanings = [
+    candidatePool[record.word]?.meaning,
+    getWordByKanji(record.word)?.meaning,
+    getDisplayWordByKanji(record.word)?.meaning,
+    word?.meaning
+  ];
+  for (const meaning of meanings) {
+    const label = getPublishedContentSubLabel(record, { meaning });
+    if (label && !fallbackLabels.has(label)) return label;
+  }
+  return getPublishedContentSubLabel(record, { meaning: '' });
+}
+
 function renderPublishedMedianSummary(medians = {}) {
   const root = document.getElementById('publishedInsightsSummary');
   if (!root) return;
@@ -7288,7 +7337,7 @@ function renderPublishedCard(item, medians) {
   return `
     <article class="published-card" data-published-action="open-detail" data-record-id="${safeRecordId}" tabindex="0" aria-label="查看 ${escapeHTML(record.title || record.word || '已发布内容')} 的详情">
       <div class="published-cover">
-        <img src="${escapeHTML(coverSrc)}" alt="${escapeHTML(record.title || record.word || '笔记封面')}" loading="lazy" referrerpolicy="no-referrer" data-cover-source="published-record" data-image-fallback="fallback-list" data-fallback-list="${escapeHTML(JSON.stringify(coverFallbacks))}" />
+        <img src="${escapeHTML(coverSrc)}" alt="${escapeHTML(record.title || record.word || '笔记封面')}" loading="lazy" decoding="async" referrerpolicy="no-referrer" data-cover-source="published-record" data-image-fallback="fallback-list" data-fallback-list="${escapeHTML(JSON.stringify(coverFallbacks))}" />
         <div class="published-cover-overlay">
           <span class="published-source source-${sourceType}">${escapeHTML(getPublishedSourceLabel(record))}</span>
           <span class="published-type">${escapeHTML(record.contentType || '图文')}</span>
@@ -7302,9 +7351,7 @@ function renderPublishedCard(item, medians) {
           </div>
           <time>${formatPublishedDate(record.publishedAt)}</time>
         </div>
-        <div class="published-sub">${escapeHTML(getPublishedContentSubLabel(record, {
-          meaning: candidatePool[record.word]?.meaning || getWordByKanji(record.word)?.meaning || ''
-        }))}</div>
+        <div class="published-sub">${escapeHTML(resolvePublishedContentSubLabel(record, word))}</div>
         <div class="published-metric-grid">
           ${metricRows.map(metric => `
             <div class="published-metric ${metric.belowMedian ? 'is-below-median' : ''}">
@@ -7327,8 +7374,12 @@ function renderPublished() {
     renderWorkflowScopeState('published');
     return;
   }
-  const pageModel = buildPublishedPageModel(getPublishedDisplayItems());
-  const items = pageModel.items;
+  const pageModel = buildPublishedPageModel(getPublishedDisplayItems(), {
+    visibleLimit: publishedRenderLimit,
+    pageSize: PUBLISHED_PAGE_SIZE
+  });
+  publishedPageModelCache = pageModel;
+  const items = pageModel.renderItems;
   const grid = document.getElementById('publishedGrid');
   const empty = document.getElementById('publishedEmpty');
   const count = document.getElementById('publishedCount');
@@ -7339,10 +7390,23 @@ function renderPublished() {
     count.textContent = pageModel.countText;
   } else {
     empty.style.display = 'none';
-    grid.innerHTML = items.map(item => renderPublishedCard(item, pageModel.medians)).join('');
+    grid.innerHTML = `${items.map(item => renderPublishedCard(item, pageModel.medians)).join('')}${renderProgressiveListFooter({
+      scope: 'published',
+      total: pageModel.count,
+      rendered: pageModel.renderedCount,
+      pageSize: pageModel.pageSize,
+      unit: '篇',
+      actionAttribute: 'data-published-action="load-more"'
+    })}`;
     count.textContent = pageModel.countText;
   }
   updatePublishedBadge();
+}
+
+function loadMorePublished() {
+  if (!publishedPageModelCache?.hasMore) return;
+  publishedRenderLimit = publishedPageModelCache.nextLimit;
+  renderPublished();
 }
 
 async function refreshPublishedPageFromCloud() {
@@ -7763,21 +7827,42 @@ function renderFavorites() {
   populateSourceFilter('favorites', allFavWords);
   const statusSelect = document.getElementById('favoritesStatusFilter');
   if (statusSelect) statusSelect.value = statusFilter;
-  const pageModel = getFavoritesPageModel(allFavWords);
+  const pageModel = buildFavoritesPageModel({
+    words: allFavWords,
+    sourceFilter: sourceFilters.favorites,
+    statusFilter,
+    getStatus: word => getFavoriteStatus(word.kanji),
+    visibleLimit: favoriteRenderLimit,
+    pageSize: FAVORITES_PAGE_SIZE
+  });
   const visibleWords = pageModel.visibleWords;
   const empty = document.getElementById('favEmpty');
   const count = document.getElementById('favCount');
   if (!visibleWords.length) {
-    renderFavoritesGrid([]);
+    renderFavoritesGrid([], pageModel);
     empty.style.display = 'flex';
     count.textContent = pageModel.countText;
   } else {
     empty.style.display = 'none';
-    renderFavoritesGrid(visibleWords);
+    renderFavoritesGrid(pageModel.renderedWords, pageModel);
     count.textContent = pageModel.countText;
-    void queueAutoGenerateAiCards(pageModel.autoGenerateWords, { source: 'favorites-visible', toast: false });
+    void queueAutoGenerateAiCards(pageModel.renderedAutoGenerateWords, { source: 'favorites-visible', toast: false });
   }
   updateFavBadge();
+}
+
+function loadMoreFavorites() {
+  const pageModel = buildFavoritesPageModel({
+    words: getFavoriteWords(),
+    sourceFilter: sourceFilters.favorites,
+    statusFilter,
+    getStatus: word => getFavoriteStatus(word.kanji),
+    visibleLimit: favoriteRenderLimit,
+    pageSize: FAVORITES_PAGE_SIZE
+  });
+  if (!pageModel.hasMore) return;
+  favoriteRenderLimit = pageModel.nextLimit;
+  renderFavorites();
 }
 
 function updateTodayBadge() {
@@ -7888,10 +7973,50 @@ function renderWordDetailHero(word, wordCardView, fallbackHero) {
     </div>`;
 }
 
+function scheduleModalRender(callback) {
+  const scheduleFrame = window.requestAnimationFrame || (handler => window.setTimeout(handler, 0));
+  scheduleFrame(() => window.setTimeout(callback, 0));
+}
+
+function showModalLoadingShell(options = {}) {
+  const container = document.getElementById('modalContainer');
+  if (!container) return;
+  container.innerHTML = `
+    <div class="modal-shell record-shell modal-loading-shell" aria-busy="true">
+      <div class="modal-header settings-header">
+        <div>
+          <span class="published-eyebrow">${escapeHTML(options.eyebrow || '正在打开')}</span>
+          <h2 class="modal-title">${escapeHTML(options.title || '内容详情')}</h2>
+        </div>
+        <button class="modal-close" data-modal-action="close" aria-label="关闭">×</button>
+      </div>
+      <div class="modal-loading-state">
+        <span class="modal-loading-dot" aria-hidden="true"></span>
+        <div><strong>${escapeHTML(options.message || '详情已打开')}</strong><p>正在整理完整内容和图片…</p></div>
+      </div>
+    </div>`;
+  document.getElementById('modalOverlay')?.classList.add('open');
+  document.body.style.overflow = 'hidden';
+}
+
 function openDetail(idOrKanji) {
   const word = findWord(idOrKanji);
   if (!word) return;
   currentWordForModal = word;
+  currentPublishedRecordId = null;
+  const renderVersion = ++modalRenderVersion;
+  showModalLoadingShell({
+    eyebrow: '日语词卡',
+    title: word.kanji,
+    message: '词卡已打开'
+  });
+  scheduleModalRender(() => {
+    if (renderVersion !== modalRenderVersion || currentWordForModal?.kanji !== word.kanji) return;
+    renderWordDetail(word);
+  });
+}
+
+function renderWordDetail(word) {
   const status = getFavoriteStatus(word.kanji);
   const fallbackHero = `data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 900 400%22><rect fill=%22%23fdeef0%22 width=%22900%22 height=%22400%22/><text x=%22450%22 y=%22210%22 text-anchor=%22middle%22 font-size=%22110%22 fill=%22%23f47a9a%22>${encodeURIComponent(word.kanji)}</text></svg>`;
   const safeKanjiAction = escapeHTML(word.kanji);
@@ -8110,16 +8235,36 @@ function openLibraryCleanupModal() {
 }
 
 function openPublishedDetail(recordId) {
-  const record = cleanPublishedRecords(publishedRecords).find(item => item.id === recordId);
-  if (!record) return;
-  currentPublishedRecordId = record.id;
+  const rawRecord = safeArray(publishedRecords).find(item => item?.id === recordId);
+  if (!rawRecord) return;
+  currentPublishedRecordId = recordId;
+  currentWordForModal = null;
+  const renderVersion = ++modalRenderVersion;
+  showModalLoadingShell({
+    eyebrow: '已发布详情',
+    title: rawRecord.word || rawRecord.title || '已发布内容',
+    message: '帖子详情已打开'
+  });
+  scheduleModalRender(() => {
+    if (renderVersion !== modalRenderVersion || currentPublishedRecordId !== recordId) return;
+    const record = cleanPublishedRecords([rawRecord]).find(item => item.id === recordId);
+    if (!record) {
+      closeModal();
+      return;
+    }
+    renderPublishedDetail(record);
+  });
+}
+
+function renderPublishedDetail(record) {
   const word = findWord(record.word) || getDisplayWordByKanji(record.word) || {
     kanji: record.word,
     reading: '',
     meaning: ''
   };
   const metrics = cleanPublishedMetrics(record.latestMetrics);
-  const medians = buildPublishedPageModel(getPublishedDisplayItems()).medians;
+  const medians = publishedPageModelCache?.medians
+    || buildPublishedPageModel(getPublishedDisplayItems()).medians;
   const updateState = getPublishedUpdateState(record);
   const coverUrls = getPublishedCover(record);
   const contentLabel = getPublishedContentLabel(record, word);
@@ -8127,9 +8272,7 @@ function openPublishedDetail(recordId) {
   const coverSrc = coverUrls[0] || coverFallback;
   const coverFallbacks = coverUrls.length ? [...coverUrls.slice(1), coverFallback] : [];
   const noteLink = normalizeXiaohongshuUrl(record.link);
-  const publishedMeaning = getPublishedContentSubLabel(record, {
-    meaning: candidatePool[record.word]?.meaning || getWordByKanji(record.word)?.meaning || word.meaning || ''
-  });
+  const publishedMeaning = resolvePublishedContentSubLabel(record, word);
   const views = metrics.views || 0;
   const comparisonByKey = new Map(
     buildPublishedMetricRows(record, medians).map(metric => [metric.key, metric])
@@ -8170,7 +8313,7 @@ function openPublishedDetail(recordId) {
       <div class="modal-body published-detail-body">
         <section class="published-detail-hero">
           <div class="published-detail-cover">
-            <img src="${escapeHTML(coverSrc)}" alt="${escapeHTML(record.title || record.word || '笔记封面')}" referrerpolicy="no-referrer" data-cover-source="published-record" data-image-fallback="fallback-list" data-fallback-list="${escapeHTML(JSON.stringify(coverFallbacks))}" />
+            <img src="${escapeHTML(coverSrc)}" alt="${escapeHTML(record.title || record.word || '笔记封面')}" decoding="async" referrerpolicy="no-referrer" data-cover-source="published-record" data-image-fallback="fallback-list" data-fallback-list="${escapeHTML(JSON.stringify(coverFallbacks))}" />
           </div>
           <div class="published-detail-intro">
             <div class="published-detail-badges">
@@ -8239,6 +8382,7 @@ function openPublishedDetail(recordId) {
 }
 
 function closeModal() {
+  modalRenderVersion += 1;
   document.getElementById('modalOverlay').classList.remove('open');
   document.body.style.overflow = '';
   currentWordForModal = null;
@@ -8247,6 +8391,7 @@ function closeModal() {
 }
 
 function resetTransientUiState() {
+  modalRenderVersion += 1;
   activeStatusMenuKanji = null;
   activeFeedbackMenuKanji = null;
   currentWordForModal = null;
@@ -8307,6 +8452,14 @@ function ensureWorkflowScopeLoaded(scope, options = {}) {
 function switchTab(tab) {
   const normalizedTab = tab === 'history' ? 'today' : tab;
   const targetTab = ['today', 'favorites', 'published'].includes(normalizedTab) ? normalizedTab : 'today';
+  const previousTab = document.body.dataset.activeTab || '';
+  if (targetTab !== previousTab) {
+    if (targetTab === 'favorites') favoriteRenderLimit = FAVORITES_PAGE_SIZE;
+    if (targetTab === 'published') {
+      publishedRenderLimit = PUBLISHED_PAGE_SIZE;
+      publishedPageModelCache = null;
+    }
+  }
   document.body.dataset.activeTab = targetTab;
   document.querySelectorAll('.nav-item').forEach(element => element.classList.toggle('active', element.dataset.tab === targetTab));
   document.querySelectorAll('.page').forEach(element => element.classList.toggle('active', element.id === `page-${targetTab}`));
@@ -8752,6 +8905,7 @@ createDailyHotPageController({
 createFavoritesPageController({
   root: document.getElementById('page-favorites'),
   onOpenDetail: openDetail,
+  onLoadMore: loadMoreFavorites,
   onToggleFavorite: toggleFavorite,
   onToggleStatus: toggleStatusMenu,
   onSelectStatus: selectFavoriteStatus,
@@ -8768,6 +8922,7 @@ createFavoritesPageController({
 createPublishedPageController({
   root: document.getElementById('page-published'),
   onOpenDetail: openPublishedDetail,
+  onLoadMore: loadMorePublished,
   onRefresh: refreshPublishedMetrics,
   onRender: refreshPublishedPageFromCloud,
   onError: error => {

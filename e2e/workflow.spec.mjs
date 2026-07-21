@@ -103,9 +103,50 @@ function createWorkflow() {
   };
 }
 
+function createPerformanceWorkflow() {
+  const state = createWorkflow();
+  const words = Array.from({ length: 30 }, (_, index) => `検証語${index + 1}`);
+  words.forEach((word, index) => {
+    state.candidatePool[word] = {
+      ...candidate(word, `けんしょうご${index + 1}`, `性能验收词 ${index + 1}`),
+      aiCard: { cardStatus: 'ready', summary: `性能验收词卡 ${index + 1}` }
+    };
+  });
+  state.words = words;
+  state.publishedRecords = Array.from({ length: 25 }, (_, index) => ({
+    id: `published-performance-${index + 1}`,
+    word: words[index],
+    title: `已发布性能验收 ${index + 1}`,
+    description: `🍞${words[index]}\n（けんしょうご）\n性能验收词 ${index + 1}\n这是只读帖子正文。`,
+    contentType: '图文',
+    contentCategory: 'word_card',
+    contentLocked: true,
+    contentImportedAt: '2026-07-20T08:00:00.000Z',
+    contentSource: 'xhs_note_manager',
+    publishedAt: `2026-07-${String(20 - (index % 10)).padStart(2, '0')}T09:00:00+08:00`,
+    latestMetrics: {
+      impressions: 1000 + index * 50,
+      views: 500 + index * 20,
+      coverClickRate: 0.08,
+      likes: 50 + index,
+      comments: 5 + index,
+      favorites: 20 + index,
+      follows: 2 + index,
+      shares: 3 + index,
+      avgWatchSeconds: 8,
+      danmaku: 0
+    },
+    metricSnapshots: [],
+    lastMetricsImportedAt: '2026-07-21T06:30:00.000Z',
+    selectionSource: { type: 'daily_hot_codex', label: 'Codex 每日热门' },
+    updatedAt: '2026-07-21T06:30:00.000Z'
+  }));
+  return state;
+}
+
 async function installApiFixture(page, options = {}) {
   await installStaticBuildFixture(page);
-  const state = createWorkflow();
+  const state = options.workflow || createWorkflow();
   const controls = {
     mutationFailuresRemaining: options.mutationFailures || 0,
     commandRequests: 0,
@@ -295,5 +336,36 @@ test('mobile layout has no page-level horizontal overflow', async ({ page }, tes
   }));
   expect(dimensions.documentWidth).toBeLessThanOrEqual(dimensions.viewport + 1);
   expect(dimensions.bodyWidth).toBeLessThanOrEqual(dimensions.viewport + 1);
+  expect(controls.pageErrors).toEqual([]);
+});
+
+test('favorites and published pages progressively render cards and open responsive details', async ({ page }, testInfo) => {
+  const controls = await openApp(page, { workflow: createPerformanceWorkflow() });
+  const openMobileMenu = async () => {
+    if (testInfo.project.name.startsWith('iphone-')) await page.locator('.mobile-toggle').click();
+  };
+
+  await openMobileMenu();
+  await page.locator('[data-app-shell-action="switch-tab"][data-tab="favorites"]').click();
+  await expect(page.locator('#favGrid .workflow-card')).toHaveCount(12);
+  await expect(page.locator('[data-progressive-list="favorites"]')).toContainText('已显示 12 / 30');
+  await page.locator('[data-favorites-action="load-more"]').click();
+  await expect(page.locator('#favGrid .workflow-card')).toHaveCount(24);
+  await page.locator('#favGrid .workflow-card').first().click();
+  await expect(page.locator('#modalOverlay')).toHaveClass(/open/);
+  await expect(page.locator('#modalContainer')).toContainText('検証語1');
+  await page.locator('#modalContainer [data-modal-action="close"]').first().click();
+  await expect(page.locator('#modalOverlay')).not.toHaveClass(/open/);
+
+  await openMobileMenu();
+  await page.locator('[data-app-shell-action="switch-tab"][data-tab="published"]').click();
+  await expect(page.locator('#publishedGrid .published-card')).toHaveCount(10);
+  await expect(page.locator('[data-progressive-list="published"]')).toContainText('已显示 10 / 25');
+  await page.locator('[data-published-action="load-more"]').click();
+  await expect(page.locator('#publishedGrid .published-card')).toHaveCount(20);
+  await page.locator('#publishedGrid .published-card').first().click();
+  await expect(page.locator('#modalOverlay')).toHaveClass(/open/);
+  await expect(page.locator('.published-detail-shell')).toBeVisible();
+  await expect(page.locator('#modalContainer')).toContainText('这是只读帖子正文');
   expect(controls.pageErrors).toEqual([]);
 });
