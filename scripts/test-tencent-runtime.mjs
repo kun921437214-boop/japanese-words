@@ -144,6 +144,17 @@ test('Nginx serves browser modules with a JavaScript MIME type', async () => {
   }
 });
 
+test('Nginx compresses text responses and revalidates unhashed browser code', async () => {
+  const httpConfig = await readFile(new URL('../server/nginx/japanese-words-http.conf', import.meta.url), 'utf8');
+  const httpsConfig = await readFile(new URL('../server/nginx/japanese-words-https.conf', import.meta.url), 'utf8');
+  for (const config of [httpConfig, httpsConfig]) {
+    assert.match(config, /gzip on;/);
+    assert.match(config, /gzip_types[^;]*application\/json/);
+    assert.match(config, /location ~\* \\\.\(\?:css\|js\)\$/);
+    assert.match(config, /add_header Cache-Control "no-cache" always;/);
+  }
+});
+
 test('Tencent backup bundles workflow keys, Codex drafts, images, and restores them locally', async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'japanese-words-backup-'));
   const dataDirectory = path.join(root, 'data');

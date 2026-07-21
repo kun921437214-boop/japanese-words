@@ -98,6 +98,7 @@ let todaySnapshot = {};
 let historySnapshots = {};
 let todaySnapshotHistory = [];
 let libraryReviewRecords = {};
+let libraryReviewHydrationPromise = null;
 let libraryAuditCoverage = {
   total: 0,
   reviewed: 0,
@@ -813,6 +814,32 @@ async function loadLibraryReviewRecords() {
     libraryReviewRecords = {};
     return false;
   }
+}
+
+function scheduleLibraryReviewHydration() {
+  if (libraryReviewHydrationPromise) return libraryReviewHydrationPromise;
+  libraryReviewHydrationPromise = new Promise(resolve => {
+    const hydrate = async () => {
+      try {
+        const loaded = await loadLibraryReviewRecords();
+        if (loaded) {
+          migrateOriginalWordsAfterAudit();
+          ensureReviewedSeedWordsInCandidatePool();
+        }
+        verifyDeepSeekLibraryAuditCoverage();
+        resolve(loaded);
+      } catch (error) {
+        console.warn('后台词库审核数据整理失败', error);
+        resolve(false);
+      }
+    };
+    if (typeof window.requestIdleCallback === 'function') {
+      window.requestIdleCallback(() => void hydrate(), { timeout: 2500 });
+    } else {
+      window.setTimeout(() => void hydrate(), 200);
+    }
+  });
+  return libraryReviewHydrationPromise;
 }
 
 function isLegacyLibraryWord(kanji, entry = null) {
@@ -2801,12 +2828,34 @@ function cacheCurrentWorkflow(updatedAt = nowIso()) {
   return payload;
 }
 
+function scheduleWorkflowCacheWrite(updatedAt = nowIso()) {
+  pendingWorkflowCacheUpdatedAt = updatedAt || pendingWorkflowCacheUpdatedAt || nowIso();
+  if (workflowCacheIdleHandle !== null) return;
+  const writeCache = () => {
+    workflowCacheIdleHandle = null;
+    const cacheUpdatedAt = pendingWorkflowCacheUpdatedAt || nowIso();
+    pendingWorkflowCacheUpdatedAt = '';
+    try {
+      cacheCurrentWorkflow(cacheUpdatedAt);
+    } catch (error) {
+      console.warn('首屏完成后的本地缓存写入失败', error);
+    }
+  };
+  if (typeof window.requestIdleCallback === 'function') {
+    workflowCacheIdleHandle = window.requestIdleCallback(writeCache, { timeout: 2000 });
+  } else {
+    workflowCacheIdleHandle = window.setTimeout(writeCache, 100);
+  }
+}
+
 let hasUnsavedFormChanges = false;
 let cloudSaveEpoch = 0;
 let cloudSaveQueue = Promise.resolve(false);
 let pendingCloudSaveCount = 0;
 let cloudWorkflowLoadEpoch = 0;
 let backgroundSyncPromise = null;
+let workflowCacheIdleHandle = null;
+let pendingWorkflowCacheUpdatedAt = '';
 const apiClient = createApiClient({ getWorkflowRevision: () => workflowStore.getRevision() });
 const uiOperationsInFlight = apiClient.operationsInFlight;
 const createOperationId = apiClient.createOperationId;
@@ -3016,7 +3065,8 @@ function applyRemoteWorkflowState(remoteData, options = {}) {
   cloudWorkflowFailed = false;
   lastCloudSyncAt = nowIso();
   hydrateTodayWordsFromSnapshot();
-  cacheCurrentWorkflow(prepared.data.updated || lastCloudSyncAt);
+  if (options.deferCache) scheduleWorkflowCacheWrite(prepared.data.updated || lastCloudSyncAt);
+  else cacheCurrentWorkflow(prepared.data.updated || lastCloudSyncAt);
   return prepared;
 }
 
@@ -3108,7 +3158,8 @@ async function loadCloudWorkflow(options = false) {
     const responseData = await fetchWorkflowView(endpoint, loadEpoch);
     if (loadEpoch !== cloudWorkflowLoadEpoch) return false;
     const applied = applyRemoteWorkflowState(responseData, {
-      mergeCandidatePool: Boolean(config.mergeCandidatePool || workflowStore.hasLoadedScopes())
+      mergeCandidatePool: Boolean(config.mergeCandidatePool || workflowStore.hasLoadedScopes()),
+      deferCache: config.deferCache !== false
     });
     if (!applied.applied) {
       cloudWorkflowFailed = false;
@@ -8552,8 +8603,7 @@ async function init() {
         mergeCandidatePool: true
       })
     : ensureWorkflowScopeLoaded(initialTab, { historyDate: initialHistoryDate });
-  const [libraryReviewLoaded, rankingsLoaded, cloudLoaded] = await Promise.all([
-    loadLibraryReviewRecords(),
+  const [rankingsLoaded, cloudLoaded] = await Promise.all([
     loadCloudRankings(false),
     workflowPromise
   ]);
@@ -8564,14 +8614,11 @@ async function init() {
     updateSyncStatus('云端同步失败，正在使用本地缓存，可能与队友不一致。', '#c0392b');
     showToast('云端同步失败，正在使用本地缓存');
   }
-  if (libraryReviewLoaded) {
-    migrateOriginalWordsAfterAudit();
-    ensureReviewedSeedWordsInCandidatePool();
-  }
   verifyDeepSeekLibraryAuditCoverage();
   hydrateTodayWordsFromSnapshot();
   updateAllBadges();
   refreshCurrentGrid();
+  void scheduleLibraryReviewHydration();
   void flushPendingFavoriteIntents();
 }
 

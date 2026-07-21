@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { mkdir, open, readFile, readdir, rename, unlink } from 'node:fs/promises';
+import { mkdir, open, readFile, readdir, rename, stat, unlink } from 'node:fs/promises';
 import path from 'node:path';
 
 function cleanKey(value) {
@@ -56,6 +56,8 @@ export class FileKV {
     this.directory = path.resolve(directory);
     this.ready = mkdir(this.directory, { recursive: true, mode: 0o700 });
     this.writeQueues = new Map();
+    this.recordCache = new Map();
+    this.decodedCache = new Map();
   }
 
   fileForKey(keyValue) {
@@ -69,6 +71,27 @@ export class FileKV {
     const key = cleanKey(keyValue);
     if (!key) return null;
     const file = this.fileForKey(key);
+    let fileStats;
+    try {
+      fileStats = await stat(file);
+    } catch (error) {
+      if (error?.code === 'ENOENT') {
+        this.recordCache.delete(key);
+        this.decodedCache.delete(key);
+        return null;
+      }
+      throw error;
+    }
+    const cached = this.recordCache.get(key);
+    if (cached && cached.mtimeMs === fileStats.mtimeMs && cached.size === fileStats.size) {
+      if (cached.record.expiresAt && Date.parse(cached.record.expiresAt) <= Date.now()) {
+        await unlink(file).catch(() => {});
+        this.recordCache.delete(key);
+        this.decodedCache.delete(key);
+        return null;
+      }
+      return cached.record;
+    }
     let record;
     try {
       record = JSON.parse(await readFile(file, 'utf8'));
@@ -79,21 +102,36 @@ export class FileKV {
     if (record.key !== key) return null;
     if (record.expiresAt && Date.parse(record.expiresAt) <= Date.now()) {
       await unlink(file).catch(() => {});
+      this.recordCache.delete(key);
+      this.decodedCache.delete(key);
       return null;
     }
+    this.recordCache.set(key, { record, mtimeMs: fileStats.mtimeMs, size: fileStats.size });
+    this.decodedCache.delete(key);
     return record;
   }
 
+  decodeRecord(key, record, type) {
+    const typeCache = this.decodedCache.get(key) || new Map();
+    if (typeCache.has(type)) return typeCache.get(type);
+    const value = decodeStoredValue(record, type);
+    typeCache.set(type, value);
+    this.decodedCache.set(key, typeCache);
+    return value;
+  }
+
   async get(key, type = 'text') {
-    const record = await this.readRecord(key);
-    return record ? decodeStoredValue(record, type) : null;
+    const clean = cleanKey(key);
+    const record = await this.readRecord(clean);
+    return record ? this.decodeRecord(clean, record, type) : null;
   }
 
   async getWithMetadata(key, options = {}) {
-    const record = await this.readRecord(key);
+    const clean = cleanKey(key);
+    const record = await this.readRecord(clean);
     if (!record) return null;
     return {
-      value: decodeStoredValue(record, options.type || 'text'),
+      value: this.decodeRecord(clean, record, options.type || 'text'),
       metadata: record.metadata || null
     };
   }
@@ -122,6 +160,9 @@ export class FileKV {
         await handle.close();
       }
       await rename(temporary, target);
+      const fileStats = await stat(target);
+      this.recordCache.set(key, { record, mtimeMs: fileStats.mtimeMs, size: fileStats.size });
+      this.decodedCache.delete(key);
     });
   }
 
@@ -132,6 +173,8 @@ export class FileKV {
       await unlink(this.fileForKey(key)).catch(error => {
         if (error?.code !== 'ENOENT') throw error;
       });
+      this.recordCache.delete(key);
+      this.decodedCache.delete(key);
     });
   }
 
