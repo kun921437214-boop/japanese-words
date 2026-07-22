@@ -104,3 +104,15 @@ Before DNS changes:
 5. Compare revisions before deciding whether a guarded data restore is needed.
 
 Cloudflare resources must remain intact until the Tencent site has completed at least seven daily cycles. During rollback, re-enable the reviewed cron list only after Tencent scheduling has been disabled.
+
+## Routine Updates After Cutover
+
+Routine reviewed updates use the guarded Tencent deployment command rather than Cloudflare Pages:
+
+```bash
+cd /opt/japanese-words/app
+npm run deploy:tencent -- --dry-run
+npm run deploy:tencent -- --confirm=DEPLOY
+```
+
+The command is deliberately manual: GitHub is the source of truth, while Production still requires explicit approval. It uses the public read-only GitHub remote, so no deploy key or long-lived GitHub credential is stored on the server. Dependency-lock changes and non-fast-forward histories stop for a separate manual review.

@@ -28,6 +28,20 @@ The full install, guarded import, zero-downtime cutover, deployment, and rollbac
 SITE_URL=https://bijinihaitan.cn npm run smoke:production
 ```
 
+### Routine Production deployment
+
+GitHub remains the source of truth, but merging or pushing code does not automatically change Production. After the reviewed branch has passed its pull-request checks, connect to the Tencent host and run:
+
+```bash
+cd /opt/japanese-words/app
+npm run deploy:tencent -- --dry-run
+npm run deploy:tencent -- --confirm=DEPLOY
+```
+
+The deploy command only accepts a clean working tree and a fast-forward update from `codex/fix-daily-automation-assets`. It retries transient GitHub fetch failures, rejects dependency-lock changes, builds and runs all quality checks outside the live directory, creates a complete workflow/image backup, swaps the built static artifact, restarts the runtime, and rolls back if the local health check fails. It does not create a deploy key or schedule future deployments.
+
+After it succeeds, run the read-only smoke check from a trusted workstation and visually check the affected desktop and mobile workflows. A GitHub push is never sufficient authorization to run this command.
+
 ## Cloudflare Rollback Stack
 
 Cloudflare Pages, Worker, KV, and the workflow coordinator remain available only as rollback infrastructure. The scheduled Worker has an empty cron list so it cannot compete with the Tencent scheduler.
