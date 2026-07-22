@@ -42,41 +42,44 @@
       <div class="sidebar-illustration sidebar-illustration-bottom" aria-hidden="true">
         <img class="design-asset design-asset-sidebar-bottom" src="assets/illustrations/doraemon-door-bread.webp" alt="" loading="lazy" decoding="async" data-image-fallback="parent-class-remove" data-parent-class="asset-missing">
       </div>
-      <button class="settings-btn" data-app-shell-action="open-settings" title="设置">⚙️ 设置</button>
       记忆面包 × 热门日语口袋道具<br>© 2026 每日灵感，为你而来
     </div>
   </aside>
   <main class="main-content" id="mainContent">
     <div class="page page-today active" id="page-today">
       <div class="page-header">
-        <div class="page-header-inner">
-          <div class="page-heading">
+        <div class="page-header-inner page-header-inner-today">
+          <div class="page-heading page-heading-today">
             <div class="page-title-icon"><img src="assets/illustrations/memory-bread.webp" alt="" decoding="async" data-image-fallback="parent-text" data-fallback-text="🍞"></div>
-            <div>
+            <div class="page-heading-copy">
               <h1 class="page-title">每日热门</h1>
               <p class="page-date" id="todayDate">按日期查看系统推荐的日语热门词，从中收藏适合进入团队选题池的内容。</p>
             </div>
           </div>
-          <div class="page-actions">
-            <div class="page-actions-deco" aria-hidden="true">✦ ✦</div>
-            <label class="daily-date-field">
-              <span>查看日期</span>
-              <select class="filter-select" id="dailyHotDateSelect" data-daily-hot-action="date" aria-label="查看日期"></select>
-            </label>
-            <select class="filter-select" id="todaySourceFilter" data-daily-hot-action="source" data-scope="today" aria-label="按来源筛选每日热门"></select>
-            <button class="btn btn-ghost" data-daily-hot-action="refresh">🔄 刷新</button>
-            <div class="action-menu">
-              <button class="btn btn-ghost" id="dailyManageBtn" data-today-action data-daily-preview-disabled data-daily-hot-action="toggle-manage">管理今日推荐</button>
-              <div class="action-menu-panel" id="dailyManageMenu">
-                <button data-daily-hot-action="manage" data-manage-action="generate">生成今日 10 个</button>
-                <button data-daily-hot-action="manage" data-manage-action="fill">补满今日推荐</button>
-                <button data-daily-hot-action="manage" data-manage-action="regenerate">重新生成今日推荐</button>
-                <button data-daily-hot-action="manage" data-manage-action="audit">查看推荐审计</button>
-                <button data-daily-hot-action="manage" data-manage-action="exportAudit">导出推荐审计 CSV</button>
-              </div>
+          <div class="page-actions page-actions-today">
+            <div class="today-toolbar today-toolbar-filters">
+              <div class="page-actions-deco" aria-hidden="true">✦ ✦</div>
+              <label class="daily-date-field">
+                <span>查看日期</span>
+                <select class="filter-select" id="dailyHotDateSelect" data-daily-hot-action="date" aria-label="查看日期"></select>
+              </label>
+              <select class="filter-select" id="todaySourceFilter" data-daily-hot-action="source" data-scope="today" aria-label="按来源筛选每日热门"></select>
+              <button class="btn btn-ghost" data-daily-hot-action="refresh">🔄 刷新</button>
             </div>
-            <button class="btn btn-ghost" data-daily-preview-disabled data-daily-hot-action="generate-cards">生成今日缺失卡片</button>
-            <button class="btn btn-primary" data-daily-preview-disabled data-daily-hot-action="export">📤 导出选词</button>
+            <div class="today-toolbar today-toolbar-commands">
+              <div class="action-menu">
+                <button class="btn btn-ghost" id="dailyManageBtn" data-today-action data-daily-preview-disabled data-daily-hot-action="toggle-manage">管理今日推荐</button>
+                <div class="action-menu-panel" id="dailyManageMenu">
+                  <button data-daily-hot-action="manage" data-manage-action="generate">生成今日 10 个</button>
+                  <button data-daily-hot-action="manage" data-manage-action="fill">补满今日推荐</button>
+                  <button data-daily-hot-action="manage" data-manage-action="regenerate">重新生成今日推荐</button>
+                  <button data-daily-hot-action="manage" data-manage-action="audit">查看推荐审计</button>
+                  <button data-daily-hot-action="manage" data-manage-action="exportAudit">导出推荐审计 CSV</button>
+                </div>
+              </div>
+              <button class="btn btn-ghost" data-daily-preview-disabled data-daily-hot-action="generate-cards">生成今日缺失卡片</button>
+              <button class="btn btn-primary" data-daily-preview-disabled data-daily-hot-action="export">📤 导出选词</button>
+            </div>
           </div>
         </div>
       </div>

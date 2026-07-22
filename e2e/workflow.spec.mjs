@@ -308,10 +308,10 @@ test('failed favorite writes stay visible across reload and sync automatically a
   expect(controls.pageErrors).toEqual([]);
 });
 
-test('validated backup stays read-only when restore confirmation is cancelled', async ({ page }, testInfo) => {
+test('validated backup stays read-only when restore confirmation is cancelled', async ({ page }) => {
   const controls = await openApp(page);
-  if (testInfo.project.name.startsWith('iphone-')) await page.locator('.mobile-toggle').click();
-  await page.locator('[data-app-shell-action="open-settings"]').click();
+  await expect(page.locator('[data-app-shell-action="open-settings"]')).toHaveCount(0);
+  await page.locator('#settingsOverlay').evaluate(element => element.classList.add('open'));
   await expect(page.locator('#settingsOverlay')).toHaveClass(/open/);
   const dialogPromise = page.waitForEvent('dialog');
   await page.locator('#workflowRestoreInput').setInputFiles({
