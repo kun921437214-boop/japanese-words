@@ -626,11 +626,43 @@ function buildWordCardUserPrompt(payload) {
     discoveryContext: cleanText(item.discoveryContext, 800),
     isManualAdded: Boolean(item.isManualAdded || item.sourceType === 'manual' || cleanArray(item.sourceTags, 12).includes('手动添加'))
   })).filter(item => item.kanji);
+  const regenerationScope = ['card', 'cover'].includes(payload.context?.regeneration?.scope)
+    ? payload.context.regeneration.scope
+    : '';
+  const regenerationReason = cleanText(payload.context?.regeneration?.reason, 80);
+  const regenerationReasonLabel = {
+    meaningInaccurate: '释义不准确',
+    tooTextbookTone: '解释太教材',
+    unnaturalExamples: '例句不自然',
+    weakXhsTone: '小红书感不够',
+    weakTitles: '标题不吸引人',
+    repetitiveAngles: '内容角度重复',
+    wrongRiskAssessment: '风险判断不准确',
+    weakVisual: '画面不够吸引',
+    weakCoverText: '封面文字不够醒目',
+    visualMismatch: '图片和词义不匹配',
+    offBrand: '风格不符合账号',
+    tooCluttered: '信息太多',
+    mobileUnreadable: '手机端看不清',
+    unnaturalVisual: '人物或场景不自然',
+    tooSimilar: '与近期封面太相似'
+  }[regenerationReason] || regenerationReason;
+  const currentCard = payload.context?.regeneration?.currentCard
+    ? normalizeAiCard(payload.context.regeneration.currentCard)
+    : null;
   return JSON.stringify({
     task: 'generate_word_card',
     jsonRequirement: '必须返回合法 json object。顶层 items 是数组，每个元素包含 kanji 和 aiCard。',
     accountLearningSummary,
     accountLearningInstruction: '生成 aiCard 时必须参考 accountLearningSummary：不要像词典或教材，优先给中文用户有共鸣、有场景、愿意收藏、能做标题封面的内容；但不要改变 aiCard 字段结构。',
+    regeneration: regenerationScope ? {
+      scope: regenerationScope,
+      reason: regenerationReasonLabel,
+      instruction: regenerationScope === 'card'
+        ? '这是单词卡内容负反馈。重点修正释义、场景、例句、标题、内容角度和风险判断；封面方案将由系统保留，不要用封面变化掩盖内容问题。'
+        : '这是封面包装负反馈。保持单词卡释义、例句和内容方向不变，只重新设计 coverSuggestion，尤其修正给出的封面原因。',
+      currentCard
+    } : null,
     words,
     completeJsonExample: {
       items: [
@@ -998,7 +1030,9 @@ function normalizeAiCard(card = {}, model = '') {
     cardSource: 'deepseek_api',
     cardModel: cleanText(card.cardModel || model, 120),
     cardVersion: Math.max(1, Math.min(99, Number.parseInt(card.cardVersion, 10) || 1)),
+    coverVersion: Math.max(1, Math.min(99, Number.parseInt(card.coverVersion, 10) || 1)),
     generatedAt: cleanText(card.generatedAt, 80) || new Date().toISOString(),
+    coverGeneratedAt: cleanText(card.coverGeneratedAt, 80) || cleanText(card.generatedAt, 80) || new Date().toISOString(),
     summary: cleanText(card.summary, 500),
     explanation: cleanText(card.explanation, 1600),
     usageScenes: cleanArray(card.usageScenes, 8).map(item => cleanText(item, 120)).filter(Boolean),

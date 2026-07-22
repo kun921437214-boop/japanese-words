@@ -29,8 +29,8 @@
 
 - `words`：Favorites / Topic Pool words selected by humans.
 - `statuses`：favorite status: `none`, `pending`, `published`.
-- `feedback`：team negative feedback and skip reasons.
-- `publishedRecords`：Xiaohongshu published posts, one-time content capture, daily cumulative metric snapshots, and recommendation-source attribution.
+- `feedback`：selection feedback only. It records why a word is not suitable for the topic pool; card and cover feedback live under the candidate entry.
+- `publishedRecords`：Xiaohongshu published posts, one-time content capture, daily cumulative metric snapshots, recommendation-source attribution, creative-version snapshots, and performance attribution.
 - `candidatePool`：all active candidate words and DeepSeek metadata.
 - `aiBatches`：DeepSeek generation/review batch records.
 - `todaySnapshot`：current fixed Daily Hot recommendation list.
@@ -56,7 +56,23 @@ Do not show old labels such as local word, original word, or original library in
 - `manualReviewState`, `manualReviewNote`
 - `lastScore`, `lastScoredAt`, `lastRecommendedAt`
 - `recommendationCount`, `ignoredCount`
-- `aiCard`, `aiCardHistory`
+- `aiCard`, `aiCardHistory`, `coverHistory`
+- `generationFeedback.card`, `generationFeedback.cover`
+- `publicationSnapshot`
+
+## Feedback Rules
+
+Keep the three feedback objects separate:
+
+1. Selection feedback asks whether the word itself is worth making. It affects future topic ranking.
+2. Card feedback asks why the written content needs regeneration. It must not penalize the word itself.
+3. Cover feedback asks why the cover plan needs regeneration. It must not penalize the word itself.
+
+Current selection feedback should be idempotent for the same word, reason, and day. A user may undo the most recent dismissal; `lastUndoneAtByReason` is the merge tombstone that prevents an older cloud count from reappearing.
+
+Card and cover regeneration must always record a structured reason in `generationFeedback` before generating a new version. Card regeneration preserves the current cover and reference image. Cover regeneration preserves the current card text and invalidates the old reference image so the image workflow can create the new visual.
+
+Do not add “adopt card” or “adopt cover” buttons. Marking a word as pending or published is the positive workflow signal; regeneration reasons are the explicit negative signals.
 
 ## Daily Hot Ranking Rules
 
@@ -78,6 +94,8 @@ Then rank by:
 - Bucket priority.
 - Emotion and topic balance.
 - Feedback and published-performance signals.
+
+Only mature topic-performance signals may change word ranking. Cover and content performance are packaging diagnostics and must not directly punish the word.
 
 Daily Hot should recommend expressions worth making into Xiaohongshu content, not generic topic tags.
 
@@ -132,6 +150,11 @@ Without a ready card, show only basic information and a "generate DeepSeek word 
 - `contentCategory` distinguishes a normal `word_card`, confirmed `non_word` content such as book promotion, and `unknown` content still awaiting the first read-only detail capture. Confirmed `non_word` records are self-selected content and must not be counted or displayed as unmapped words.
 - Metrics update once per day at 14:30 Asia/Shanghai while the post is no more than 15 days old. Older posts keep their final snapshot and do not update again.
 - `selectionSource` distinguishes Daily Hot (Codex / DeepSeek / unknown provider), self-selected, and unmapped/unknown records.
+- When a word is marked published, capture the working `cardVersion`, `coverVersion`, selected/suggested title, and the relevant card and cover snapshots into `publicationSnapshot`. Published import copies this into immutable `creativeSnapshot` attribution data.
+- `performanceAssessment` separates `topic`, `cover`, and `content`. Before 72 hours it stays `collecting`; from 72 hours it may produce an `early` assessment; at 15 days or after the record is frozen it becomes `final`.
+- Topic assessment prioritizes favorites, shares, follows, and comments. Cover assessment prioritizes cover click-through and view rate. Content assessment prioritizes average watch, likes, comments, and shares.
+- A dimension assessment requires enough mature comparison posts. When the sample is insufficient, keep it neutral instead of manufacturing a positive or negative conclusion.
+- Daily recommendation learning may consume only mature topic assessment. Cover and content assessments are used to improve packaging and writing guidance.
 - `latestStats` is only a derived compatibility mirror for existing ranking code. It is not the Published page source of truth.
 - Legacy 1h / 2h / 4h / 24h / 72h snapshots, manual ratings, performance reasons, and auto-refresh fields are not part of the new Published product model.
 

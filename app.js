@@ -49,6 +49,7 @@ import {
   getPublishedContentSubLabel,
   getPublishedCoverCandidates,
   getPublishedSourceLabel,
+  getPublishedPerformanceAssessment,
   getPublishedUpdateState,
   ratePublishedRecord
 } from './frontend/published-page.mjs';
@@ -68,6 +69,9 @@ import { createWorkflowSync } from './frontend/workflow-sync.mjs';
 import {
   cleanHistorySnapshot as cleanSharedHistorySnapshot,
   cleanHistorySnapshots as cleanSharedHistorySnapshots,
+  cleanCoverVersionSnapshot as cleanSharedCoverVersionSnapshot,
+  cleanGenerationFeedback as cleanSharedGenerationFeedback,
+  cleanPublicationSnapshot as cleanSharedPublicationSnapshot,
   cleanPublishedRecord as cleanSharedPublishedRecord,
   cleanPublishedRecords as cleanSharedPublishedRecords,
   cleanTodaySnapshot as cleanSharedTodaySnapshot,
@@ -136,6 +140,7 @@ let codexTomorrowDraftStatus = null;
 let codexTomorrowDraft = null;
 let codexTomorrowDraftPromise = null;
 let codexTomorrowDraftError = '';
+let toastHideTimer = null;
 
 const FAVORITES_STORAGE_KEY = 'kotoba_favorites';
 const FAVORITE_STATUSES_STORAGE_KEY = 'kotoba_favorite_statuses';
@@ -180,14 +185,36 @@ const NEGATIVE_FEEDBACK_TYPES = {
   tooBasic: '太普通',
   tooTextbook: '太教材',
   notForXhs: '不适合小红书',
-  inaccurate: '解释不准',
   tooRisky: '风险太高',
   tooNiche: '太小众',
   notFresh: '不够新鲜',
   tooMeme: '太梗/容易过期',
-  badVisual: '不好配图',
-  badTitle: '不好做标题',
   notMyTone: '不符合账号调性'
+};
+const STORED_NEGATIVE_FEEDBACK_TYPES = {
+  ...NEGATIVE_FEEDBACK_TYPES,
+  inaccurate: '解释不准（旧记录）',
+  badVisual: '不好配图（旧记录）',
+  badTitle: '不好做标题（旧记录）'
+};
+const CARD_REGENERATION_REASONS = {
+  meaningInaccurate: '释义不准确',
+  tooTextbookTone: '解释太教材',
+  unnaturalExamples: '例句不自然',
+  weakXhsTone: '小红书感不够',
+  weakTitles: '标题不吸引人',
+  repetitiveAngles: '内容角度重复',
+  wrongRiskAssessment: '风险判断不准确'
+};
+const COVER_REGENERATION_REASONS = {
+  weakVisual: '画面不够吸引',
+  weakCoverText: '封面文字不够醒目',
+  visualMismatch: '图片和词义不匹配',
+  offBrand: '风格不符合账号',
+  tooCluttered: '信息太多',
+  mobileUnreadable: '手机端看不清',
+  unnaturalVisual: '人物或场景不自然',
+  tooSimilar: '与近期封面太相似'
 };
 const AI_ACTION_LABELS = {
   stable_today: '稳定今日候选',
@@ -1036,7 +1063,9 @@ function cleanAiCard(card = {}) {
     cardSource: ['codex', 'deepseek_api'].includes(card.cardSource) ? card.cardSource : '',
     cardModel: cleanShortText(card.cardModel, 120),
     cardVersion: clamp(toInt(card.cardVersion, 1), 1, 99),
+    coverVersion: clamp(toInt(card.coverVersion, 1), 1, 99),
     generatedAt: typeof card.generatedAt === 'string' ? card.generatedAt : '',
+    coverGeneratedAt: typeof card.coverGeneratedAt === 'string' ? card.coverGeneratedAt : (typeof card.generatedAt === 'string' ? card.generatedAt : ''),
     referenceImage: {
       status: normalizeEnumValue(card.referenceImage?.status, ['missing', 'ready', 'failed'], 'missing'),
       url: cleanShortText(card.referenceImage?.url, 1000),
@@ -1843,12 +1872,22 @@ function cleanCandidateReviewState(state) {
 
 function cleanFeedbackRecord(record) {
   const reasons = Object.entries(record?.reasons || {}).reduce((result, [key, value]) => {
-    if (NEGATIVE_FEEDBACK_TYPES[key]) result[key] = clamp(toInt(value, 0), 0, 50);
+    if (STORED_NEGATIVE_FEEDBACK_TYPES[key]) result[key] = clamp(toInt(value, 0), 0, 50);
     return result;
   }, {});
   return {
     reasons,
-    lastReason: NEGATIVE_FEEDBACK_TYPES[record?.lastReason] ? record.lastReason : '',
+    lastReason: STORED_NEGATIVE_FEEDBACK_TYPES[record?.lastReason] ? record.lastReason : '',
+    lastAppliedDateByReason: Object.entries(record?.lastAppliedDateByReason || {}).reduce((result, [reason, dateKey]) => {
+      if (STORED_NEGATIVE_FEEDBACK_TYPES[reason] && /^\d{4}-\d{2}-\d{2}$/.test(String(dateKey || ''))) result[reason] = String(dateKey);
+      return result;
+    }, {}),
+    lastUndoneAtByReason: Object.entries(record?.lastUndoneAtByReason || {}).reduce((result, [reason, timestamp]) => {
+      if (STORED_NEGATIVE_FEEDBACK_TYPES[reason] && typeof timestamp === 'string' && !Number.isNaN(Date.parse(timestamp))) {
+        result[reason] = timestamp;
+      }
+      return result;
+    }, {}),
     updatedAt: typeof record?.updatedAt === 'string' ? record.updatedAt : null,
     needsReview: Boolean(record?.needsReview || reasons.inaccurate)
   };
@@ -2029,7 +2068,10 @@ function cleanCandidatePoolEntry(kanji, entry = {}) {
     reason: cleanShortText(entry.reason, 1000),
     suggestedAction,
     aiCard: cleanAiCard(entry.aiCard || {}),
-    aiCardHistory: safeArray(entry.aiCardHistory).map(cleanAiCard).filter(Boolean).slice(0, 3),
+    aiCardHistory: safeArray(entry.aiCardHistory).map(cleanAiCard).filter(Boolean).slice(0, 10),
+    coverHistory: safeArray(entry.coverHistory).map(cleanSharedCoverVersionSnapshot).slice(0, 10),
+    generationFeedback: cleanSharedGenerationFeedback(entry.generationFeedback || {}),
+    publicationSnapshot: cleanSharedPublicationSnapshot(entry.publicationSnapshot || {}),
     examples: safeArray(entry.examples).map(cleanAiExample).filter(Boolean).slice(0, 5),
     suggestedTitles: getUniqueWords(entry.suggestedTitles || []).map(item => cleanShortText(item, 140)).slice(0, 8),
     coverSuggestion: cleanCoverSuggestion(entry.coverSuggestion || {}),
@@ -2189,6 +2231,26 @@ function mergeCandidatePool(localPool, remotePool) {
     if (!isMeaningfulCard(localCard)) return remoteCard;
     return String(remoteCard.generatedAt || '') >= String(localCard.generatedAt || '') ? remoteCard : localCard;
   };
+  const mergeGenerationFeedback = (left = {}, right = {}) => {
+    const local = cleanSharedGenerationFeedback(left);
+    const remote = cleanSharedGenerationFeedback(right);
+    const mergeBucket = (localBucket, remoteBucket) => ({
+      reasons: [...Object.keys(localBucket.reasons || {}), ...Object.keys(remoteBucket.reasons || {})].reduce((result, reason) => {
+        result[reason] = Math.max(toInt(localBucket.reasons?.[reason], 0), toInt(remoteBucket.reasons?.[reason], 0));
+        return result;
+      }, {}),
+      lastReason: String(remoteBucket.updatedAt || '') >= String(localBucket.updatedAt || '') ? remoteBucket.lastReason : localBucket.lastReason,
+      updatedAt: [localBucket.updatedAt, remoteBucket.updatedAt].filter(Boolean).sort().pop() || '',
+      events: [...safeArray(localBucket.events), ...safeArray(remoteBucket.events)]
+        .filter((event, index, items) => items.findIndex(candidate => candidate.id === event.id) === index)
+        .sort((a, b) => String(b.createdAt || '').localeCompare(String(a.createdAt || '')))
+        .slice(0, 20)
+    });
+    return cleanSharedGenerationFeedback({
+      card: mergeBucket(local.card, remote.card),
+      cover: mergeBucket(local.cover, remote.cover)
+    });
+  };
   const mergeEntry = (current, incoming) => {
     const currentUpdated = current.updatedAt || '';
     const incomingUpdated = incoming.updatedAt || '';
@@ -2210,6 +2272,12 @@ function mergeCandidatePool(localPool, remotePool) {
       reason: nonEmpty(newer.reason, older.reason, 1000),
       aiCard: chooseAiCard(current.aiCard, incoming.aiCard),
       aiCardHistory: [...safeArray(current.aiCardHistory), ...safeArray(incoming.aiCardHistory)].map(cleanAiCard).filter(Boolean).slice(0, 10),
+      coverHistory: [...safeArray(current.coverHistory), ...safeArray(incoming.coverHistory)]
+        .map(cleanSharedCoverVersionSnapshot)
+        .filter((item, index, items) => items.findIndex(candidate => candidate.coverVersion === item.coverVersion && candidate.generatedAt === item.generatedAt) === index)
+        .slice(0, 10),
+      generationFeedback: mergeGenerationFeedback(current.generationFeedback, incoming.generationFeedback),
+      publicationSnapshot: cleanSharedPublicationSnapshot(newer.publicationSnapshot || older.publicationSnapshot || {}),
       sourceTags: getUniqueWords([...(current.sourceTags || []), ...(incoming.sourceTags || [])]).slice(0, 12),
       discoverySource: nonEmpty(newer.discoverySource, older.discoverySource, 80),
       discoveryContext: nonEmpty(newer.discoveryContext, older.discoveryContext, 1200),
@@ -2447,15 +2515,38 @@ function mergeFeedback(localFeedback, remoteFeedback) {
       next[kanji] = remoteRecord;
       return;
     }
+    const remoteIsNewer = remoteRecord.updatedAt && (!localRecord.updatedAt || remoteRecord.updatedAt >= localRecord.updatedAt);
+    const winner = remoteIsNewer ? remoteRecord : localRecord;
+    const loser = remoteIsNewer ? localRecord : remoteRecord;
     const reasons = { ...localRecord.reasons };
     Object.entries(remoteRecord.reasons || {}).forEach(([reason, count]) => {
       reasons[reason] = Math.max(toInt(reasons[reason], 0), toInt(count, 0));
     });
+    Object.keys({ ...(localRecord.reasons || {}), ...(remoteRecord.reasons || {}) }).forEach(reason => {
+      if (winner.lastUndoneAtByReason?.[reason]
+        && String(winner.updatedAt || '') >= String(loser.updatedAt || '')) {
+        const winnerCount = toInt(winner.reasons?.[reason], 0);
+        if (winnerCount > 0) reasons[reason] = winnerCount;
+        else delete reasons[reason];
+      }
+    });
+    const lastAppliedDateByReason = {
+      ...(localRecord.lastAppliedDateByReason || {}),
+      ...(remoteRecord.lastAppliedDateByReason || {})
+    };
+    Object.keys(lastAppliedDateByReason).forEach(reason => {
+      if (winner.lastUndoneAtByReason?.[reason] && !winner.lastAppliedDateByReason?.[reason]) {
+        delete lastAppliedDateByReason[reason];
+      }
+    });
     next[kanji] = {
       reasons,
-      lastReason: remoteRecord.updatedAt && (!localRecord.updatedAt || remoteRecord.updatedAt >= localRecord.updatedAt)
-        ? remoteRecord.lastReason
-        : localRecord.lastReason,
+      lastReason: winner.lastReason || '',
+      lastAppliedDateByReason,
+      lastUndoneAtByReason: {
+        ...(localRecord.lastUndoneAtByReason || {}),
+        ...(remoteRecord.lastUndoneAtByReason || {})
+      },
       updatedAt: [localRecord.updatedAt, remoteRecord.updatedAt].filter(Boolean).sort().pop() || null,
       needsReview: Boolean(localRecord.needsReview || remoteRecord.needsReview || reasons.inaccurate)
     };
@@ -4294,21 +4385,12 @@ function getPublishedDirectionProfile() {
     const word = getDisplayWordByKanji(record.word);
     if (!word) return;
     const rating = getRecordRating(record).level;
-    const reasons = safeArray(record.performanceReason);
-    let baseDelta = rating === '优秀' ? 10 : rating === '正常' ? 4 : rating === '偏弱' ? -4 : rating === '异常差' ? -8 : 0;
+    const baseDelta = rating === '优秀' ? 10 : rating === '正常' ? 4 : rating === '偏弱' ? -4 : rating === '异常差' ? -8 : 0;
     if (!baseDelta) return;
-    let multiplier = 1;
-    if (reasons.includes('lowExposure') || reasons.includes('timingProblem')) multiplier = 0.35;
-    else if (reasons.includes('coverProblem')) multiplier = 0.45;
-    else if (reasons.includes('titleProblem')) multiplier = 0.72;
-    else if (reasons.includes('contentProblem')) multiplier = 0.82;
-    else if (reasons.includes('dataAbnormal')) multiplier = 0.2;
-    else if (reasons.includes('wordMismatch')) multiplier = 1.2;
-    const delta = Math.round(baseDelta * multiplier);
-    addScore(profile.category, word.category, delta);
-    addScore(profile.source, word.source, delta);
-    addScore(profile.scene, getUsageScene(word), delta);
-    addScore(profile.contentType, record.contentType || '图文', delta);
+    addScore(profile.category, word.category, baseDelta);
+    addScore(profile.source, word.source, baseDelta);
+    addScore(profile.scene, getUsageScene(word), baseDelta);
+    addScore(profile.contentType, record.contentType || '图文', baseDelta);
   });
   return profile;
 }
@@ -4368,20 +4450,18 @@ function getPublishedStyleProfile() {
   cleanPublishedRecords(publishedRecords).forEach(record => {
     const word = getDisplayWordByKanji(record.word);
     if (!word) return;
-    const rating = getRecordRating(record).level;
-    const reasons = safeArray(record.performanceReason);
-    let baseDelta = rating === '优秀' ? 10 : rating === '正常' ? 4 : rating === '偏弱' ? -4 : rating === '异常差' ? -8 : 0;
-    if (!baseDelta) return;
-    let multiplier = 1;
-    if (reasons.includes('titleProblem')) multiplier = 0.4;
-    else if (reasons.includes('contentProblem')) multiplier = 0.6;
-    else if (reasons.includes('lowExposure') || reasons.includes('timingProblem') || reasons.includes('coverProblem')) multiplier = 0.8;
-    else if (reasons.includes('dataAbnormal')) multiplier = 0.2;
-    const delta = Math.round(baseDelta * multiplier);
+    const assessment = getPublishedPerformanceAssessment(record, {
+      records: cleanPublishedRecords(publishedRecords),
+      now: Date.now()
+    });
+    if (assessment.stage === 'collecting') return;
+    const dimensionDelta = dimension => ({ strong: 10, normal: 4, weak: -6 }[dimension?.level] || 0);
+    const coverDelta = dimensionDelta(assessment.cover);
+    const contentDelta = dimensionDelta(assessment.content);
     const modes = getWordStyleModes(word, record.contentType || '图文');
-    addScore(profile.titleMode, modes.titleMode, delta);
-    addScore(profile.hookMode, modes.hookMode, delta);
-    addScore(profile.referenceMode, modes.referenceMode, delta);
+    addScore(profile.titleMode, modes.titleMode, coverDelta);
+    addScore(profile.hookMode, modes.hookMode, contentDelta);
+    addScore(profile.referenceMode, modes.referenceMode, contentDelta);
   });
   return profile;
 }
@@ -4404,14 +4484,7 @@ function getPublishedPerformanceWordMap() {
     if (!record.word) return;
     const result = getRecordRating(record);
     const baseDelta = result.level === '优秀' ? 10 : result.level === '正常' ? 4 : result.level === '偏弱' ? -4 : result.level === '异常差' ? -8 : 0;
-    const reasons = safeArray(record.performanceReason);
-    let multiplier = 1;
-    if (reasons.includes('lowExposure') || reasons.includes('timingProblem') || reasons.includes('coverProblem')) multiplier = 0.45;
-    else if (reasons.includes('titleProblem') || reasons.includes('contentProblem')) multiplier = 0.72;
-    else if (reasons.includes('dataAbnormal')) multiplier = 0.25;
-    else if (reasons.includes('wordMismatch')) multiplier = 1.15;
-    const delta = Math.round(baseDelta * multiplier);
-    wordScores[record.word] = (wordScores[record.word] || 0) + delta;
+    wordScores[record.word] = (wordScores[record.word] || 0) + baseDelta;
   });
   return wordScores;
 }
@@ -4440,13 +4513,10 @@ function getCategoryFeedbackSignal(word) {
     signal -= Math.min(toInt(reasons.tooBasic, 0), 2) * 2;
     signal -= Math.min(toInt(reasons.tooTextbook, 0), 2) * 3;
     signal -= Math.min(toInt(reasons.notForXhs, 0), 2) * 3;
-    signal -= Math.min(toInt(reasons.inaccurate, 0), 2) * 2;
     signal -= Math.min(toInt(reasons.tooRisky, 0), 2) * 4;
     signal -= Math.min(toInt(reasons.tooNiche, 0), 2) * 3;
     signal -= Math.min(toInt(reasons.notFresh, 0), 2) * 3;
     signal -= Math.min(toInt(reasons.tooMeme, 0), 2) * 3;
-    signal -= Math.min(toInt(reasons.badVisual, 0), 2) * 2;
-    signal -= Math.min(toInt(reasons.badTitle, 0), 2) * 2;
     signal -= Math.min(toInt(reasons.notMyTone, 0), 2) * 3;
   });
   return clamp(signal, -14, 6);
@@ -4465,13 +4535,11 @@ function getWorkflowSignalForKanji(kanji, publishedWordMap) {
   if (feedback.reasons.notForXhs) score -= 8;
   if (feedback.reasons.tooBasic) score -= 5;
   if (feedback.reasons.tooTextbook) score -= 5;
-  if (feedback.reasons.inaccurate || feedback.needsReview) score -= 10;
+  if (feedback.needsReview && !feedback.reasons.inaccurate) score -= 10;
   if (feedback.reasons.tooRisky) score -= 12;
   if (feedback.reasons.tooNiche) score -= 8;
   if (feedback.reasons.notFresh) score -= 7;
   if (feedback.reasons.tooMeme) score -= 7;
-  if (feedback.reasons.badVisual) score -= 6;
-  if (feedback.reasons.badTitle) score -= 6;
   if (feedback.reasons.notMyTone) score -= 8;
   return score;
 }
@@ -4484,13 +4552,10 @@ function getFeedbackPenalty(kanji) {
       tooBasic: 6,
       tooTextbook: 6,
       notForXhs: 9,
-      inaccurate: 12,
       tooRisky: 14,
       tooNiche: 8,
       notFresh: 7,
       tooMeme: 7,
-      badVisual: 7,
-      badTitle: 7,
       notMyTone: 9
     }[reason] || 0;
     return penalty + unit * Math.min(count, 3);
@@ -4568,7 +4633,7 @@ function getAccountFitScore(word, categoryPreferenceMap, sourcePreferenceMap, di
 
 function getConfidenceLevel(word) {
   const feedback = getFeedbackRecord(word.kanji);
-  if (feedback.needsReview || feedback.reasons.inaccurate) return 'review';
+  if (feedback.needsReview && !feedback.reasons.inaccurate) return 'review';
   const source = String(word.source || '');
   const meaningLength = String(word.meaning || '').length;
   if (source.includes('SNS') || source.includes('Twitter') || source.includes('Instagram') || source.includes('YouTube')) {
@@ -5850,10 +5915,13 @@ function renderAiCardActionButton(kanji, aiCard = {}, className = 'btn btn-ghost
   if (isTodaySnapshotWord(cleanKanji)) {
     const entry = candidatePool?.[cleanKanji] || {};
     const actionState = getTodayAiCardActionState({ aiCard: card, entry, inFlight });
+    if (card.cardStatus === 'ready') {
+      return `<button class="${escapeHTML(className)}" data-workflow-action="open-word-detail" data-kanji="${safeKanji}">管理词卡与封面</button>`;
+    }
     return `<button class="${escapeHTML(className)}" ${actionState.disabled ? 'disabled' : ''} data-workflow-action="generate-today-card" data-kanji="${safeKanji}">${escapeHTML(actionState.label)}</button>`;
   }
   if (card.cardStatus === 'ready') {
-    return `<button class="${escapeHTML(className)}" disabled>已生成词卡</button><button class="${escapeHTML(className)}" data-workflow-action="generate-deepseek-card" data-kanji="${safeKanji}" data-force="true">重新生成 DeepSeek 词卡</button>`;
+    return `<button class="${escapeHTML(className)}" data-workflow-action="open-word-detail" data-kanji="${safeKanji}">管理词卡与封面</button>`;
   }
   if (card.cardStatus === 'pending') {
     if (isAiCardStalePending(card, candidatePool?.[cleanKanji] || {})) {
@@ -5897,7 +5965,12 @@ async function generateTodayAiCardsOnServer(kanjis = [], options = {}) {
     if (currentWordForModal && targets.includes(currentWordForModal.kanji)) openDetail(currentWordForModal.kanji);
     if (!response.ok || data.error) throw new Error(getApiErrorMessage(data, response.status));
     const savedCount = toInt(data.savedCount, 0);
-    showToast(savedCount ? `已生成 ${savedCount} 个今日词卡` : '没有需要生成的今日词卡');
+    const successMessage = options.regenerationScope === 'cover'
+      ? '封面方案已更新，参考图等待下次图片任务生成'
+      : options.regenerationScope === 'card'
+        ? '单词卡内容已重新生成，原封面保持不变'
+        : `已生成 ${savedCount} 个今日词卡`;
+    showToast(savedCount ? successMessage : '没有需要生成的内容');
     return savedCount;
   } catch (error) {
     console.warn('今日词卡生成失败', error);
@@ -6090,15 +6163,17 @@ function buildWordCardPayloadItems(kanjis) {
   }).filter(Boolean);
 }
 
-function saveGeneratedAiCard(kanji, aiCard, usage = {}, force = false) {
+function saveGeneratedAiCard(kanji, aiCard, usage = {}, options = {}) {
   const entry = ensureCandidatePoolEntryForCard(kanji);
   if (!entry) return false;
+  const force = Boolean(options.force);
+  const regenerationScope = ['card', 'cover'].includes(options.scope) ? options.scope : '';
   const previousCard = cleanAiCard(entry.aiCard || {});
   const history = safeArray(entry.aiCardHistory).map(cleanAiCard).filter(Boolean);
-  const nextHistory = force && previousCard?.cardStatus === 'ready'
-    ? [previousCard, ...history].slice(0, 3)
-    : history.slice(0, 3);
-  const cleanCard = cleanAiCard({
+  const nextHistory = force && previousCard?.cardStatus === 'ready' && regenerationScope !== 'cover'
+    ? [previousCard, ...history].slice(0, 10)
+    : history.slice(0, 10);
+  const generatedCard = cleanAiCard({
     ...(aiCard || {}),
     cardStatus: 'ready',
     cardSource: 'deepseek_api',
@@ -6106,10 +6181,44 @@ function saveGeneratedAiCard(kanji, aiCard, usage = {}, force = false) {
     cardVersion: force && previousCard ? toInt(previousCard.cardVersion, 1) + 1 : toInt(aiCard?.cardVersion, previousCard?.cardVersion || 1),
     generatedAt: aiCard?.generatedAt || usage.createdAt || nowIso()
   });
+  const cleanCard = regenerationScope === 'card' && previousCard?.cardStatus === 'ready'
+    ? cleanAiCard({
+        ...generatedCard,
+        cardVersion: Math.min(99, toInt(previousCard.cardVersion, 1) + 1),
+        coverVersion: previousCard.coverVersion,
+        coverGeneratedAt: previousCard.coverGeneratedAt,
+        coverSuggestion: previousCard.coverSuggestion,
+        referenceImage: previousCard.referenceImage
+      })
+    : regenerationScope === 'cover' && previousCard?.cardStatus === 'ready'
+      ? cleanAiCard({
+          ...previousCard,
+          coverVersion: Math.min(99, toInt(previousCard.coverVersion, 1) + 1),
+          coverGeneratedAt: usage.createdAt || nowIso(),
+          coverSuggestion: generatedCard.coverSuggestion,
+          referenceImage: {
+            status: 'missing',
+            visualBrief: generatedCard.coverSuggestion?.mainVisual || '',
+            prompt: '',
+            provider: '',
+            generatedAt: ''
+          }
+        })
+      : generatedCard;
+  const coverHistory = regenerationScope === 'cover' && previousCard?.cardStatus === 'ready'
+    ? [{
+        coverVersion: previousCard.coverVersion,
+        coverSuggestion: previousCard.coverSuggestion,
+        referenceImage: previousCard.referenceImage,
+        feedbackReason: options.feedbackReason || '',
+        generatedAt: previousCard.coverGeneratedAt || previousCard.generatedAt
+      }, ...safeArray(entry.coverHistory)].slice(0, 10)
+    : safeArray(entry.coverHistory).slice(0, 10);
   candidatePool[kanji] = cleanCandidatePoolEntry(kanji, {
     ...entry,
     aiCard: cleanCard,
     aiCardHistory: nextHistory,
+    coverHistory,
     updatedAt: nowIso()
   });
   return true;
@@ -6146,7 +6255,12 @@ async function generateDeepSeekWordCards(kanjis, options = {}) {
     favorites,
     negativeFeedback: wordFeedback,
     publishedWords: cleanPublishedRecords(publishedRecords).map(record => record.word).filter(Boolean),
-    accountLearningSummary: getAccountLearningSummary()
+    accountLearningSummary: getAccountLearningSummary(),
+    regeneration: {
+      scope: options.scope,
+      reason: options.feedbackReason,
+      currentCard: targetKanjis.length === 1 ? candidatePool?.[targetKanjis[0]]?.aiCard || {} : {}
+    }
   });
   if (!payload.context.words.length) {
     if (!options.silent) showToast('没有找到可生成词卡的候选词');
@@ -6172,7 +6286,11 @@ async function generateDeepSeekWordCards(kanjis, options = {}) {
     let savedCount = 0;
     safeArray(data.items).forEach((item, index) => {
       const kanji = cleanShortText(item.kanji || payload.context.words[index]?.kanji, 80);
-      if (kanji && saveGeneratedAiCard(kanji, item.aiCard || item.card || item, data.usage || {}, force)) savedCount += 1;
+      if (kanji && saveGeneratedAiCard(kanji, item.aiCard || item.card || item, data.usage || {}, {
+        force,
+        scope: options.scope,
+        feedbackReason: options.feedbackReason
+      })) savedCount += 1;
     });
     const trace = getAiTraceFromUsage(data.usage || {}, payload);
     const batch = cleanAiBatch({
@@ -6192,7 +6310,14 @@ async function generateDeepSeekWordCards(kanjis, options = {}) {
     if (!silent) refreshCurrentGrid();
     if (!silent && currentWordForModal && targetKanjis.includes(currentWordForModal.kanji)) openDetail(currentWordForModal.kanji);
     if (!silent) saveCloudWorkflow(false);
-    if (!silent) showToast(savedCount ? `已生成 ${savedCount} 个 DeepSeek 词卡` : 'DeepSeek 没有返回可保存的词卡');
+    if (!silent) {
+      const successMessage = options.scope === 'cover'
+        ? '封面方案已更新，参考图等待下次图片任务生成'
+        : options.scope === 'card'
+          ? '单词卡内容已重新生成，原封面保持不变'
+          : `已生成 ${savedCount} 个 DeepSeek 词卡`;
+      showToast(savedCount ? successMessage : 'DeepSeek 没有返回可保存的内容');
+    }
     return savedCount;
   } catch (error) {
     console.warn('DeepSeek 词卡生成失败', error);
@@ -6222,6 +6347,120 @@ async function generateDeepSeekWordCards(kanjis, options = {}) {
 
 function generateDeepSeekWordCard(kanji, force = false) {
   return generateDeepSeekWordCards([kanji], { force });
+}
+
+function recordGenerationFeedback(kanji, target, reason) {
+  const reasonOptions = target === 'cover' ? COVER_REGENERATION_REASONS : CARD_REGENERATION_REASONS;
+  if (!reasonOptions[reason]) return false;
+  const entry = ensureCandidatePoolEntryForCard(kanji);
+  if (!entry) return false;
+  const feedback = cleanSharedGenerationFeedback(entry.generationFeedback || {});
+  const currentBucket = feedback[target];
+  const card = cleanAiCard(entry.aiCard || {}) || {};
+  const createdAt = nowIso();
+  const event = {
+    id: `${target}-feedback-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    target,
+    reason,
+    cardVersion: toInt(card.cardVersion, 0),
+    coverVersion: toInt(card.coverVersion, 0),
+    createdAt
+  };
+  candidatePool[kanji] = cleanCandidatePoolEntry(kanji, {
+    ...entry,
+    generationFeedback: {
+      ...feedback,
+      [target]: {
+        reasons: {
+          ...(currentBucket.reasons || {}),
+          [reason]: toInt(currentBucket.reasons?.[reason], 0) + 1
+        },
+        lastReason: reason,
+        updatedAt: createdAt,
+        events: [event, ...safeArray(currentBucket.events)].slice(0, 20)
+      }
+    },
+    updatedAt: createdAt
+  });
+  saveLocalWorkflow();
+  return true;
+}
+
+function openRegenerationReasonModal(kanji, target = 'card') {
+  const cleanKanji = cleanShortText(kanji, 80);
+  const word = findWord(cleanKanji);
+  const entry = cleanCandidatePoolEntry(cleanKanji, candidatePool[cleanKanji] || {}) || {};
+  const card = cleanAiCard(entry.aiCard || {});
+  if (!word || card?.cardStatus !== 'ready') {
+    showToast('正式词卡就绪后才能重新生成');
+    return;
+  }
+  currentWordForModal = word;
+  const cleanTarget = target === 'cover' ? 'cover' : 'card';
+  const reasons = cleanTarget === 'cover' ? COVER_REGENERATION_REASONS : CARD_REGENERATION_REASONS;
+  const feedback = cleanSharedGenerationFeedback(entry.generationFeedback || {})[cleanTarget];
+  const title = cleanTarget === 'cover' ? '为什么要重新生成封面？' : '为什么要重新生成单词卡？';
+  const description = cleanTarget === 'cover'
+    ? '只更新封面文字和视觉方案，单词卡内容保持不变。当前参考图会进入历史，新参考图由后续图片任务补齐。'
+    : '只更新释义、场景、例句、标题和内容角度，当前封面保持不变。';
+  document.getElementById('modalContainer').innerHTML = `
+    <div class="modal-shell regeneration-reason-shell">
+      <div class="modal-header settings-header">
+        <div><span class="modal-eyebrow">${escapeHTML(cleanKanji)} · 负反馈</span><h2 class="modal-title">${escapeHTML(title)}</h2></div>
+        <button class="modal-close" data-modal-action="back-to-word-detail" data-kanji="${escapeHTML(cleanKanji)}" aria-label="返回词卡详情">×</button>
+      </div>
+      <div class="modal-body form-modal-body">
+        <div class="published-score-note regeneration-reason-note">${escapeHTML(description)}选择原因后会立即开始重新生成。</div>
+        <div class="regeneration-reason-grid">
+          ${Object.entries(reasons).map(([reason, label]) => `
+            <button class="regeneration-reason-option" data-modal-action="select-regeneration-reason" data-kanji="${escapeHTML(cleanKanji)}" data-target="${cleanTarget}" data-reason="${escapeHTML(reason)}">
+              <span>${escapeHTML(label)}</span>
+              ${feedback.reasons?.[reason] ? `<small>此前选择 ${feedback.reasons[reason]} 次</small>` : '<small>记录原因并重新生成</small>'}
+            </button>`).join('')}
+        </div>
+        <div class="modal-footer-actions form-actions">
+          <button class="btn btn-ghost" data-modal-action="back-to-word-detail" data-kanji="${escapeHTML(cleanKanji)}">返回详情</button>
+        </div>
+      </div>
+    </div>`;
+  document.getElementById('modalOverlay').classList.add('open');
+  document.body.style.overflow = 'hidden';
+}
+
+async function regenerateFromFeedback(kanji, target = 'card', reason = '') {
+  const cleanKanji = cleanShortText(kanji, 80);
+  const cleanTarget = target === 'cover' ? 'cover' : 'card';
+  if (!recordGenerationFeedback(cleanKanji, cleanTarget, reason)) {
+    showToast('请选择一个重新生成原因');
+    return 0;
+  }
+  openDetail(cleanKanji);
+  showToast(cleanTarget === 'cover' ? '已记录封面问题，正在重新生成封面方案…' : '已记录内容问题，正在重新生成单词卡…');
+  await saveCloudWorkflow(false);
+  const isTodayWord = isTodaySnapshotWord(cleanKanji);
+  if (!isTodayWord) {
+    aiCardAutoInFlight.add(cleanKanji);
+    openDetail(cleanKanji);
+  }
+  let savedCount = 0;
+  try {
+    savedCount = isTodayWord
+      ? await generateTodayAiCardsOnServer([cleanKanji], {
+        force: true,
+        maxWords: 1,
+        regenerationScope: cleanTarget,
+        feedbackReason: reason
+      })
+      : await generateDeepSeekWordCards([cleanKanji], {
+        force: true,
+        scope: cleanTarget,
+        feedbackReason: reason
+      });
+  } finally {
+    aiCardAutoInFlight.delete(cleanKanji);
+  }
+  if (currentWordForModal?.kanji === cleanKanji) openDetail(cleanKanji);
+  return savedCount;
 }
 
 function getFavoriteWords() {
@@ -6573,12 +6812,34 @@ async function markPending(kanji) {
   await runUiOperation(`status:${kanji}`, () => syncFavoriteStatus(kanji, 'pending'));
 }
 
+function capturePublicationSnapshot(kanji) {
+  const entry = ensureManualKeepEntry(kanji);
+  const card = cleanAiCard(entry?.aiCard || {});
+  if (!entry || card?.cardStatus !== 'ready') return null;
+  const snapshot = cleanSharedPublicationSnapshot({
+    capturedAt: nowIso(),
+    cardVersion: card.cardVersion,
+    cardGeneratedAt: card.generatedAt,
+    suggestedTitle: safeArray(card.suggestedTitles)[0] || '',
+    coverVersion: card.coverVersion,
+    coverSuggestion: card.coverSuggestion,
+    referenceImage: card.referenceImage
+  });
+  candidatePool[kanji] = cleanCandidatePoolEntry(kanji, {
+    ...entry,
+    publicationSnapshot: snapshot,
+    updatedAt: nowIso()
+  });
+  return snapshot;
+}
+
 async function markPublishedStatusOnly(kanji) {
   if (uiOperationsInFlight.has(`status:${kanji}`)) return;
   const transition = transitionFavoriteStatus({ kanji, status: 'published', favorites, statuses: favoriteStatuses });
   favorites = transition.favorites;
   favoriteStatuses = transition.statuses;
   ensureManualKeepEntry(kanji);
+  capturePublicationSnapshot(kanji);
   removeWordFromTodaySnapshot(kanji);
   saveLocalWorkflow();
   updateAllBadges();
@@ -6649,6 +6910,7 @@ async function selectFavoriteStatus(kanji, status) {
   favorites = transition.favorites;
   favoriteStatuses = transition.statuses;
   activeStatusMenuKanji = null;
+  if (nextStatus === 'published') capturePublicationSnapshot(kanji);
   if (['pending', 'published'].includes(nextStatus)) removeWordFromTodaySnapshot(kanji);
   saveLocalWorkflow();
   updateAllBadges();
@@ -6659,7 +6921,7 @@ async function selectFavoriteStatus(kanji, status) {
 
 function renderFeedbackControl(kanji, options = {}) {
   const feedback = getFeedbackRecord(kanji);
-  const totalCount = Object.values(feedback.reasons || {}).reduce((sum, count) => sum + toInt(count, 0), 0);
+  const totalCount = Object.keys(NEGATIVE_FEEDBACK_TYPES).reduce((sum, reason) => sum + toInt(feedback.reasons?.[reason], 0), 0);
   const isOpen = activeFeedbackMenuKanji === kanji;
   const isCodexPreview = options.context === 'codex-preview';
   const feedbackOptions = Object.entries(NEGATIVE_FEEDBACK_TYPES).map(([key, label]) => `
@@ -6684,14 +6946,23 @@ function applyNegativeFeedback(kanji, reason, options = {}) {
   if (!NEGATIVE_FEEDBACK_TYPES[reason]) return;
   const current = getFeedbackRecord(kanji);
   const reasons = { ...current.reasons };
-  reasons[reason] = toInt(reasons[reason], 0) + 1;
+  const currentDateKey = todayKey();
+  const alreadyAppliedToday = current.lastAppliedDateByReason?.[reason] === currentDateKey;
+  if (!alreadyAppliedToday) reasons[reason] = toInt(reasons[reason], 0) + 1;
+  const lastUndoneAtByReason = { ...(current.lastUndoneAtByReason || {}) };
+  if (!alreadyAppliedToday) delete lastUndoneAtByReason[reason];
   const shouldDismissFromToday = Boolean(options.dismissFromToday);
   const wasVisibleToday = shouldDismissFromToday && todayWords.some(word => word.kanji === kanji);
   wordFeedback[kanji] = {
     reasons,
     lastReason: reason,
+    lastAppliedDateByReason: {
+      ...(current.lastAppliedDateByReason || {}),
+      [reason]: currentDateKey
+    },
+    lastUndoneAtByReason,
     updatedAt: nowIso(),
-    needsReview: Boolean(current.needsReview || reason === 'inaccurate')
+    needsReview: Boolean(current.needsReview)
   };
   activeFeedbackMenuKanji = null;
   if (shouldDismissFromToday) {
@@ -6699,7 +6970,7 @@ function applyNegativeFeedback(kanji, reason, options = {}) {
     if (candidatePool[kanji]) {
       candidatePool[kanji] = cleanCandidatePoolEntry(kanji, {
         ...candidatePool[kanji],
-        ignoredCount: toInt(candidatePool[kanji]?.ignoredCount, 0) + 3,
+        ignoredCount: toInt(candidatePool[kanji]?.ignoredCount, 0) + (alreadyAppliedToday ? 0 : 1),
         updatedAt: nowIso()
       });
     }
@@ -6712,16 +6983,58 @@ function applyNegativeFeedback(kanji, reason, options = {}) {
   } else {
     refreshCurrentGrid();
   }
-  showToast(options.toastMessage || `已记录反馈：${NEGATIVE_FEEDBACK_TYPES[reason]}`);
+  showToast(alreadyAppliedToday ? '今天已经记录过这条反馈' : (options.toastMessage || `已记录反馈：${NEGATIVE_FEEDBACK_TYPES[reason]}`), options.allowUndo ? {
+    actionLabel: '撤销',
+    onAction: () => undoNegativeFeedback(kanji, reason, { restoreToday: shouldDismissFromToday })
+  } : {});
   updateAllBadges();
   refreshCurrentGrid();
   saveCloudWorkflow(false);
 }
 
+function undoNegativeFeedback(kanji, reason, options = {}) {
+  const current = getFeedbackRecord(kanji);
+  if (current.lastAppliedDateByReason?.[reason] !== todayKey()) return false;
+  const reasons = { ...current.reasons };
+  const nextCount = Math.max(0, toInt(reasons[reason], 0) - 1);
+  if (nextCount) reasons[reason] = nextCount;
+  else delete reasons[reason];
+  const lastAppliedDateByReason = { ...(current.lastAppliedDateByReason || {}) };
+  delete lastAppliedDateByReason[reason];
+  wordFeedback[kanji] = {
+    ...current,
+    reasons,
+    lastReason: current.lastReason === reason ? '' : current.lastReason,
+    lastAppliedDateByReason,
+    lastUndoneAtByReason: {
+      ...(current.lastUndoneAtByReason || {}),
+      [reason]: nowIso()
+    },
+    updatedAt: nowIso()
+  };
+  if (options.restoreToday) {
+    setTodayDismissedWords(getTodayDismissedWords().filter(word => word !== kanji));
+    if (candidatePool[kanji]) {
+      candidatePool[kanji] = cleanCandidatePoolEntry(kanji, {
+        ...candidatePool[kanji],
+        ignoredCount: Math.max(0, toInt(candidatePool[kanji].ignoredCount, 0) - 1),
+        updatedAt: nowIso()
+      });
+    }
+  }
+  saveLocalWorkflow();
+  updateAllBadges();
+  refreshCurrentGrid();
+  saveCloudWorkflow(false);
+  showToast('已撤销本次反馈');
+  return true;
+}
+
 function dismissTodayRecommendation(kanji) {
   applyNegativeFeedback(kanji, 'uninterested', {
     dismissFromToday: true,
-    toastMessage: '已取消首页推荐，后续尽量减少类似的推荐'
+    allowUndo: true,
+    toastMessage: '已从今天隐藏，后续会减少类似推荐'
   });
 }
 
@@ -8174,7 +8487,8 @@ function renderWordDetail(word) {
       </div>
       <div class="modal-footer-actions">
         <button class="btn btn-primary" data-modal-action="mark-pending" data-kanji="${safeKanjiAction}">标记待发布</button>
-        ${renderAiCardActionButton(word.kanji, aiCard, 'btn btn-ghost')}
+        <button class="btn btn-ghost" data-modal-action="open-regeneration-reasons" data-kanji="${safeKanjiAction}" data-target="card">重新生成单词卡</button>
+        <button class="btn btn-ghost" data-modal-action="open-regeneration-reasons" data-kanji="${safeKanjiAction}" data-target="cover">重新生成封面</button>
       </div>
     </div>`;
   document.getElementById('modalOverlay').classList.add('open');
@@ -8318,6 +8632,11 @@ function renderPublishedDetail(record, cachedWord = null) {
   const medians = publishedPageModelCache?.medians
     || buildPublishedPageModel(getPublishedDisplayItems()).medians;
   const updateState = getPublishedUpdateState(record);
+  const performanceAssessment = getPublishedPerformanceAssessment(record, {
+    records: cleanPublishedRecords(publishedRecords),
+    now: Date.now()
+  });
+  const creativeSnapshot = record.creativeSnapshot || null;
   const coverUrls = getPublishedCover(record);
   const contentLabel = getPublishedContentLabel(record, word);
   const coverFallback = buildPublishedCoverFallback(contentLabel);
@@ -8409,6 +8728,38 @@ function renderPublishedDetail(record, cachedWord = null) {
             }).join('')}
           </div>
         </section>
+
+        <section class="published-detail-section performance-assessment-section">
+          <div class="published-detail-section-heading">
+            <div><span class="published-eyebrow">效果归因</span><h3>${escapeHTML(performanceAssessment.stageLabel)}</h3></div>
+            <span>${performanceAssessment.stage === 'collecting' ? '暂不影响后续推荐' : `参照 ${performanceAssessment.baselineSampleSize} 篇近期内容`}</span>
+          </div>
+          <div class="performance-assessment-grid">
+            ${[
+              ['选题价值', performanceAssessment.topic],
+              ['封面包装', performanceAssessment.cover],
+              ['内容承接', performanceAssessment.content]
+            ].map(([label, dimension]) => `
+              <div class="performance-assessment-card is-${escapeHTML(dimension.level)}">
+                <span>${escapeHTML(label)}</span>
+                <strong>${escapeHTML(dimension.label)}</strong>
+                <small>${escapeHTML(dimension.reason)}</small>
+              </div>`).join('')}
+          </div>
+          <p class="published-score-note">${escapeHTML(performanceAssessment.summary)}</p>
+        </section>
+
+        ${creativeSnapshot ? `<section class="published-detail-section">
+          <div class="published-detail-section-heading">
+            <div><span class="published-eyebrow">制作留档</span><h3>发布时使用的内容版本</h3></div>
+            <span>自动记录，无需手动“采用”</span>
+          </div>
+          <div class="published-detail-metrics creative-snapshot-grid">
+            <div><span>单词卡版本</span><strong>v${toInt(creativeSnapshot.cardVersion, 0) || '—'}</strong><small>${escapeHTML(formatPublishedDate(creativeSnapshot.cardGeneratedAt, true) || '生成时间待补充')}</small></div>
+            <div><span>封面版本</span><strong>v${toInt(creativeSnapshot.coverVersion, 0) || '—'}</strong><small>${escapeHTML(creativeSnapshot.coverSuggestion?.coverText || '封面文案待补充')}</small></div>
+            <div><span>当时推荐标题</span><strong>${escapeHTML(creativeSnapshot.suggestedTitle || '—')}</strong><small>实际发布标题以本页顶部为准</small></div>
+          </div>
+        </section>` : ''}
 
         <section class="published-detail-section">
           <div class="published-detail-section-heading">
@@ -8744,12 +9095,28 @@ function toggleSidebar() {
   document.getElementById('sidebar')?.classList.toggle('open');
 }
 
-function showToast(message) {
+function showToast(message, options = {}) {
   const toast = document.getElementById('toast');
   if (!toast) return;
-  toast.textContent = message;
+  if (toastHideTimer) window.clearTimeout(toastHideTimer);
+  toast.replaceChildren();
+  const text = document.createElement('span');
+  text.textContent = message;
+  toast.appendChild(text);
+  if (options.actionLabel && typeof options.onAction === 'function') {
+    const action = document.createElement('button');
+    action.type = 'button';
+    action.className = 'toast-action';
+    action.textContent = options.actionLabel;
+    action.addEventListener('click', () => {
+      options.onAction();
+      toast.classList.remove('show');
+    }, { once: true });
+    toast.appendChild(action);
+  }
+  toast.classList.toggle('has-action', Boolean(options.actionLabel));
   toast.classList.add('show');
-  setTimeout(() => toast.classList.remove('show'), 2200);
+  toastHideTimer = window.setTimeout(() => toast.classList.remove('show'), options.actionLabel ? 5000 : 2200);
 }
 
 document.addEventListener('click', event => {
@@ -8918,6 +9285,7 @@ createManualWordModalController({
 
 createWorkflowActionsController({
   root: document,
+  onOpenWordDetail: openDetail,
   onGenerateTodayCard: generateTodayAiCard,
   onGenerateDeepSeekCard: generateDeepSeekWordCard,
   onToggleStatus: toggleStatusMenu,
@@ -8937,6 +9305,9 @@ createModalActionsController({
   onToggleCodexFavorite: toggleCodexDraftFavorite,
   onExportRecommendationAudit: exportTodayRecommendationAudit,
   onMarkPending: markPending,
+  onOpenWordDetail: openDetail,
+  onOpenRegenerationReasons: openRegenerationReasonModal,
+  onSelectRegenerationReason: regenerateFromFeedback,
   onCopyLibraryCleanup: copyLibraryCleanupCommand,
   onRefreshPublishedRecord: refreshPublishedMetrics,
   onError: error => {

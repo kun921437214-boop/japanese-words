@@ -60,6 +60,7 @@ import {
   extractPublishedMeaningFromDescription,
   getPublishedContentSubLabel,
   getPublishedCoverCandidates,
+  getPublishedPerformanceAssessment,
   getPublishedPerformanceScore,
   getPublishedUpdateState,
   getRecentPublishedAverage,
@@ -191,6 +192,8 @@ test('AI-card request builders preserve limits, retry flags, and account context
     force: true,
     retryFailed: true,
     retryStalePending: true,
+    regenerationScope: '',
+    feedbackReason: '',
     maxWords: 5
   });
 
@@ -200,7 +203,12 @@ test('AI-card request builders preserve limits, retry flags, and account context
     favorites: ['気が重い'],
     negativeFeedback: { 基本: { reason: 'tooBasic' } },
     publishedWords: ['抜け感'],
-    accountLearningSummary: { priority: 'saves' }
+    accountLearningSummary: { priority: 'saves' },
+    regeneration: {
+      scope: 'cover',
+      reason: 'mobileUnreadable',
+      currentCard: { cardStatus: 'ready', coverVersion: 2 }
+    }
   });
   assert.equal(payload.action, 'generate_word_card');
   assert.equal(payload.count, 20);
@@ -208,6 +216,8 @@ test('AI-card request builders preserve limits, retry flags, and account context
   assert.deepEqual(payload.context.favorites, ['気が重い']);
   assert.deepEqual(payload.context.publishedWords, ['抜け感']);
   assert.deepEqual(payload.context.accountLearningSummary, { priority: 'saves' });
+  assert.equal(payload.context.regeneration.scope, 'cover');
+  assert.equal(payload.context.regeneration.reason, 'mobileUnreadable');
   assert.equal(payload.preferences.includeHighRisk, 'review_only');
 });
 
@@ -636,6 +646,7 @@ test('workflow actions controller routes shared card and feedback actions', () =
   let stopped = 0;
   const controller = createWorkflowActionsController({
     root,
+    onOpenWordDetail: kanji => calls.push(['detail', kanji]),
     onGenerateTodayCard: kanji => calls.push(['today-card', kanji]),
     onGenerateDeepSeekCard: (kanji, force) => calls.push(['deepseek-card', kanji, force]),
     onToggleStatus: kanji => calls.push(['toggle-status', kanji]),
@@ -651,6 +662,7 @@ test('workflow actions controller routes shared card and feedback actions', () =
   };
   const click = target => listeners.get('click')({ target, stopPropagation: () => { stopped += 1; } });
 
+  click(action('open-word-detail', { kanji: '抜け感' }));
   click(action('generate-today-card', { kanji: '気が楽' }));
   click(action('generate-deepseek-card', { kanji: '沼', force: 'true' }));
   click(action('toggle-status', { kanji: '沼' }));
@@ -660,6 +672,7 @@ test('workflow actions controller routes shared card and feedback actions', () =
   click(action('apply-feedback', { kanji: 'エモい', reason: 'uninterested', context: 'codex-preview' }));
 
   assert.deepEqual(calls, [
+    ['detail', '抜け感'],
     ['today-card', '気が楽'],
     ['deepseek-card', '沼', true],
     ['toggle-status', '沼'],
@@ -668,7 +681,7 @@ test('workflow actions controller routes shared card and feedback actions', () =
     ['feedback', '沼', 'tooBasic'],
     ['codex-feedback', 'エモい', 'uninterested']
   ]);
-  assert.equal(stopped, 7);
+  assert.equal(stopped, 8);
   controller.destroy();
   assert.equal(listeners.size, 0);
 });
@@ -712,6 +725,9 @@ test('modal actions controller routes all remaining generated modal actions', ()
     onToggleCodexFavorite: kanji => calls.push(['codex-favorite', kanji]),
     onExportRecommendationAudit: () => calls.push(['audit']),
     onMarkPending: kanji => calls.push(['pending', kanji]),
+    onOpenWordDetail: kanji => calls.push(['word-detail', kanji]),
+    onOpenRegenerationReasons: (kanji, target) => calls.push(['regeneration-reasons', kanji, target]),
+    onSelectRegenerationReason: (kanji, target, reason) => calls.push(['regenerate', kanji, target, reason]),
     onOpenPublishedRecord: (recordId, presetKanji) => calls.push(['record', recordId, presetKanji]),
     onCopyLibraryCleanup: mode => calls.push(['cleanup', mode]),
     onAutofillPublishedRecord: () => calls.push(['autofill']),
@@ -730,6 +746,9 @@ test('modal actions controller routes all remaining generated modal actions', ()
   click(action('toggle-codex-favorite', { kanji: '沼' }));
   click(action('export-recommendation-audit'));
   click(action('mark-pending', { kanji: '抜け感' }));
+  click(action('open-regeneration-reasons', { kanji: '抜け感', target: 'cover' }));
+  click(action('select-regeneration-reason', { kanji: '抜け感', target: 'cover', reason: 'mobileUnreadable' }));
+  click(action('back-to-word-detail', { kanji: '抜け感' }));
   click(action('open-published-record', { recordId: 'record-1', presetKanji: '抜け感' }));
   click(action('copy-library-cleanup', { mode: 'dry' }));
   click(action('autofill-published-record'));
@@ -743,6 +762,9 @@ test('modal actions controller routes all remaining generated modal actions', ()
     ['codex-favorite', '沼'],
     ['audit'],
     ['pending', '抜け感'],
+    ['regeneration-reasons', '抜け感', 'cover'],
+    ['regenerate', '抜け感', 'cover', 'mobileUnreadable'],
+    ['word-detail', '抜け感'],
     ['record', 'record-1', '抜け感'],
     ['cleanup', 'dry'],
     ['autofill'],
@@ -1424,6 +1446,48 @@ test('published rating remains a derived compatibility signal instead of a store
 
   assert.equal(rating.saveRate, 0.05);
   assert.match(rating.reason, /收藏、分享、涨粉/);
+});
+
+test('published assessment separates topic, cover and content after 72 hours', () => {
+  const baselines = ['2026-07-10', '2026-07-11', '2026-07-12'].map((date, index) => ({
+    id: `baseline-${index}`,
+    publishedAt: `${date}T09:00:00+08:00`,
+    latestMetrics: {
+      impressions: 5000,
+      views: 1000,
+      coverClickRate: 0.2,
+      likes: 50,
+      comments: 3,
+      favorites: 20,
+      follows: 2,
+      shares: 5,
+      avgWatchSeconds: 10
+    }
+  }));
+  const record = {
+    id: 'target',
+    word: '抜け感',
+    publishedAt: '2026-07-18T09:00:00+08:00',
+    latestMetrics: {
+      impressions: 5000,
+      views: 1000,
+      coverClickRate: 0.05,
+      likes: 20,
+      comments: 10,
+      favorites: 80,
+      follows: 10,
+      shares: 20,
+      avgWatchSeconds: 5
+    }
+  };
+  const assessment = getPublishedPerformanceAssessment(record, {
+    records: [record, ...baselines],
+    now: Date.parse('2026-07-22T12:00:00+08:00')
+  });
+  assert.equal(assessment.stage, 'early');
+  assert.equal(assessment.topic.level, 'strong');
+  assert.equal(assessment.cover.level, 'weak');
+  assert.notEqual(assessment.content.level, 'insufficient');
 });
 
 test('published cover URLs recover stable Xiaohongshu assets and reject unsafe sources', () => {

@@ -1573,7 +1573,119 @@ body::before {
   box-shadow:0 18px 34px rgba(30, 34, 46, 0.24);
   opacity:0;
   pointer-events:none;
+  display:flex;
+  align-items:center;
+  gap:12px;
   transition:all var(--transition-mid);
+}
+
+.toast.has-action {
+  pointer-events:auto;
+}
+
+.toast-action {
+  appearance:none;
+  border:0;
+  border-left:1px solid rgba(255, 255, 255, 0.28);
+  padding:2px 0 2px 12px;
+  background:transparent;
+  color:#ffd36f;
+  font:inherit;
+  cursor:pointer;
+}
+
+.regeneration-reason-shell {
+  max-width:720px;
+}
+
+.regeneration-reason-note {
+  margin:0 0 18px;
+}
+
+.regeneration-reason-grid {
+  display:grid;
+  grid-template-columns:repeat(2, minmax(0, 1fr));
+  gap:12px;
+}
+
+.regeneration-reason-option {
+  display:flex;
+  flex-direction:column;
+  align-items:flex-start;
+  gap:5px;
+  min-height:82px;
+  padding:16px 18px;
+  border:1px solid rgba(236, 209, 194, 0.95);
+  border-radius:18px;
+  background:#fffdfb;
+  color:var(--ink-700);
+  font:inherit;
+  font-weight:800;
+  text-align:left;
+  cursor:pointer;
+  transition:transform var(--transition-fast), border-color var(--transition-fast), box-shadow var(--transition-fast);
+}
+
+.regeneration-reason-option small {
+  color:var(--text-secondary);
+  font-size:0.78rem;
+  font-weight:600;
+}
+
+.regeneration-reason-option:hover,
+.regeneration-reason-option:focus-visible {
+  transform:translateY(-1px);
+  border-color:rgba(245, 89, 137, 0.62);
+  box-shadow:0 10px 22px rgba(245, 89, 137, 0.12);
+}
+
+.performance-assessment-grid {
+  display:grid;
+  grid-template-columns:repeat(3, minmax(0, 1fr));
+  gap:12px;
+}
+
+.performance-assessment-card {
+  display:flex;
+  flex-direction:column;
+  gap:7px;
+  padding:16px;
+  border:1px solid rgba(226, 216, 208, 0.95);
+  border-radius:18px;
+  background:#fff;
+}
+
+.performance-assessment-card > span,
+.performance-assessment-card small {
+  color:var(--text-secondary);
+}
+
+.performance-assessment-card strong {
+  font-size:1.05rem;
+}
+
+.performance-assessment-card.is-strong {
+  border-color:rgba(92, 181, 119, 0.45);
+  background:rgba(238, 250, 241, 0.82);
+}
+
+.performance-assessment-card.is-weak {
+  border-color:rgba(240, 139, 126, 0.45);
+  background:rgba(255, 244, 241, 0.82);
+}
+
+@media (max-width: 640px) {
+  .regeneration-reason-grid {
+    grid-template-columns:1fr;
+  }
+
+  .regeneration-reason-option {
+    min-height:72px;
+  }
+
+  .performance-assessment-grid {
+    grid-template-columns:1fr;
+  }
 }
 
 .toast.show {

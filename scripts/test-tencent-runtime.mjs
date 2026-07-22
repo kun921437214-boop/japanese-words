@@ -4,6 +4,7 @@ import { mkdtemp, readFile, readdir } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
+import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import sharp from 'sharp';
 import { FileKV } from '../server/file-kv.mjs';
@@ -201,7 +202,7 @@ test('Tencent backup bundles workflow keys, Codex drafts, images, and restores t
     metadata: { contentType: 'image/webp' }
   });
 
-  await execFileAsync(process.execPath, [new URL('../server/tencent-backup.mjs', import.meta.url).pathname], {
+  await execFileAsync(process.execPath, [fileURLToPath(new URL('../server/tencent-backup.mjs', import.meta.url))], {
     env: {
       ...process.env,
       JAPANESE_WORDS_DATA_DIR: dataDirectory,
@@ -216,7 +217,7 @@ test('Tencent backup bundles workflow keys, Codex drafts, images, and restores t
   assert.equal(manifest.referenceImageCount, 1);
 
   await execFileAsync(process.execPath, [
-    new URL('../server/import-cloudflare-backup.mjs', import.meta.url).pathname,
+    fileURLToPath(new URL('../server/import-cloudflare-backup.mjs', import.meta.url)),
     bundleDirectory,
     `--data-dir=${restoreDirectory}`,
     '--apply',
