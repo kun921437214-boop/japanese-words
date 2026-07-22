@@ -1,0 +1,44 @@
+name: Publish Tencent Deploy Bundle
+
+on:
+  push:
+    branches:
+      - codex/fix-daily-automation-assets
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: tencent-deploy-bundle
+  cancel-in-progress: true
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout full history
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Create and verify Git bundle
+        run: |
+          git bundle create japanese-words-production.bundle HEAD
+          git bundle verify japanese-words-production.bundle
+          git bundle list-heads japanese-words-production.bundle HEAD
+
+      - name: Publish official fallback bundle
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if ! gh release view tencent-deploy-channel >/dev/null 2>&1; then
+            gh release create tencent-deploy-channel \
+              --target "${GITHUB_SHA}" \
+              --title "Tencent deploy channel" \
+              --notes "Machine-generated fallback bundle for the reviewed Tencent Production branch." \
+              --prerelease
+          fi
+          gh release upload tencent-deploy-channel \
+            japanese-words-production.bundle \
+            --clobber

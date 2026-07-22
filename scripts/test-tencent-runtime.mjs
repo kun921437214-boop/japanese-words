@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
-import { mkdtemp, readFile, readdir } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, readdir, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
@@ -145,7 +145,13 @@ test('Tencent Production deploy is explicit, guarded, backed up, and self-checki
   const deployer = await readFile(new URL('../server/deploy-production.sh', import.meta.url), 'utf8');
   assert.match(deployer, /--confirm=DEPLOY/);
   assert.match(deployer, /git status --porcelain/);
-  assert.match(deployer, /timeout 45 git fetch --prune origin/);
+  assert.match(deployer, /git ls-remote --exit-code origin/);
+  assert.match(deployer, /http\.version=HTTP\/1\.1/);
+  assert.match(deployer, /fetch --no-tags --prune origin/);
+  assert.match(deployer, /git bundle verify/);
+  assert.match(deployer, /git bundle list-heads/);
+  assert.match(deployer, /official GitHub release bundle/);
+  assert.match(deployer, /--expected-commit=<full Git hash>/);
   assert.match(deployer, /git merge-base --is-ancestor/);
   assert.match(deployer, /git diff --quiet .*package-lock\.json/);
   assert.match(deployer, /git worktree add --detach/);
@@ -157,6 +163,46 @@ test('Tencent Production deploy is explicit, guarded, backed up, and self-checki
   assert.match(deployer, /systemctl restart japanese-words\.service/);
   assert.match(deployer, /http:\/\/127\.0\.0\.1\/healthz/);
   assert.match(deployer, /git -C "\$\{app_dir\}" reset --hard "\$\{current_commit\}"/);
+});
+
+test('GitHub publishes a credential-free fallback bundle for Tencent Production', async () => {
+  const workflow = await readFile(new URL('../.github/workflows/tencent-deploy-bundle.yml', import.meta.url), 'utf8');
+  assert.match(workflow, /codex\/fix-daily-automation-assets/);
+  assert.match(workflow, /permissions:\n  contents: write/);
+  assert.match(workflow, /fetch-depth: 0/);
+  assert.match(workflow, /git bundle create japanese-words-production\.bundle HEAD/);
+  assert.match(workflow, /git bundle verify japanese-words-production\.bundle/);
+  assert.match(workflow, /gh release upload tencent-deploy-channel/);
+  assert.match(workflow, /--clobber/);
+});
+
+test('Tencent fallback bundle imports the exact reviewed HEAD into a remote-tracking ref', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'japanese-words-deploy-bundle-'));
+  const repository = path.join(root, 'source');
+  const bundle = path.join(root, 'production.bundle');
+  const bareRepository = path.join(root, 'receiver.git');
+  await mkdir(repository);
+  await execFileAsync('git', ['init'], { cwd: repository });
+  await execFileAsync('git', ['config', 'user.name', 'Tencent deploy test'], { cwd: repository });
+  await execFileAsync('git', ['config', 'user.email', 'deploy-test@example.invalid'], { cwd: repository });
+  await writeFile(path.join(repository, 'release.txt'), 'reviewed release\n');
+  await execFileAsync('git', ['add', 'release.txt'], { cwd: repository });
+  await execFileAsync('git', ['commit', '-m', 'reviewed release'], { cwd: repository });
+  const { stdout: headOutput } = await execFileAsync('git', ['rev-parse', 'HEAD'], { cwd: repository });
+  const expectedHead = headOutput.trim();
+  await execFileAsync('git', ['bundle', 'create', bundle, 'HEAD'], { cwd: repository });
+  await execFileAsync('git', ['bundle', 'verify', bundle], { cwd: repository });
+  await execFileAsync('git', ['init', '--bare', bareRepository]);
+  await execFileAsync('git', [
+    '--git-dir', bareRepository,
+    'fetch', '--no-tags', bundle,
+    'HEAD:refs/remotes/origin/production'
+  ]);
+  const { stdout: importedOutput } = await execFileAsync('git', [
+    '--git-dir', bareRepository,
+    'rev-parse', 'refs/remotes/origin/production'
+  ]);
+  assert.equal(importedOutput.trim(), expectedHead);
 });
 
 test('production import restores the runtime data owner after a root import', async () => {
