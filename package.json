@@ -26,6 +26,7 @@
     "start:tencent": "node server/tencent-runtime.mjs",
     "import:tencent": "node server/import-cloudflare-backup.mjs",
     "backup:tencent": "node server/tencent-backup.mjs",
+    "deploy:tencent": "bash server/deploy-production.sh",
     "deploy:coordinator": "node scripts/deploy-coordinator.mjs",
     "deploy": "npm run build && node scripts/deploy-pages.mjs",
     "deploy:pages": "npm run deploy",

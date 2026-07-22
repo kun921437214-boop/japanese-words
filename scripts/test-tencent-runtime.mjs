@@ -141,6 +141,24 @@ test('Tencent installer changes into the resolved repository before relative ins
   assert.match(installer, /\/var\/lib\/letsencrypt\/\.well-known\/acme-challenge/);
 });
 
+test('Tencent Production deploy is explicit, guarded, backed up, and self-checking', async () => {
+  const deployer = await readFile(new URL('../server/deploy-production.sh', import.meta.url), 'utf8');
+  assert.match(deployer, /--confirm=DEPLOY/);
+  assert.match(deployer, /git status --porcelain/);
+  assert.match(deployer, /timeout 45 git fetch --prune origin/);
+  assert.match(deployer, /git merge-base --is-ancestor/);
+  assert.match(deployer, /git diff --quiet .*package-lock\.json/);
+  assert.match(deployer, /git worktree add --detach/);
+  assert.match(deployer, /npm run lint/);
+  assert.match(deployer, /npm run typecheck/);
+  assert.match(deployer, /npm test/);
+  assert.match(deployer, /node server\/tencent-backup\.mjs/);
+  assert.match(deployer, /git merge --ff-only/);
+  assert.match(deployer, /systemctl restart japanese-words\.service/);
+  assert.match(deployer, /http:\/\/127\.0\.0\.1\/healthz/);
+  assert.match(deployer, /git -C "\$\{app_dir\}" reset --hard "\$\{current_commit\}"/);
+});
+
 test('production import restores the runtime data owner after a root import', async () => {
   const importer = await readFile(new URL('../server/import-cloudflare-backup.mjs', import.meta.url), 'utf8');
   assert.match(importer, /JAPANESE_WORDS_DATA_OWNER/);
