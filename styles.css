@@ -365,22 +365,6 @@ body::before {
   line-height:1.8;
 }
 
-.settings-btn {
-  border:none;
-  background:transparent;
-  color:var(--ink-500);
-  font-family:var(--font-body);
-  font-size:0.96rem;
-  font-weight:700;
-  cursor:pointer;
-  transition:color var(--transition-fast), transform var(--transition-fast);
-}
-
-.settings-btn:hover {
-  color:var(--pink-600);
-  transform:translateY(-1px);
-}
-
 .main-content {
   position:relative;
   min-height:calc(100vh - var(--frame-gap) * 2);
@@ -492,6 +476,46 @@ body::before {
   justify-content:flex-end;
   gap:12px;
   flex-wrap:wrap;
+}
+
+.page-header-inner-today {
+  display:grid;
+  grid-template-columns:minmax(300px, 0.82fr) minmax(650px, 1.45fr);
+  align-items:center;
+  gap:32px;
+}
+
+.page-heading-today {
+  align-items:center;
+  min-width:0;
+}
+
+.page-heading-copy {
+  min-width:0;
+}
+
+.page-heading-today .page-date {
+  max-width:520px;
+  line-height:1.55;
+}
+
+.page-actions-today {
+  display:grid;
+  width:100%;
+  min-width:0;
+  gap:10px;
+}
+
+.today-toolbar {
+  display:flex;
+  align-items:center;
+  justify-content:flex-end;
+  gap:10px;
+  min-width:0;
+}
+
+.today-toolbar-commands {
+  padding-right:1px;
 }
 
 .daily-date-field {
@@ -1588,6 +1612,18 @@ body::before {
   border-radius:999px;
 }
 
+@media (max-width:1380px) {
+  .page-header-inner-today {
+    grid-template-columns:1fr;
+    align-items:start;
+    gap:16px;
+  }
+
+  .page-heading-today .page-date {
+    max-width:none;
+  }
+}
+
 @media (max-width:1260px) {
   :root {
     --sidebar-width:252px;
@@ -1682,6 +1718,14 @@ body::before {
     justify-content:flex-start;
   }
 
+  .page-actions-today {
+    display:grid;
+  }
+
+  .today-toolbar {
+    justify-content:flex-start;
+  }
+
   .word-grid {
     padding:22px 20px 8px;
   }
@@ -1762,6 +1806,21 @@ body::before {
     display:grid;
     grid-template-columns:repeat(2, minmax(0, 1fr));
     align-items:stretch;
+  }
+
+  .page-actions-today {
+    grid-template-columns:1fr;
+  }
+
+  .today-toolbar {
+    display:grid;
+    grid-template-columns:repeat(2, minmax(0, 1fr));
+    width:100%;
+    gap:8px;
+  }
+
+  .today-toolbar-filters .daily-date-field {
+    grid-column:1 / -1;
   }
 
   .page-actions-deco {
