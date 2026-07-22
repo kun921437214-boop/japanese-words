@@ -93,6 +93,9 @@ export async function onRequest({ request, env }) {
   if (imported.summary.ambiguousCount > 0) {
     return fail(422, 'AMBIGUOUS_IMPORT', '导入中存在重复的“标题＋发布时间”，请先处理后再提交');
   }
+  if (imported.summary.missingActiveCount > 0) {
+    return fail(422, 'ACTIVE_PUBLISHED_ROWS_MISSING', '官方导出缺少发布不超过 15 天的活跃帖子，请重新导出后再提交');
+  }
 
   const mutationMetadata = getWorkflowMutationMetadata(request, body, {
     action: 'published.import',

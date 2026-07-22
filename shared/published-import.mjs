@@ -5,6 +5,7 @@ import {
 
 export const PUBLISHED_METRIC_UPDATE_DAYS = 15;
 export const PUBLISHED_METRIC_SNAPSHOT_LIMIT = 16;
+export const PUBLISHED_EXPORT_WINDOW_DAYS = 180;
 
 const APP_TIME_ZONE = 'Asia/Shanghai';
 const SELECTION_SOURCE_TYPES = [
@@ -381,6 +382,8 @@ export function applyPublishedImport(workflowInput = {}, batchInput = {}, option
   const duplicateKeys = new Map();
   rows.forEach(row => duplicateKeys.set(row.sourceKey, (duplicateKeys.get(row.sourceKey) || 0) + 1));
   const records = safeArray(workflow?.publishedRecords).map(record => ({ ...record }));
+  const existingRecordCount = records.length;
+  const matchedExistingIndexes = new Set();
   const previewRows = [];
   const summary = {
     totalRows: rows.length,
@@ -392,19 +395,16 @@ export function applyPublishedImport(workflowInput = {}, batchInput = {}, option
     unmappedCount: 0,
     nonWordCount: 0,
     ambiguousCount: 0,
-    activeCount: 0
+    activeCount: 0,
+    missingActiveCount: 0,
+    retainedAbsentCount: 0,
+    outsideExportWindowCount: 0
   };
 
   rows.forEach(row => {
-    if (row.contentCategory === 'non_word') summary.nonWordCount += 1;
-    else if (!row.word) summary.unmappedCount += 1;
-    if (duplicateKeys.get(row.sourceKey) > 1) {
-      summary.ambiguousCount += 1;
-      previewRows.push({ title: row.title, publishedAt: row.publishedAt, word: row.word, status: 'ambiguous' });
-      return;
-    }
     const existingIndex = records.findIndex(record => samePublishedIdentity(record, row));
     const existing = existingIndex >= 0 ? records[existingIndex] : null;
+    if (existingIndex >= 0 && existingIndex < existingRecordCount) matchedExistingIndexes.add(existingIndex);
     const identity = {
       id: existing?.id || buildRecordId(row),
       sourceKey: row.sourceKey,
@@ -421,6 +421,20 @@ export function applyPublishedImport(workflowInput = {}, batchInput = {}, option
       publishedAt: existing?.publishedAt || row.publishedAt,
       sourceStatus: 'record'
     };
+    if (identity.contentCategory === 'non_word') summary.nonWordCount += 1;
+    else if (!identity.word) summary.unmappedCount += 1;
+    if (duplicateKeys.get(row.sourceKey) > 1) {
+      summary.ambiguousCount += 1;
+      previewRows.push({
+        id: identity.id,
+        title: identity.title,
+        publishedAt: identity.publishedAt,
+        word: identity.word,
+        contentCategory: identity.contentCategory,
+        status: 'ambiguous'
+      });
+      return;
+    }
     const existingSelectionType = cleanText(existing?.selectionSource?.type, 40);
     const selectionSource = identity.contentCategory === 'non_word'
       ? cleanSelectionSource({ type: 'self_selected', confidence: 'high' })
@@ -474,6 +488,26 @@ export function applyPublishedImport(workflowInput = {}, batchInput = {}, option
       status: !existing ? 'create' : !updateActive ? 'skip_older' : changed ? 'update' : 'unchanged',
       selectionSource: next.selectionSource,
       metricsFrozen: next.metricsFrozen
+    });
+  });
+
+  records.slice(0, existingRecordCount).forEach((record, index) => {
+    if (matchedExistingIndexes.has(index) || record?.sourceStatus === 'placeholder') return;
+    const ageDays = getPublishedAgeDays(record, now);
+    const updateActive = ageDays <= PUBLISHED_METRIC_UPDATE_DAYS;
+    const outsideExportWindow = Number.isFinite(ageDays) && ageDays >= PUBLISHED_EXPORT_WINDOW_DAYS;
+    if (updateActive) summary.missingActiveCount += 1;
+    else summary.retainedAbsentCount += 1;
+    if (outsideExportWindow) summary.outsideExportWindowCount += 1;
+    previewRows.push({
+      id: record.id,
+      title: record.title,
+      publishedAt: record.publishedAt,
+      word: record.word,
+      contentCategory: record.contentCategory,
+      status: updateActive ? 'missing_active' : outsideExportWindow ? 'retained_outside_window' : 'retained_absent',
+      selectionSource: record.selectionSource,
+      metricsFrozen: Boolean(record.metricsFrozen || !updateActive)
     });
   });
 
