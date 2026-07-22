@@ -6,6 +6,7 @@ import {
   inferPublishedSelectionSource,
   normalizePublishedImportRow
 } from '../shared/published-import.mjs';
+import { onRequest as handlePublishedImport } from '../functions/published-import.js';
 import { cleanPublishedRecord, mergeWorkflow } from '../shared/workflow-schema.mjs';
 import {
   onRequest as getPublishedCover,
@@ -47,6 +48,20 @@ function batch(rows, overrides = {}) {
     sourceFileName: '笔记列表明细表.xlsx',
     rows,
     ...overrides
+  };
+}
+
+function createKv(initialValue = null) {
+  let value = structuredClone(initialValue);
+  return {
+    putCalls: 0,
+    async get() {
+      return structuredClone(value);
+    },
+    async put(_key, nextValue) {
+      this.putCalls += 1;
+      value = JSON.parse(nextValue);
+    }
   };
 }
 
@@ -304,4 +319,169 @@ test('只读详情确认的宣传帖保留为非单词内容，不计入待映�
   assert.equal(record.contentCategory, 'non_word');
   assert.equal(record.selectionSource.type, 'self_selected');
   assert.equal(record.contentLocked, true);
+});
+
+test('已有锁定记录先参与匹配，中文标题不再产生待映射误报', () => {
+  const existingRows = [
+    cleanPublishedRecord({
+      id: 'locked-word',
+      word: '足元を見る',
+      title: '🍞樱花妹怎么说“看人下菜碟”？',
+      publishedAt: '2026-07-19T12:00:00+08:00',
+      contentCategory: 'word_card',
+      contentLocked: true
+    }),
+    cleanPublishedRecord({
+      id: 'locked-non-word',
+      title: '🍞面包的插画书！旅行&日常&年轻人💡',
+      publishedAt: '2026-01-22T19:38:57+08:00',
+      contentCategory: 'non_word',
+      contentLocked: true,
+      metricsFrozen: true
+    })
+  ];
+  const imported = applyPublishedImport({ publishedRecords: existingRows }, batch([
+    row({
+      title: '🍞樱花妹怎么说“看人下菜碟”？',
+      publishedAt: '2026-07-19T12:00:00+08:00',
+      word: ''
+    }),
+    row({
+      title: '🍞面包的插画书！旅行&日常&年轻人💡',
+      publishedAt: '2026-01-22T19:38:57+08:00',
+      word: ''
+    })
+  ]), { now: NOW });
+
+  assert.equal(imported.summary.unmappedCount, 0);
+  assert.equal(imported.summary.nonWordCount, 1);
+  assert.equal(imported.records.find(record => record.id === 'locked-word').word, '足元を見る');
+  assert.equal(imported.records.find(record => record.id === 'locked-non-word').contentCategory, 'non_word');
+});
+
+test('滚动 180 天窗口外的缺行作为保留历史，不阻止活跃数据同步', () => {
+  const existingRows = [
+    cleanPublishedRecord({
+      id: 'active-row',
+      word: '尊い',
+      title: '日本人说「尊い」是什么感觉？',
+      publishedAt: '2026-07-19T12:00:00+08:00',
+      contentLocked: true
+    }),
+    cleanPublishedRecord({
+      id: 'aged-out-row',
+      title: '🍞面包的插画书！旅行&日常&年轻人💡',
+      publishedAt: '2026-01-22T19:38:57+08:00',
+      contentCategory: 'non_word',
+      contentLocked: true,
+      metricsFrozen: true
+    })
+  ];
+  const imported = applyPublishedImport(
+    { publishedRecords: existingRows },
+    batch([row()]),
+    { now: new Date('2026-07-22T14:30:00+08:00') }
+  );
+
+  assert.equal(imported.summary.missingActiveCount, 0);
+  assert.equal(imported.summary.retainedAbsentCount, 1);
+  assert.equal(imported.summary.outsideExportWindowCount, 1);
+  assert.equal(imported.records.length, 2);
+  assert.equal(imported.previewRows.find(item => item.id === 'aged-out-row').status, 'retained_outside_window');
+});
+
+test('正式导入在 15 天内活跃帖子缺失时拒绝提交', async () => {
+  const currentTime = Date.now();
+  const activePublishedAt = new Date(currentTime - 86400000).toISOString();
+  const historicalPublishedAt = new Date(currentTime - 200 * 86400000).toISOString();
+  const kv = createKv({
+    revision: 3,
+    publishedRecords: [cleanPublishedRecord({
+      id: 'missing-active',
+      word: '尊い',
+      title: '活跃帖子',
+      publishedAt: activePublishedAt,
+      contentLocked: true
+    })]
+  });
+  const request = new Request('https://bijinihaitan.cn/published-import', {
+    method: 'POST',
+    headers: {
+      Authorization: 'Bearer test-secret',
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({
+      mode: 'commit',
+      batchId: 'xhs-export:active-missing-test',
+      capturedAt: new Date(currentTime).toISOString(),
+      capturedAtSource: 'official_export',
+      source: 'xiaohongshu_creator_export',
+      rows: [row({
+        title: '历史帖子「木漏れ日」',
+        publishedAt: historicalPublishedAt
+      })]
+    })
+  });
+  const response = await handlePublishedImport({
+    request,
+    env: {
+      FAVORITES: kv,
+      AUTO_REFRESH_SECRET: 'test-secret',
+      SITE_URL: 'https://bijinihaitan.cn'
+    }
+  });
+  const data = await response.json();
+
+  assert.equal(response.status, 422);
+  assert.equal(data.error.code, 'ACTIVE_PUBLISHED_ROWS_MISSING');
+  assert.equal(kv.putCalls, 0);
+});
+
+test('正式导入允许 180 天窗口外历史帖缺行并保留原记录', async () => {
+  const currentTime = Date.now();
+  const activePublishedAt = new Date(currentTime - 86400000).toISOString();
+  const historicalPublishedAt = new Date(currentTime - 200 * 86400000).toISOString();
+  const kv = createKv({
+    revision: 3,
+    publishedRecords: [cleanPublishedRecord({
+      id: 'retained-history',
+      title: '历史宣传帖',
+      publishedAt: historicalPublishedAt,
+      contentCategory: 'non_word',
+      contentLocked: true,
+      metricsFrozen: true
+    })]
+  });
+  const request = new Request('https://bijinihaitan.cn/published-import', {
+    method: 'POST',
+    headers: {
+      Authorization: 'Bearer test-secret',
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({
+      mode: 'commit',
+      batchId: 'xhs-export:retained-history-test',
+      capturedAt: new Date(currentTime).toISOString(),
+      capturedAtSource: 'official_export',
+      source: 'xiaohongshu_creator_export',
+      rows: [row({ publishedAt: activePublishedAt })]
+    })
+  });
+  const response = await handlePublishedImport({
+    request,
+    env: {
+      FAVORITES: kv,
+      AUTO_REFRESH_SECRET: 'test-secret',
+      SITE_URL: 'https://bijinihaitan.cn'
+    }
+  });
+  const data = await response.json();
+  const stored = await kv.get();
+
+  assert.equal(response.status, 200);
+  assert.equal(data.summary.missingActiveCount, 0);
+  assert.equal(data.summary.retainedAbsentCount, 1);
+  assert.equal(data.summary.outsideExportWindowCount, 1);
+  assert.equal(kv.putCalls, 1);
+  assert.ok(stored.publishedRecords.some(record => record.id === 'retained-history'));
 });
