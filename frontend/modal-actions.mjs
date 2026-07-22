@@ -30,6 +30,9 @@ export function createModalActionsController(options = {}) {
       invoke(options.onToggleCodexFavorite, dataset.kanji || '');
     } else if (action === 'export-recommendation-audit') invoke(options.onExportRecommendationAudit);
     else if (action === 'mark-pending') invoke(options.onMarkPending, dataset.kanji || '');
+    else if (action === 'open-regeneration-reasons') invoke(options.onOpenRegenerationReasons, dataset.kanji || '', dataset.target || 'card');
+    else if (action === 'select-regeneration-reason') invoke(options.onSelectRegenerationReason, dataset.kanji || '', dataset.target || 'card', dataset.reason || '');
+    else if (action === 'back-to-word-detail') invoke(options.onOpenWordDetail, dataset.kanji || '');
     else if (action === 'open-published-record') {
       invoke(options.onOpenPublishedRecord, dataset.recordId || '', dataset.presetKanji || '');
     } else if (action === 'copy-library-cleanup') invoke(options.onCopyLibraryCleanup, dataset.mode || 'run');

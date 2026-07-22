@@ -9,6 +9,7 @@ import {
 import { onRequest as handleFavorites } from '../functions/favorites.js';
 import {
   CODEX_DAILY_WORD_COUNT,
+  buildCodexDailyContext,
   getCodexDraftStorageKey,
   promoteCodexDailyDraft,
   validateCodexDailyDraft
@@ -290,6 +291,27 @@ test('promotion preserves team-owned fields and publishes Codex cards', () => {
   assert.equal(result.workflow.todaySnapshot.createdBy, 'codex');
   assert.equal(result.workflow.todaySnapshot.words.length, CODEX_DAILY_WORD_COUNT);
   assert.equal(result.workflow.candidatePool['モヤる'].aiCard.cardStatus, 'ready');
+});
+
+test('Codex daily context receives separated published learning signals', () => {
+  const baselineRecords = ['余白', 'こなれ', '透明感'].map((word, index) => ({
+    id: `baseline-${index}`,
+    word,
+    title: word,
+    publishedAt: `2026-07-${String(1 + index).padStart(2, '0')}T09:00:00+08:00`,
+    latestMetrics: { impressions: 5000, views: 1000, coverClickRate: 0.2, likes: 50, comments: 3, favorites: 20, follows: 2, shares: 5, avgWatchSeconds: 10 }
+  }));
+  const context = buildCodexDailyContext({
+    publishedRecords: [{
+      id: 'target',
+      word: '抜け感',
+      title: '抜け感',
+      publishedAt: '2026-07-10T09:00:00+08:00',
+      latestMetrics: { impressions: 5000, views: 1000, coverClickRate: 0.05, likes: 20, comments: 10, favorites: 80, follows: 10, shares: 20, avgWatchSeconds: 5 }
+    }, ...baselineRecords]
+  }, '2026-07-22');
+  assert.ok(context.publishedLearning);
+  assert.match(context.publishedLearning.rule, /选题表现只用于学习词/);
 });
 
 test('Codex token can submit drafts but cannot publish or write favorites', async () => {

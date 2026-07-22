@@ -94,6 +94,8 @@ export function buildTodayAiCardsRequest(words = [], options = {}) {
     force: Boolean(options.force),
     retryFailed: Boolean(options.retryFailed),
     retryStalePending: Boolean(options.retryStalePending),
+    regenerationScope: ['card', 'cover'].includes(options.regenerationScope) ? options.regenerationScope : '',
+    feedbackReason: String(options.feedbackReason || '').trim().slice(0, 80),
     maxWords: clamp(options.maxWords ?? MAX_TODAY_AI_CARD_WORDS, 1, MAX_TODAY_AI_CARD_WORDS)
   };
 }
@@ -103,7 +105,8 @@ export function buildWordCardRequestPayload({
   favorites = [],
   negativeFeedback = {},
   publishedWords = [],
-  accountLearningSummary = {}
+  accountLearningSummary = {},
+  regeneration = {}
 } = {}) {
   const requestWords = safeArray(words).slice(0, MAX_WORD_CARD_REQUEST_WORDS);
   return {
@@ -123,7 +126,14 @@ export function buildWordCardRequestPayload({
       words: requestWords,
       accountLearningSummary: accountLearningSummary && typeof accountLearningSummary === 'object'
         ? accountLearningSummary
-        : {}
+        : {},
+      regeneration: {
+        scope: ['card', 'cover'].includes(regeneration?.scope) ? regeneration.scope : '',
+        reason: String(regeneration?.reason || '').trim().slice(0, 80),
+        currentCard: regeneration?.currentCard && typeof regeneration.currentCard === 'object'
+          ? regeneration.currentCard
+          : {}
+      }
     }
   };
 }

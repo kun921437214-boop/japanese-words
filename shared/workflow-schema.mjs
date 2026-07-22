@@ -43,6 +43,25 @@ const NEGATIVE_FEEDBACK_REASONS = [
   'badTitle',
   'notMyTone'
 ];
+const CARD_REGENERATION_REASONS = [
+  'meaningInaccurate',
+  'tooTextbookTone',
+  'unnaturalExamples',
+  'weakXhsTone',
+  'weakTitles',
+  'repetitiveAngles',
+  'wrongRiskAssessment'
+];
+const COVER_REGENERATION_REASONS = [
+  'weakVisual',
+  'weakCoverText',
+  'visualMismatch',
+  'offBrand',
+  'tooCluttered',
+  'mobileUnreadable',
+  'unnaturalVisual',
+  'tooSimilar'
+];
 const CONTENT_TYPE_OPTIONS = ['图文', '视频', '其他'];
 const PUBLISHED_CONTENT_CATEGORY_OPTIONS = ['word_card', 'non_word', 'unknown'];
 const SNAPSHOT_NODE_ORDER = ['1h', '2h', '4h', '24h', '72h'];
@@ -178,11 +197,55 @@ export function cleanFeedback(feedback = {}) {
       ...record,
       reasons,
       lastReason: NEGATIVE_FEEDBACK_REASONS.includes(record?.lastReason) ? record.lastReason : '',
+      lastAppliedDateByReason: Object.entries(record?.lastAppliedDateByReason || {}).reduce((dateResult, [reason, dateKey]) => {
+        if (NEGATIVE_FEEDBACK_REASONS.includes(reason) && /^\d{4}-\d{2}-\d{2}$/.test(String(dateKey || ''))) {
+          dateResult[reason] = String(dateKey);
+        }
+        return dateResult;
+      }, /** @type {Record<string, string>} */ ({})),
+      lastUndoneAtByReason: Object.entries(record?.lastUndoneAtByReason || {}).reduce((dateResult, [reason, timestamp]) => {
+        if (NEGATIVE_FEEDBACK_REASONS.includes(reason) && isIsoLike(timestamp)) dateResult[reason] = String(timestamp);
+        return dateResult;
+      }, /** @type {Record<string, string>} */ ({})),
       updatedAt: isIsoLike(record?.updatedAt) ? record.updatedAt : null,
       needsReview: Boolean(record?.needsReview || reasons.inaccurate)
     };
     return result;
   }, {});
+}
+
+function cleanGenerationFeedbackBucket(bucket = {}, allowedReasons = [], target = '') {
+  const reasons = Object.entries(bucket?.reasons || {}).reduce((result, [reason, count]) => {
+    if (!allowedReasons.includes(reason)) return result;
+    const cleanCount = clamp(toInt(count, 0), 0, 999);
+    if (cleanCount > 0) result[reason] = cleanCount;
+    return result;
+  }, /** @type {Record<string, number>} */ ({}));
+  const events = safeArray(bucket?.events).map((event, index) => {
+    const reason = cleanEnum(event?.reason, allowedReasons, '');
+    if (!reason) return null;
+    return {
+      id: cleanText(event?.id || `${target}-feedback-${index}`, 120),
+      target,
+      reason,
+      cardVersion: clamp(toInt(event?.cardVersion, 0), 0, 99),
+      coverVersion: clamp(toInt(event?.coverVersion, 0), 0, 99),
+      createdAt: isIsoLike(event?.createdAt) ? event.createdAt : ''
+    };
+  }).filter(Boolean).slice(0, 20);
+  return {
+    reasons,
+    lastReason: cleanEnum(bucket?.lastReason, allowedReasons, ''),
+    updatedAt: isIsoLike(bucket?.updatedAt) ? bucket.updatedAt : '',
+    events
+  };
+}
+
+export function cleanGenerationFeedback(feedback = {}) {
+  return {
+    card: cleanGenerationFeedbackBucket(feedback?.card, CARD_REGENERATION_REASONS, 'card'),
+    cover: cleanGenerationFeedbackBucket(feedback?.cover, COVER_REGENERATION_REASONS, 'cover')
+  };
 }
 
 export function cleanStats(stats = {}) {
@@ -288,6 +351,8 @@ export function cleanPublishedRecord(record = {}, index = 0) {
     importSource: cleanText(record?.importSource, 80),
     sourceFileName: cleanText(record?.sourceFileName, 240),
     selectionSource: cleanSelectionSource(record?.selectionSource || {}),
+    creativeSnapshot: cleanPublicationSnapshot(record?.creativeSnapshot || {}),
+    performanceAssessment: cleanPublishedPerformanceAssessment(record?.performanceAssessment || {}),
     syncState: {
       status: syncStatus,
       lastAttemptAt: isIsoLike(record?.syncState?.lastAttemptAt) ? record.syncState.lastAttemptAt : '',
@@ -353,7 +418,9 @@ export function cleanAiCard(card = {}) {
     cardSource: cleanText(card?.cardSource, 80),
     cardModel: cleanText(card?.cardModel, 120),
     cardVersion: clamp(toInt(card?.cardVersion, 1), 1, 99),
+    coverVersion: clamp(toInt(card?.coverVersion, 1), 1, 99),
     generatedAt: isIsoLike(card?.generatedAt) ? card.generatedAt : '',
+    coverGeneratedAt: isIsoLike(card?.coverGeneratedAt) ? card.coverGeneratedAt : (isIsoLike(card?.generatedAt) ? card.generatedAt : ''),
     referenceImage: cleanReferenceImage(card?.referenceImage || {}),
     summary: cleanText(card?.summary, 500),
     explanation: cleanText(card?.explanation, 1600),
@@ -374,6 +441,53 @@ export function cleanAiCard(card = {}) {
       difference: cleanText(item?.difference || item?.note, 500)
     })).filter(item => item.word || item.meaning).slice(0, 8),
     interactionPrompts: uniqueStrings(card?.interactionPrompts, 220, 8)
+  };
+}
+
+export function cleanCoverVersionSnapshot(snapshot = {}) {
+  return {
+    coverVersion: clamp(toInt(snapshot?.coverVersion, 1), 1, 99),
+    coverSuggestion: cleanCoverSuggestion(snapshot?.coverSuggestion || {}),
+    referenceImage: cleanReferenceImage(snapshot?.referenceImage || {}),
+    feedbackReason: cleanEnum(snapshot?.feedbackReason, COVER_REGENERATION_REASONS, ''),
+    generatedAt: isIsoLike(snapshot?.generatedAt) ? snapshot.generatedAt : ''
+  };
+}
+
+export function cleanPublicationSnapshot(snapshot = {}) {
+  const hasSnapshot = Boolean(snapshot?.capturedAt || snapshot?.cardVersion || snapshot?.coverVersion || snapshot?.suggestedTitle);
+  if (!hasSnapshot) return null;
+  return {
+    capturedAt: isIsoLike(snapshot?.capturedAt) ? snapshot.capturedAt : '',
+    cardVersion: clamp(toInt(snapshot?.cardVersion, 0), 0, 99),
+    cardGeneratedAt: isIsoLike(snapshot?.cardGeneratedAt) ? snapshot.cardGeneratedAt : '',
+    suggestedTitle: cleanText(snapshot?.suggestedTitle, 200),
+    coverVersion: clamp(toInt(snapshot?.coverVersion, 0), 0, 99),
+    coverSuggestion: cleanCoverSuggestion(snapshot?.coverSuggestion || {}),
+    referenceImage: cleanReferenceImage(snapshot?.referenceImage || {})
+  };
+}
+
+function cleanPerformanceDimension(dimension = {}) {
+  return {
+    score: clamp(Number(dimension?.score) || 0, 0, 200),
+    level: cleanEnum(dimension?.level, ['insufficient', 'strong', 'normal', 'weak'], 'insufficient'),
+    label: cleanText(dimension?.label, 40),
+    reason: cleanText(dimension?.reason, 300)
+  };
+}
+
+export function cleanPublishedPerformanceAssessment(assessment = {}) {
+  const stage = cleanEnum(assessment?.stage, ['collecting', 'early', 'final'], 'collecting');
+  return {
+    stage,
+    stageLabel: cleanText(assessment?.stageLabel, 40),
+    assessedAt: isIsoLike(assessment?.assessedAt) ? assessment.assessedAt : '',
+    baselineSampleSize: clamp(toInt(assessment?.baselineSampleSize, 0), 0, 1000),
+    topic: cleanPerformanceDimension(assessment?.topic),
+    cover: cleanPerformanceDimension(assessment?.cover),
+    content: cleanPerformanceDimension(assessment?.content),
+    summary: cleanText(assessment?.summary, 500)
   };
 }
 
@@ -564,6 +678,9 @@ export function cleanCandidatePoolEntry(kanji, entry = {}) {
     suggestedAction: cleanEnum(entry?.suggestedAction, SUGGESTED_ACTION_OPTIONS, riskLevel === 'high' ? '暂缓' : '可以收藏观察'),
     aiCard: cleanAiCard(entry?.aiCard || {}),
     aiCardHistory: safeArray(entry?.aiCardHistory).map(cleanAiCard).filter(Boolean).slice(0, 10),
+    coverHistory: safeArray(entry?.coverHistory).map(cleanCoverVersionSnapshot).slice(0, 10),
+    generationFeedback: cleanGenerationFeedback(entry?.generationFeedback || {}),
+    publicationSnapshot: cleanPublicationSnapshot(entry?.publicationSnapshot || {}),
     examples: safeArray(entry?.examples).map(cleanAiExample).filter(Boolean).slice(0, 5),
     suggestedTitles: uniqueStrings(entry?.suggestedTitles, 140, 8),
     coverSuggestion: cleanCoverSuggestion(entry?.coverSuggestion || {}),
@@ -1007,16 +1124,39 @@ function mergeFeedback(localFeedback = {}, remoteFeedback = {}) {
       merged[word] = remoteRecord;
       return;
     }
+    const winner = newerByDate(localRecord, remoteRecord, 'updatedAt');
+    const loser = winner === remoteRecord ? localRecord : remoteRecord;
     const reasons = { ...(localRecord.reasons || {}) };
     Object.entries(remoteRecord.reasons || {}).forEach(([reason, count]) => {
       reasons[reason] = Math.max(toInt(reasons[reason], 0), toInt(count, 0));
     });
-    const winner = newerByDate(localRecord, remoteRecord, 'updatedAt');
+    Object.keys({ ...(localRecord.reasons || {}), ...(remoteRecord.reasons || {}) }).forEach(reason => {
+      if (winner.lastUndoneAtByReason?.[reason]
+        && cleanText(winner.updatedAt, 80) >= cleanText(loser.updatedAt, 80)) {
+        const winnerCount = toInt(winner.reasons?.[reason], 0);
+        if (winnerCount > 0) reasons[reason] = winnerCount;
+        else delete reasons[reason];
+      }
+    });
+    const lastAppliedDateByReason = {
+      ...(localRecord.lastAppliedDateByReason || {}),
+      ...(remoteRecord.lastAppliedDateByReason || {})
+    };
+    Object.keys(lastAppliedDateByReason).forEach(reason => {
+      if (winner.lastUndoneAtByReason?.[reason] && !winner.lastAppliedDateByReason?.[reason]) {
+        delete lastAppliedDateByReason[reason];
+      }
+    });
     merged[word] = {
       ...localRecord,
       ...remoteRecord,
       reasons,
-      lastReason: winner.lastReason || localRecord.lastReason || remoteRecord.lastReason || '',
+      lastReason: winner.lastReason || '',
+      lastAppliedDateByReason,
+      lastUndoneAtByReason: {
+        ...(localRecord.lastUndoneAtByReason || {}),
+        ...(remoteRecord.lastUndoneAtByReason || {})
+      },
       updatedAt: latestString(localRecord.updatedAt, remoteRecord.updatedAt),
       needsReview: Boolean(localRecord.needsReview || remoteRecord.needsReview || reasons.inaccurate)
     };
@@ -1070,6 +1210,8 @@ function mergePublishedRecord(localRecord = {}, remoteRecord = {}) {
     importSource: nonEmptyText(metricSource.importSource, winner.importSource, 80),
     sourceFileName: nonEmptyText(metricSource.sourceFileName, winner.sourceFileName, 240),
     selectionSource: winner.selectionSource?.type !== 'unknown' ? winner.selectionSource : fallback.selectionSource,
+    creativeSnapshot: winner.creativeSnapshot || fallback.creativeSnapshot,
+    performanceAssessment: metricSource.performanceAssessment || winner.performanceAssessment || fallback.performanceAssessment,
     syncState: {
       ...fallback.syncState,
       ...winner.syncState,
@@ -1125,6 +1267,26 @@ function mergeAiCardHistory(left = [], right = []) {
     .slice(0, 10);
 }
 
+function mergeGenerationFeedbackBucket(left = {}, right = {}, allowedReasons = [], target = '') {
+  const local = cleanGenerationFeedbackBucket(left, allowedReasons, target);
+  const remote = cleanGenerationFeedbackBucket(right, allowedReasons, target);
+  const reasons = { ...local.reasons };
+  Object.entries(remote.reasons).forEach(([reason, count]) => {
+    reasons[reason] = Math.max(toInt(reasons[reason], 0), toInt(count, 0));
+  });
+  const winner = cleanText(remote.updatedAt, 80) >= cleanText(local.updatedAt, 80) ? remote : local;
+  const events = [...local.events, ...remote.events]
+    .filter((event, index, items) => items.findIndex(candidate => candidate.id === event.id) === index)
+    .sort((a, b) => cleanText(b.createdAt, 80).localeCompare(cleanText(a.createdAt, 80)))
+    .slice(0, 20);
+  return cleanGenerationFeedbackBucket({
+    reasons,
+    lastReason: winner.lastReason,
+    updatedAt: latestString(local.updatedAt, remote.updatedAt),
+    events
+  }, allowedReasons, target);
+}
+
 function chooseSourceType(local = {}, remote = {}) {
   const localType = normalizeSourceType(local.sourceType);
   const remoteType = normalizeSourceType(remote.sourceType);
@@ -1158,6 +1320,18 @@ function mergeCandidateEntry(localEntry = {}, remoteEntry = {}) {
     sourceText: nonEmptyText(newer.sourceText, older.sourceText, 12000),
     aiCard: chooseAiCard(local.aiCard, remote.aiCard),
     aiCardHistory: mergeAiCardHistory(local.aiCardHistory, remote.aiCardHistory),
+    coverHistory: [...safeArray(local.coverHistory), ...safeArray(remote.coverHistory)]
+      .map(cleanCoverVersionSnapshot)
+      .filter((item, index, items) => items.findIndex(candidate => (
+        candidate.coverVersion === item.coverVersion && candidate.generatedAt === item.generatedAt
+      )) === index)
+      .sort((left, right) => String(right.generatedAt || '').localeCompare(String(left.generatedAt || '')))
+      .slice(0, 10),
+    generationFeedback: {
+      card: mergeGenerationFeedbackBucket(local.generationFeedback?.card, remote.generationFeedback?.card, CARD_REGENERATION_REASONS, 'card'),
+      cover: mergeGenerationFeedbackBucket(local.generationFeedback?.cover, remote.generationFeedback?.cover, COVER_REGENERATION_REASONS, 'cover')
+    },
+    publicationSnapshot: cleanPublicationSnapshot(newer.publicationSnapshot || older.publicationSnapshot || {}),
     examples: [...safeArray(local.examples), ...safeArray(remote.examples)].map(cleanAiExample).filter(Boolean).slice(0, 5),
     suggestedTitles: uniqueStrings([...(local.suggestedTitles || []), ...(remote.suggestedTitles || [])], 140, 8),
     coverSuggestion: {

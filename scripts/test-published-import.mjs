@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
   applyPublishedImport,
+  buildPublishedLearningSummary,
   computePublishedThirtyDayMedians,
   inferPublishedSelectionSource,
   normalizePublishedImportRow
@@ -147,6 +148,62 @@ test('同一批次可幂等重放，内容只保存一次，超过 15 天的数�
   assert.equal(active.metricSnapshots.length, 2);
   assert.equal(frozen.latestMetrics.views, 9000);
   assert.equal(frozen.metricSnapshots.length, 1);
+});
+
+test('发布导入自动留档当前内容版本并生成72小时分层复盘', () => {
+  const workflow = {
+    candidatePool: {
+      '抜け感': {
+        kanji: '抜け感',
+        sourceType: 'manual_keep',
+        publicationSnapshot: {
+          capturedAt: '2026-07-16T10:00:00+08:00',
+          cardVersion: 4,
+          cardGeneratedAt: '2026-07-15T10:00:00+08:00',
+          suggestedTitle: '日语里的松弛感原来叫抜け感',
+          coverVersion: 3,
+          coverSuggestion: { coverText: '日系松弛感' }
+        }
+      }
+    }
+  };
+  const baselineRows = ['余白', 'こなれ', '透明感'].map((word, index) => row({
+    title: `日本人说「${word}」是什么感觉？`,
+    publishedAt: `2026-07-${String(10 + index).padStart(2, '0')}T12:00:00+08:00`,
+    impressions: 5000,
+    views: 1000,
+    coverClickRate: 0.2,
+    likes: 50,
+    comments: 3,
+    favorites: 20,
+    follows: 2,
+    shares: 5,
+    avgWatchSeconds: 10
+  }));
+  const imported = applyPublishedImport(workflow, batch([
+    row({
+      title: '日本人说「抜け感」是什么感觉？',
+      publishedAt: '2026-07-16T12:00:00+08:00',
+      impressions: 5000,
+      views: 1000,
+      coverClickRate: 0.06,
+      favorites: 80,
+      shares: 20,
+      follows: 10,
+      comments: 10,
+      avgWatchSeconds: 6
+    }),
+    ...baselineRows
+  ]), { now: NOW });
+  const target = imported.records.find(record => record.word === '抜け感');
+  assert.equal(target.creativeSnapshot.cardVersion, 4);
+  assert.equal(target.creativeSnapshot.coverVersion, 3);
+  assert.equal(target.performanceAssessment.stage, 'early');
+  assert.equal(target.performanceAssessment.topic.level, 'strong');
+  assert.equal(target.performanceAssessment.cover.level, 'weak');
+  const learning = buildPublishedLearningSummary(imported.records, NOW);
+  assert.ok(learning.strongTopics.some(item => item.word === '抜け感'));
+  assert.ok(learning.weakCovers.some(item => item.word === '抜け感'));
 });
 
 test('已发布封面首次同步到本站后永久复用，不再重新下载或覆盖', async () => {

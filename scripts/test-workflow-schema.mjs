@@ -649,6 +649,64 @@ test('cleanStoredWorkflow 不删除 candidatePool.aiCard', () => {
   assert.equal(cleaned.candidatePool['こなれ'].aiCard.summary, readyCard.summary);
 });
 
+test('cleanStoredWorkflow 保留内容与封面反馈、版本历史和发布留档', () => {
+  const cleaned = cleanStoredWorkflow({
+    feedback: {
+      'こなれ': {
+        reasons: { uninterested: 1, badVisual: 2 },
+        lastAppliedDateByReason: { uninterested: '2026-07-22' },
+        lastUndoneAtByReason: { tooBasic: '2026-07-22T03:30:00.000Z' }
+      }
+    },
+    candidatePool: {
+      'こなれ': {
+        kanji: 'こなれ',
+        sourceType: 'deepseek_generated',
+        aiCard: { ...readyCard, cardVersion: 3, coverVersion: 2 },
+        generationFeedback: {
+          card: { reasons: { unnaturalExamples: 1 }, lastReason: 'unnaturalExamples', updatedAt: '2026-07-22T02:00:00.000Z' },
+          cover: { reasons: { mobileUnreadable: 1 }, lastReason: 'mobileUnreadable', updatedAt: '2026-07-22T03:00:00.000Z' }
+        },
+        coverHistory: [{ coverVersion: 1, coverSuggestion: { coverText: '旧封面' }, generatedAt: '2026-07-20T02:00:00.000Z' }],
+        publicationSnapshot: { capturedAt: '2026-07-22T04:00:00.000Z', cardVersion: 3, coverVersion: 2, suggestedTitle: '最终标题' }
+      }
+    }
+  });
+  assert.equal(cleaned.feedback['こなれ'].lastAppliedDateByReason.uninterested, '2026-07-22');
+  assert.equal(cleaned.feedback['こなれ'].lastUndoneAtByReason.tooBasic, '2026-07-22T03:30:00.000Z');
+  assert.equal(cleaned.candidatePool['こなれ'].generationFeedback.card.reasons.unnaturalExamples, 1);
+  assert.equal(cleaned.candidatePool['こなれ'].generationFeedback.cover.reasons.mobileUnreadable, 1);
+  assert.equal(cleaned.candidatePool['こなれ'].coverHistory[0].coverSuggestion.coverText, '旧封面');
+  assert.equal(cleaned.candidatePool['こなれ'].publicationSnapshot.suggestedTitle, '最终标题');
+});
+
+test('mergeWorkflow 保留较新的负反馈撤销，不被云端旧计数恢复', () => {
+  const merged = mergeWorkflow({
+    feedback: {
+      'こなれ': {
+        reasons: {},
+        lastReason: '',
+        lastAppliedDateByReason: {},
+        lastUndoneAtByReason: { uninterested: '2026-07-22T04:05:00.000Z' },
+        updatedAt: '2026-07-22T04:05:00.000Z'
+      }
+    }
+  }, {
+    feedback: {
+      'こなれ': {
+        reasons: { uninterested: 1 },
+        lastReason: 'uninterested',
+        lastAppliedDateByReason: { uninterested: '2026-07-22' },
+        updatedAt: '2026-07-22T04:00:00.000Z'
+      }
+    }
+  });
+  assert.equal(merged.feedback['こなれ'].reasons.uninterested, undefined);
+  assert.equal(merged.feedback['こなれ'].lastAppliedDateByReason.uninterested, undefined);
+  assert.equal(merged.feedback['こなれ'].lastReason, '');
+  assert.equal(merged.feedback['こなれ'].lastUndoneAtByReason.uninterested, '2026-07-22T04:05:00.000Z');
+});
+
 test('cleanStoredWorkflow 不删除手动添加来源元数据', () => {
   const cleaned = cleanStoredWorkflow({
     candidatePool: {
@@ -1050,6 +1108,44 @@ test('ai-cards ready 默认不重复生成，force=true 才允许', () => {
   });
   assert.equal(applied.workflow.candidatePool[target].aiCard.cardStatus, 'ready');
   assert.equal(applied.workflow.candidatePool[target].aiCardHistory.length, 1);
+});
+
+test('ai-cards 内容重生成保留封面，封面重生成保留单词卡内容', () => {
+  const workflow = makeCardWorkflow();
+  const target = workflow.todaySnapshot.words[0];
+  workflow.candidatePool[target].aiCard = {
+    ...readyCard,
+    cardVersion: 2,
+    coverVersion: 3,
+    coverSuggestion: { coverText: '原封面', mainVisual: '原画面' },
+    referenceImage: { status: 'ready', url: '/codex-image?key=old' }
+  };
+  const cardRegenerated = applyAiCardGenerationResult(workflow, {
+    targets: [target],
+    force: true,
+    regenerationScope: 'card',
+    feedbackReason: 'unnaturalExamples',
+    usage: { model: 'deepseek-test', createdAt: '2026-07-22T04:00:00.000Z' },
+    items: [{ kanji: target, aiCard: { cardStatus: 'ready', summary: '新版内容', coverSuggestion: { coverText: '不应采用' } } }]
+  });
+  assert.equal(cardRegenerated.workflow.candidatePool[target].aiCard.summary, '新版内容');
+  assert.equal(cardRegenerated.workflow.candidatePool[target].aiCard.coverSuggestion.coverText, '原封面');
+  assert.equal(cardRegenerated.workflow.candidatePool[target].aiCard.referenceImage.url, '/codex-image?key=old');
+  assert.equal(cardRegenerated.workflow.candidatePool[target].aiCardHistory.length, 1);
+
+  const coverRegenerated = applyAiCardGenerationResult(workflow, {
+    targets: [target],
+    force: true,
+    regenerationScope: 'cover',
+    feedbackReason: 'mobileUnreadable',
+    usage: { model: 'deepseek-test', createdAt: '2026-07-22T05:00:00.000Z' },
+    items: [{ kanji: target, aiCard: { cardStatus: 'ready', summary: '不应采用', coverSuggestion: { coverText: '新封面', mainVisual: '新画面' } } }]
+  });
+  assert.equal(coverRegenerated.workflow.candidatePool[target].aiCard.summary, readyCard.summary);
+  assert.equal(coverRegenerated.workflow.candidatePool[target].aiCard.coverSuggestion.coverText, '新封面');
+  assert.equal(coverRegenerated.workflow.candidatePool[target].aiCard.referenceImage.status, 'missing');
+  assert.equal(coverRegenerated.workflow.candidatePool[target].coverHistory.length, 1);
+  assert.equal(coverRegenerated.workflow.candidatePool[target].aiCardHistory.length, 0);
 });
 
 test('ai-cards failed 默认不重试，retryFailed=true 才允许', () => {

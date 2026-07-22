@@ -224,9 +224,11 @@ function buildWordCardPayloadItems(workflow, kanjis) {
   }).filter(Boolean);
 }
 
-function buildWordCardRequestPayload(workflow, targets) {
+function buildWordCardRequestPayload(workflow, targets, options = {}) {
   const cleanWorkflow = cleanStoredWorkflow(workflow);
   const words = buildWordCardPayloadItems(cleanWorkflow, targets).slice(0, MAX_WORDS_PER_REQUEST);
+  const scope = ['card', 'cover'].includes(options?.regenerationScope) ? options.regenerationScope : '';
+  const firstTarget = words[0]?.kanji || '';
   return {
     action: 'generate_word_card',
     input: JSON.stringify(words).slice(0, 12000),
@@ -242,7 +244,12 @@ function buildWordCardRequestPayload(workflow, targets) {
       publishedWords: safeArray(cleanWorkflow.publishedRecords).map(record => record.word).filter(Boolean),
       existingCandidates: words,
       words,
-      accountLearningSummary: getAccountLearningSummary()
+      accountLearningSummary: getAccountLearningSummary(),
+      regeneration: {
+        scope,
+        reason: cleanText(options?.feedbackReason, 80),
+        currentCard: scope && firstTarget ? cleanWorkflow.candidatePool?.[firstTarget]?.aiCard || {} : {}
+      }
     }
   };
 }
@@ -253,6 +260,8 @@ export function applyAiCardGenerationResult(workflow = {}, result = {}) {
   const targetSet = new Set(cleanWords(result.targets || []));
   const usage = result.usage || {};
   const force = Boolean(result.force);
+  const regenerationScope = ['card', 'cover'].includes(result.regenerationScope) ? result.regenerationScope : '';
+  const feedbackReason = cleanText(result.feedbackReason, 80);
   const generatedAt = usage.createdAt || nowIso();
   let savedCount = 0;
   const savedWords = [];
@@ -262,20 +271,54 @@ export function applyAiCardGenerationResult(workflow = {}, result = {}) {
     if (!kanji || !targetSet.has(kanji) || !pool[kanji]) return;
     const previousCard = cleanAiCard(pool[kanji].aiCard || {});
     const previousHistory = safeArray(pool[kanji].aiCardHistory).map(cleanAiCard).filter(card => card.cardStatus !== 'none');
-    const nextHistory = force && previousCard.cardStatus === 'ready'
+    const nextHistory = force && previousCard.cardStatus === 'ready' && regenerationScope !== 'cover'
       ? [previousCard, ...previousHistory].slice(0, 10)
       : previousHistory.slice(0, 10);
-    const nextCard = cleanAiCard({
+    const generatedCard = cleanAiCard({
       ...(item.aiCard || item.card || item),
       cardStatus: 'ready',
       cardSource: 'deepseek_api',
       cardModel: item.aiCard?.cardModel || usage.model || 'deepseek-v4-flash',
       generatedAt: item.aiCard?.generatedAt || generatedAt
     });
+    const nextCard = regenerationScope === 'card' && previousCard.cardStatus === 'ready'
+      ? cleanAiCard({
+          ...generatedCard,
+          cardVersion: Math.min(99, previousCard.cardVersion + 1),
+          coverVersion: previousCard.coverVersion,
+          coverGeneratedAt: previousCard.coverGeneratedAt,
+          coverSuggestion: previousCard.coverSuggestion,
+          referenceImage: previousCard.referenceImage
+        })
+      : regenerationScope === 'cover' && previousCard.cardStatus === 'ready'
+        ? cleanAiCard({
+            ...previousCard,
+            coverVersion: Math.min(99, previousCard.coverVersion + 1),
+            coverGeneratedAt: generatedAt,
+            coverSuggestion: generatedCard.coverSuggestion,
+            referenceImage: {
+              status: 'missing',
+              visualBrief: generatedCard.coverSuggestion?.mainVisual || '',
+              prompt: '',
+              provider: '',
+              generatedAt: ''
+            }
+          })
+        : generatedCard;
+    const coverHistory = regenerationScope === 'cover' && previousCard.cardStatus === 'ready'
+      ? [{
+          coverVersion: previousCard.coverVersion,
+          coverSuggestion: previousCard.coverSuggestion,
+          referenceImage: previousCard.referenceImage,
+          feedbackReason,
+          generatedAt: previousCard.coverGeneratedAt || previousCard.generatedAt
+        }, ...safeArray(pool[kanji].coverHistory)].slice(0, 10)
+      : safeArray(pool[kanji].coverHistory).slice(0, 10);
     pool[kanji] = cleanCandidatePoolEntry(kanji, {
       ...pool[kanji],
       aiCard: nextCard,
       aiCardHistory: nextHistory,
+      coverHistory,
       updatedAt: nowIso()
     });
     savedCount += 1;
@@ -285,7 +328,7 @@ export function applyAiCardGenerationResult(workflow = {}, result = {}) {
   const failedWords = cleanWords(result.failedWords || []).filter(kanji => targetSet.has(kanji) && !savedWords.includes(kanji) && pool[kanji]);
   failedWords.forEach(kanji => {
     const previousCard = cleanAiCard(pool[kanji].aiCard || {});
-    if (previousCard.cardStatus === 'ready' && !force) return;
+    if (previousCard.cardStatus === 'ready') return;
     pool[kanji] = cleanCandidatePoolEntry(kanji, {
       ...pool[kanji],
       aiCard: {
@@ -337,7 +380,7 @@ export async function generateTodayAiCards({ origin, workflow, options = {}, cal
     };
   }
 
-  const payload = buildWordCardRequestPayload(workflow, selection.targets);
+  const payload = buildWordCardRequestPayload(workflow, selection.targets, options);
   if (!payload.context.words.length) {
     return {
       workflow: cleanStoredWorkflow(workflow),
@@ -363,7 +406,9 @@ export async function generateTodayAiCards({ origin, workflow, options = {}, cal
       items: safeArray(data.items),
       usage: data.usage || {},
       summary: data.summary || {},
-      force: selection.force
+      force: selection.force,
+      regenerationScope: options.regenerationScope,
+      feedbackReason: options.feedbackReason
     });
     return {
       ...applied,
@@ -376,6 +421,8 @@ export async function generateTodayAiCards({ origin, workflow, options = {}, cal
       failedWords: selection.targets,
       usage: {},
       force: selection.force,
+      regenerationScope: options.regenerationScope,
+      feedbackReason: options.feedbackReason,
       error: error.message || '生成失败'
     });
     return {
@@ -461,6 +508,7 @@ export async function onRequest({ request, env }) {
           ...mergedPool[kanji],
           aiCard: generatedEntry.aiCard,
           aiCardHistory: generatedEntry.aiCardHistory,
+          coverHistory: generatedEntry.coverHistory,
           updatedAt: generatedEntry.updatedAt
         });
       });

@@ -1,4 +1,5 @@
 import {
+  buildPublishedPerformanceAssessment,
   computePublishedThirtyDayMedians,
   getPublishedAgeDays
 } from '../shared/published-import.mjs';
@@ -142,10 +143,13 @@ export function ratePublishedRecord(record = {}, options = {}) {
   const ageHours = getPublishedRecordAgeHours(record, options.now ?? Date.now());
   let level = '待评估';
   if (ageHours >= 72) {
-    if (ratio >= 1.35) level = '优秀';
-    else if (ratio >= 0.75) level = '正常';
-    else if (ratio >= 0.4) level = '偏弱';
-    else level = '异常差';
+    const assessment = buildPublishedPerformanceAssessment(record, options.records || [], options.now ?? Date.now());
+    level = {
+      strong: '优秀',
+      normal: '正常',
+      weak: '偏弱',
+      insufficient: '待评估'
+    }[assessment.topic.level] || '待评估';
   }
   return {
     level,
@@ -156,6 +160,10 @@ export function ratePublishedRecord(record = {}, options = {}) {
     ageHours,
     saveRate: rate(getMetrics(record).favorites, getMetrics(record).views)
   };
+}
+
+export function getPublishedPerformanceAssessment(record = {}, options = {}) {
+  return buildPublishedPerformanceAssessment(record, options.records || [], options.now ?? Date.now());
 }
 
 export function getPublishedSourceLabel(record = {}) {

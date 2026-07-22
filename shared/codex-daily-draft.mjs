@@ -1,6 +1,7 @@
 import { getAccountLearningSummary } from './account-learning.mjs';
 import { DAILY_WORD_COUNT, MAX_DAILY_S_LEVEL_COUNT } from './daily-config.mjs';
 import { addDays, cleanDateKey, dateKey } from './rankings.mjs';
+import { buildPublishedLearningSummary } from './published-import.mjs';
 import { buildTodayRecommendationAudit } from './today-snapshot.mjs';
 import {
   archiveTodaySnapshotIntoHistory,
@@ -243,6 +244,7 @@ export function buildCodexDailyContext(workflowInput = {}, targetDateKey = '') {
     favorites: workflow.words,
     feedback: workflow.feedback,
     publishedWords: workflow.publishedRecords.map(record => record.word).filter(Boolean),
+    publishedLearning: buildPublishedLearningSummary(workflow.publishedRecords),
     recentSnapshots: recentSnapshots.slice(0, 30),
     candidatePool: Object.values(workflow.candidatePool || {}).map(entry => ({
       kanji: entry.kanji,

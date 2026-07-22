@@ -721,19 +721,17 @@ function getFeedbackPenalty(kanji, feedback = {}) {
   const record = feedback[kanji];
   if (!record) return 0;
   return Object.entries(record.reasons || {}).reduce((sum, [reason, count]) => {
+    if (['inaccurate', 'badVisual', 'badTitle'].includes(reason)) return sum;
     const weight = {
       tooRisky: 16,
-      inaccurate: 16,
       tooNiche: 10,
       notFresh: 8,
       tooMeme: 8,
-      badVisual: 10,
-      badTitle: 8,
       notMyTone: 12,
       uninterested: 7
     }[reason] || 6;
     return sum + weight * clamp(toInt(count, 0), 0, 10);
-  }, record.needsReview ? 12 : 0);
+  }, record.needsReview && !record.reasons?.inaccurate ? 12 : 0);
 }
 
 function isSeasonalCandidateActive(entry = {}, date = new Date()) {
