@@ -418,6 +418,21 @@ function cleanStoredData(data) {
 const APP_CANDIDATE_LIMIT = 240;
 const APP_VIEW_SCOPES = new Set(['all', 'today', 'favorites', 'published']);
 
+function projectPublishedRecordForList(record = {}) {
+  return {
+    ...record,
+    link: '',
+    description: '',
+    metricSnapshots: [],
+    importBatchIds: [],
+    sourceFileName: '',
+    syncState: {
+      ...(record?.syncState || {}),
+      lastMessage: ''
+    }
+  };
+}
+
 function compactSnapshotForApp(snapshot = {}, includeAudit = false) {
   return {
     ...snapshot,
@@ -448,6 +463,9 @@ export function buildAppWorkflowView(data = {}, options = {}) {
     : cleanWords(source.todaySnapshot?.words);
   const favoriteWords = cleanWords(source.words);
   const publishedRecords = Array.isArray(source.publishedRecords) ? source.publishedRecords : [];
+  const projectedPublishedRecords = scope === 'all'
+    ? publishedRecords
+    : (scope === 'published' ? publishedRecords.map(projectPublishedRecordForList) : []);
   const scopeWords = {
     today: todayWords,
     favorites: favoriteWords,
@@ -491,6 +509,7 @@ export function buildAppWorkflowView(data = {}, options = {}) {
   // first request CPU-heavy even though those entries were discarded afterwards.
   const workflow = cleanStoredData({
     ...source,
+    publishedRecords: projectedPublishedRecords,
     candidatePool: selectedCandidatePool,
     aiBatches: [],
     historySnapshots: selectedHistorySnapshots,
@@ -527,8 +546,44 @@ export function buildAppWorkflowView(data = {}, options = {}) {
       scope,
       historyDate,
       partialCandidatePool: scope !== 'all',
+      partialPublishedRecords: scope !== 'all',
+      publishedSummary: scope === 'published',
       candidateCount: Object.keys(candidatePool).length
     }
+  };
+}
+
+export function buildPublishedDetailView(data = {}, recordId = '') {
+  const source = data && typeof data === 'object' && !Array.isArray(data) ? data : {};
+  const cleanRecordId = String(recordId || '').trim().slice(0, 120);
+  const sourceRecord = Array.isArray(source.publishedRecords)
+    ? source.publishedRecords.find(record => String(record?.id || '').trim() === cleanRecordId)
+    : null;
+  if (!sourceRecord) {
+    return {
+      ok: false,
+      record: null,
+      candidate: null,
+      revision: Math.max(0, Number.parseInt(source.revision, 10) || 0),
+      updated: typeof source.updated === 'string' ? source.updated : null,
+      schemaVersion: Math.max(1, Number.parseInt(source.schemaVersion, 10) || 2)
+    };
+  }
+  const word = String(sourceRecord.word || '').trim().slice(0, 80);
+  const workflow = cleanStoredData({
+    publishedRecords: [sourceRecord],
+    candidatePool: word && source.candidatePool?.[word] ? { [word]: source.candidatePool[word] } : {},
+    revision: source.revision,
+    updated: source.updated,
+    schemaVersion: source.schemaVersion
+  });
+  return {
+    ok: true,
+    record: workflow.publishedRecords[0] || null,
+    candidate: word ? (workflow.candidatePool[word] || null) : null,
+    revision: workflow.revision,
+    updated: workflow.updated,
+    schemaVersion: workflow.schemaVersion
   };
 }
 
@@ -550,6 +605,7 @@ export function buildFavoriteCommandView(data = {}, targetWord = '') {
 function getWorkflowResponseData(data, url) {
   const view = url.searchParams.get('view');
   if (view === 'command') return buildFavoriteCommandView(data, url.searchParams.get('word'));
+  if (view === 'published-detail') return buildPublishedDetailView(data, url.searchParams.get('recordId'));
   if (view === 'app') {
     return buildAppWorkflowView(data, {
       historyDate: url.searchParams.get('historyDate'),

@@ -94,6 +94,7 @@ let favorites = [];
 let favoriteStatuses = {};
 let wordFeedback = {};
 let publishedRecords = [];
+const publishedDetailCache = new Map();
 let candidatePool = {};
 let aiBatches = [];
 let todaySnapshot = {};
@@ -2356,6 +2357,8 @@ function cleanStoredWorkflow(data = {}) {
       scope: appViewScope,
       historyDate: appViewHistoryDate,
       partialCandidatePool: Boolean(data.appView?.partialCandidatePool),
+      partialPublishedRecords: Boolean(data.appView?.partialPublishedRecords),
+      publishedSummary: Boolean(data.appView?.publishedSummary),
       candidateCount: clamp(toInt(data.appView?.candidateCount, Object.keys(cleanedCandidatePool).length), 0, 500)
     },
     updated: typeof data.updated === 'string' ? data.updated : null,
@@ -2693,6 +2696,7 @@ function updateAiBatchImportStats(batchId, importedDelta = 0, skippedDelta = 0) 
 
 const workflowStore = createWorkflowStore({
   cleanWorkflow: cleanStoredWorkflow,
+  mergePublishedRecords,
   mergeCandidatePool: (localPool, remotePool) => cleanCandidatePool({
     ...(localPool || {}),
     ...(remotePool || {})
@@ -2721,6 +2725,7 @@ function applyWorkflowData(workflow = {}) {
   publishedPageModelCache = null;
   publishedDisplayItemsCache = null;
   publishedDisplayItemsById = new Map();
+  publishedDetailCache.clear();
   favorites = workflow.words;
   favoriteStatuses = workflow.statuses;
   wordFeedback = workflow.feedback;
@@ -2960,6 +2965,14 @@ function getRankingsEndpoint(days = RANKINGS_DAYS) {
 function getPublishedRefreshEndpoint() {
   if (!SYNC_API_URL) return '';
   return `${SYNC_API_URL}/published-refresh`;
+}
+
+function getPublishedDetailEndpoint(recordId) {
+  if (!SYNC_API_URL) return '';
+  const url = new URL(`${SYNC_API_URL}/favorites`, window.location.origin);
+  url.searchParams.set('view', 'published-detail');
+  url.searchParams.set('recordId', cleanShortText(recordId, 120));
+  return url.toString();
 }
 
 function getAiCandidatesEndpoint() {
@@ -8246,7 +8259,7 @@ function openLibraryCleanupModal() {
   document.body.style.overflow = 'hidden';
 }
 
-function openPublishedDetail(recordId) {
+async function openPublishedDetail(recordId) {
   if (!publishedDisplayItemsCache) getPublishedDisplayItems();
   const item = publishedDisplayItemsById.get(recordId);
   const record = item?.record;
@@ -8254,7 +8267,45 @@ function openPublishedDetail(recordId) {
   currentPublishedRecordId = recordId;
   currentWordForModal = null;
   modalRenderVersion += 1;
-  renderPublishedDetail(record, item.word);
+  const renderVersion = modalRenderVersion;
+  const cachedRecord = publishedDetailCache.get(recordId);
+  if (cachedRecord) {
+    renderPublishedDetail(mergePublishedRecords([record], [cachedRecord])[0], item.word);
+    return;
+  }
+  showModalLoadingShell({
+    eyebrow: '已发布详情',
+    title: getPublishedContentLabel(record, item.word),
+    message: '详情已打开'
+  });
+  const endpoint = getPublishedDetailEndpoint(recordId);
+  if (!endpoint) {
+    if (currentPublishedRecordId === recordId && modalRenderVersion === renderVersion) renderPublishedDetail(record, item.word);
+    return;
+  }
+  try {
+    const response = await apiFetch(endpoint, {
+      headers: { Accept: 'application/json' }
+    }, { cancelKey: `published-detail:${recordId}`, timeoutMs: 15000 });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok || !data.ok || !data.record) throw createApiError(data, response.status);
+    const detailedRecord = cleanPublishedRecord(data.record);
+    const mergedRecord = mergePublishedRecords([record], [detailedRecord])[0] || detailedRecord;
+    publishedDetailCache.set(recordId, mergedRecord);
+    if (data.candidate && mergedRecord.word) {
+      const candidate = cleanCandidatePoolEntry(mergedRecord.word, data.candidate);
+      if (candidate) candidatePool[mergedRecord.word] = candidate;
+    }
+    if (currentPublishedRecordId === recordId && modalRenderVersion === renderVersion) {
+      renderPublishedDetail(mergedRecord, item.word);
+    }
+  } catch (error) {
+    console.warn('已发布详情读取失败', error);
+    if (currentPublishedRecordId === recordId && modalRenderVersion === renderVersion) {
+      renderPublishedDetail(record, item.word);
+      showToast('完整详情读取失败，已显示当前摘要');
+    }
+  }
 }
 
 function renderPublishedDetail(record, cachedWord = null) {

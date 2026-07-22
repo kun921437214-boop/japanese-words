@@ -12,9 +12,17 @@ function safeArray(value) {
 export function normalizePublishedCoverUrl(value) {
   const rawUrl = String(value || '').trim();
   if (!rawUrl) return '';
-  if (/^\/published-cover\?key=published-covers%2Fv1%2F[a-f0-9]{32}$/i.test(rawUrl)
-    || /^\/published-cover\?key=published-covers\/v1\/[a-f0-9]{32}$/i.test(rawUrl)) {
-    return rawUrl;
+  if (rawUrl.startsWith('/published-cover?')) {
+    try {
+      const parsed = new URL(rawUrl, 'https://bijinihaitan.cn');
+      const key = parsed.searchParams.get('key') || '';
+      if (parsed.pathname !== '/published-cover' || !/^published-covers\/v1\/[a-f0-9]{32}$/i.test(key)) return '';
+      const normalized = new URLSearchParams({ key });
+      if (parsed.searchParams.get('variant') === 'thumb') normalized.set('variant', 'thumb');
+      return `/published-cover?${normalized.toString()}`;
+    } catch {
+      return '';
+    }
   }
   try {
     const parsed = new URL(rawUrl);
@@ -35,7 +43,13 @@ export function normalizePublishedCoverUrl(value) {
 export function getPublishedCoverCandidates(value, options = {}) {
   const primaryUrl = normalizePublishedCoverUrl(value);
   if (!primaryUrl) return [];
-  if (primaryUrl.startsWith('/published-cover?')) return [primaryUrl];
+  if (primaryUrl.startsWith('/published-cover?')) {
+    const requestedWidth = Number.parseInt(options.width, 10);
+    if (!Number.isFinite(requestedWidth) || requestedWidth > 640) return [primaryUrl];
+    const thumbnailUrl = new URL(primaryUrl, 'https://bijinihaitan.cn');
+    thumbnailUrl.searchParams.set('variant', 'thumb');
+    return [`${thumbnailUrl.pathname}${thumbnailUrl.search}`, primaryUrl];
+  }
   try {
     const parsed = new URL(primaryUrl);
     const hostname = parsed.hostname.toLowerCase();

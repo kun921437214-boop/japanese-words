@@ -196,6 +196,22 @@ async function installApiFixture(page, options = {}) {
     const request = route.request();
     const url = new URL(request.url());
     if (request.method() === 'GET') {
+      if (url.searchParams.get('view') === 'published-detail') {
+        const record = state.publishedRecords.find(item => item.id === url.searchParams.get('recordId')) || null;
+        await route.fulfill({
+          status: record ? 200 : 404,
+          contentType: 'application/json',
+          body: JSON.stringify({
+            ok: Boolean(record),
+            record,
+            candidate: record?.word ? (state.candidatePool[record.word] || null) : null,
+            revision: state.revision,
+            updated: state.updated,
+            schemaVersion: 2
+          })
+        });
+        return;
+      }
       await route.fulfill({
         status: 200,
         contentType: 'application/json',

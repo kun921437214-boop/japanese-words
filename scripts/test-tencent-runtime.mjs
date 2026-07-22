@@ -5,6 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { promisify } from 'node:util';
+import sharp from 'sharp';
 import { FileKV } from '../server/file-kv.mjs';
 import { LocalWorkflowCoordinator } from '../server/local-coordinator.mjs';
 import { dispatchPagesFunction, handleWebRequest, matchesSchedule } from '../server/tencent-runtime.mjs';
@@ -82,6 +83,17 @@ test('Tencent runtime dispatches existing API handlers', async () => {
   assert.equal(cover.status, 200);
   assert.equal(cover.headers.get('Content-Type'), 'image/webp');
   assert.equal((await cover.arrayBuffer()).byteLength, 3);
+
+  const png = await sharp({
+    create: { width: 2, height: 2, channels: 3, background: { r: 255, g: 120, b: 140 } }
+  }).png().toBuffer();
+  await env.REFERENCE_IMAGES_KV.put(coverKey, png, { metadata: { contentType: 'image/png' } });
+  const thumbnail = await handleWebRequest(new Request(`https://bijinihaitan.cn/published-cover?key=${coverKey}&variant=thumb`), env);
+  assert.equal(thumbnail.status, 200);
+  assert.equal(thumbnail.headers.get('Content-Type'), 'image/webp');
+  assert.ok((await thumbnail.arrayBuffer()).byteLength > 0);
+  const thumbnailKey = `published-cover-thumbs/v1/${'a'.repeat(32)}.webp`;
+  assert.ok((await env.REFERENCE_IMAGES_KV.getWithMetadata(thumbnailKey, { type: 'arrayBuffer' })).value.byteLength > 0);
 });
 
 test('Tencent runtime exposes waitUntil so long Pages jobs return before background completion', async () => {
@@ -161,6 +173,9 @@ test('Nginx compresses text responses and revalidates unhashed browser code', as
     assert.match(config, /gzip_types[^;]*application\/json/);
     assert.match(config, /location ~\* \\\.\(\?:css\|js\)\$/);
     assert.match(config, /add_header Cache-Control "no-cache" always;/);
+    assert.match(config, /location = \/published-cover/);
+    assert.match(config, /proxy_buffering on;/);
+    assert.match(config, /open_file_cache max=1000/);
   }
 });
 

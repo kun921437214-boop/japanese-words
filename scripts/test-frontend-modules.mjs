@@ -1014,6 +1014,7 @@ test('workflow store rejects stale remote revisions without changing local metad
 test('workflow store merges scoped candidates and history without dropping local entries', () => {
   const store = createWorkflowStore({
     cleanWorkflow: cleanTestWorkflow,
+    mergePublishedRecords: (local, remote) => [...local, ...remote],
     mergeCandidatePool: (local, remote) => ({ ...local, ...remote }),
     mergeHistorySnapshots: (local, remote) => ({ ...local, ...remote }),
     mergeTodaySnapshotHistory: (local, remote) => [...local, ...remote]
@@ -1024,19 +1025,22 @@ test('workflow store merges scoped candidates and history without dropping local
     candidatePool: { 云端词: { kanji: '云端词' } },
     historySnapshots: { '2026-07-19': { words: ['云端词'] } },
     todaySnapshotHistory: [{ dateKey: '2026-07-19' }],
+    publishedRecords: [{ id: 'remote-published' }],
     revision: 4,
     auditLog: [{ id: 'revision-4' }],
-    appView: { scope: 'favorites', partialCandidatePool: true }
+    appView: { scope: 'favorites', partialCandidatePool: true, partialPublishedRecords: true }
   }, {
     candidatePool: { 本地词: { kanji: '本地词' } },
     historySnapshots: { '2026-07-18': { words: ['本地词'] } },
-    todaySnapshotHistory: [{ dateKey: '2026-07-18' }]
+    todaySnapshotHistory: [{ dateKey: '2026-07-18' }],
+    publishedRecords: [{ id: 'local-published' }]
   });
   assert.equal(result.applied, true);
   assert.equal(result.mergePartialState, true);
   assert.deepEqual(Object.keys(result.state.candidatePool), ['本地词', '云端词']);
   assert.deepEqual(Object.keys(result.state.historySnapshots), ['2026-07-18', '2026-07-19']);
   assert.deepEqual(result.state.todaySnapshotHistory.map(item => item.dateKey), ['2026-07-18', '2026-07-19']);
+  assert.deepEqual(result.state.publishedRecords.map(item => item.id), ['local-published', 'remote-published']);
   assert.deepEqual(store.getMetadata(), { revision: 4, auditLog: [{ id: 'revision-4' }] });
 });
 
@@ -1444,7 +1448,10 @@ test('published cover URLs recover stable Xiaohongshu assets and reject unsafe s
   assert.equal(normalizePublishedCoverUrl('https://images.example.com/cover.jpg'), 'https://images.example.com/cover.jpg');
   const storedCoverUrl = `/published-cover?key=${encodeURIComponent(`published-covers/v1/${'a'.repeat(32)}`)}`;
   assert.equal(normalizePublishedCoverUrl(storedCoverUrl), storedCoverUrl);
-  assert.deepEqual(getPublishedCoverCandidates(storedCoverUrl, { width: 480 }), [storedCoverUrl]);
+  assert.deepEqual(getPublishedCoverCandidates(storedCoverUrl, { width: 480 }), [
+    `${storedCoverUrl}&variant=thumb`,
+    storedCoverUrl
+  ]);
   assert.equal(normalizePublishedCoverUrl('javascript:alert(1)'), '');
   assert.equal(normalizePublishedCoverUrl('https://user:pass@images.example.com/cover.jpg'), '');
 });
@@ -1728,8 +1735,10 @@ test('published detail uses one metric grid and marks its below-median values in
     appSource.indexOf('function openPublishedDetail'),
     appSource.indexOf('function renderPublishedDetail')
   );
-  assert.match(openDetailSource, /renderPublishedDetail\(record, item\.word\)/);
-  assert.doesNotMatch(openDetailSource, /scheduleModalRender|showModalLoadingShell/);
+  assert.match(openDetailSource, /showModalLoadingShell/);
+  assert.match(openDetailSource, /getPublishedDetailEndpoint\(recordId\)/);
+  assert.match(openDetailSource, /renderPublishedDetail\(mergedRecord, item\.word\)/);
+  assert.doesNotMatch(openDetailSource, /scheduleModalRender/);
   assert.match(appSource, /const comparisonByKey = new Map\(/);
   assert.match(appSource, /published-detail-metrics[\s\S]*?belowMedian \? 'is-below-median'/);
   assert.doesNotMatch(appSource, /class="published-comparison-strip"/);

@@ -28,7 +28,12 @@ import {
   AI_CARD_PENDING_TTL_MS as FRONTEND_AI_CARD_PENDING_TTL_MS,
   isAiCardStalePending as isFrontendAiCardStalePending
 } from '../frontend/ai-card-generation.mjs';
-import { applyFavoriteAction, buildAppWorkflowView, buildFavoriteCommandView } from '../functions/favorites.js';
+import {
+  applyFavoriteAction,
+  buildAppWorkflowView,
+  buildFavoriteCommandView,
+  buildPublishedDetailView
+} from '../functions/favorites.js';
 import {
   applyAiCardGenerationResult,
   isAiCardStalePending,
@@ -149,7 +154,14 @@ test('app 工作流只返回页面所需候选且不改变云端完整候选池'
   const fullWorkflow = {
     words: ['收藏词'],
     statuses: {},
-    publishedRecords: [{ id: 'published-test', word: '发布词', title: '已发布测试' }],
+    publishedRecords: [{
+      id: 'published-test',
+      word: '发布词',
+      title: '已发布测试',
+      description: '只应在详情接口返回的完整正文',
+      contentLocked: true,
+      metricSnapshots: [{ dateKey: '2026-07-19', views: 100 }]
+    }],
     candidatePool,
     aiBatches: [{ id: 'batch-test', action: 'generate_candidates' }],
     todaySnapshot: {
@@ -182,6 +194,8 @@ test('app 工作流只返回页面所需候选且不改变云端完整候选池'
   assert.deepEqual(Object.keys(todayScope.candidatePool), ['今日词']);
   assert.equal(todayScope.appView.scope, 'today');
   assert.equal(todayScope.appView.partialCandidatePool, true);
+  assert.equal(todayScope.appView.partialPublishedRecords, true);
+  assert.deepEqual(todayScope.publishedRecords, []);
   assert.deepEqual(todayScope.candidatePool['今日词'].aiCardHistory, []);
   assert.equal(todayScope.candidatePool['今日词'].sourceText, '');
   assert.deepEqual(todayScope.historySnapshots['2026-07-18'].recommendationAudit, {});
@@ -192,8 +206,18 @@ test('app 工作流只返回页面所需候选且不改变云端完整候选池'
   assert.deepEqual(Object.keys(favoritesScope.candidatePool), ['收藏词']);
   assert.deepEqual(favoritesScope.historySnapshots, {});
   assert.deepEqual(favoritesScope.todaySnapshotHistory, []);
+  assert.deepEqual(favoritesScope.publishedRecords, []);
   const publishedScope = buildAppWorkflowView(fullWorkflow, { scope: 'published' });
   assert.deepEqual(Object.keys(publishedScope.candidatePool), ['发布词']);
+  assert.equal(publishedScope.appView.publishedSummary, true);
+  assert.equal(publishedScope.publishedRecords[0].description, '');
+  assert.deepEqual(publishedScope.publishedRecords[0].metricSnapshots, []);
+  const publishedDetail = buildPublishedDetailView(fullWorkflow, 'published-test');
+  assert.equal(publishedDetail.ok, true);
+  assert.equal(publishedDetail.record.description, '只应在详情接口返回的完整正文');
+  assert.equal(publishedDetail.record.metricSnapshots.length, 1);
+  assert.equal(publishedDetail.candidate.kanji, '发布词');
+  assert.equal(buildPublishedDetailView(fullWorkflow, 'missing-record').ok, false);
   const unrelatedCandidatePool = { ...candidatePool };
   Object.defineProperty(unrelatedCandidatePool, '大型无关词', {
     enumerable: true,

@@ -17,6 +17,14 @@ import { onRequest as todaySnapshot } from '../functions/today-snapshot.js';
 import scheduledWorker from '../worker/favorites-worker.js';
 import { FileKV } from './file-kv.mjs';
 import { LocalWorkflowCoordinator } from './local-coordinator.mjs';
+import { onRequest as publishedCoverThumbnail } from './published-cover-thumbnail.mjs';
+
+function publishedCoverRoute(context) {
+  const url = new URL(context.request.url);
+  return url.searchParams.get('variant') === 'thumb'
+    ? publishedCoverThumbnail(context)
+    : publishedCover(context);
+}
 
 const ROUTES = new Map([
   ['/ai-candidates', aiCandidates],
@@ -26,7 +34,7 @@ const ROUTES = new Map([
   ['/daily-refresh', dailyRefresh],
   ['/favorites', favorites],
   ['/healthz', healthz],
-  ['/published-cover', publishedCover],
+  ['/published-cover', publishedCoverRoute],
   ['/published-import', publishedImport],
   ['/published-refresh', publishedRefresh],
   ['/rankings', rankings],
