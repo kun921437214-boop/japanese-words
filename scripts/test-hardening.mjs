@@ -384,6 +384,22 @@ test('Xiaohongshu URL validation rejects lookalike hosts and unsafe protocols', 
   assert.equal(normalizeXiaohongshuUrl('https://user:pass@www.xiaohongshu.com/a'), '');
 });
 
+test('Xiaohongshu URL validation restores canonical notes from desktop error wrappers', () => {
+  const wrapped = 'https://www.xiaohongshu.com/404?source=%2F404%2Fsec_test&redirectPath=https%3A%2F%2Fwww.xiaohongshu.com%2Fexplore%2F6a5cc0930000000011004cf7&error_code=300031';
+  assert.equal(
+    normalizeXiaohongshuUrl(wrapped),
+    'https://www.xiaohongshu.com/explore/6a5cc0930000000011004cf7'
+  );
+  assert.equal(
+    normalizeXiaohongshuUrl('https://www.xiaohongshu.com/404', '6a5cc0930000000011004cf7'),
+    'https://www.xiaohongshu.com/explore/6a5cc0930000000011004cf7'
+  );
+  assert.equal(
+    normalizeXiaohongshuUrl('https://www.xiaohongshu.com/404?redirectPath=https%3A%2F%2Fevil.example%2Fsteal'),
+    ''
+  );
+});
+
 test('published refresh rejects redirects outside allowed hosts', async () => {
   const result = await fetchPublishedRecordRemote('https://xhslink.com/a/test', async () => new Response(null, {
     status: 302,

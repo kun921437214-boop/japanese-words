@@ -139,6 +139,10 @@ function createPerformanceWorkflow() {
     metricSnapshots: [],
     lastMetricsImportedAt: '2026-07-21T06:30:00.000Z',
     selectionSource: { type: 'daily_hot_codex', label: 'Codex 每日热门' },
+    noteId: index === 0 ? '6a5cc0930000000011004cf7' : '',
+    link: index === 0
+      ? 'https://www.xiaohongshu.com/404?redirectPath=https%3A%2F%2Fwww.xiaohongshu.com%2Fexplore%2F6a5cc0930000000011004cf7'
+      : '',
     updatedAt: '2026-07-21T06:30:00.000Z'
   }));
   return state;
@@ -377,6 +381,14 @@ test('favorites and published pages progressively render cards and open responsi
   await expect(page.locator('#modalOverlay')).toHaveClass(/open/);
   await expect(page.locator('.published-detail-shell')).toBeVisible();
   await expect(page.locator('#modalContainer')).toContainText('这是只读帖子正文');
+  await expect(page.locator('.published-open-link')).toHaveAttribute(
+    'href',
+    'https://www.xiaohongshu.com/explore/6a5cc0930000000011004cf7'
+  );
+  await expect(page.locator('.published-note-desktop-action').first()).toHaveAttribute(
+    'href',
+    'https://creator.xiaohongshu.com/new/note-manager'
+  );
   await page.locator('#modalContainer [data-modal-action="close"]').first().click();
   await expect(page.locator('#modalOverlay')).not.toHaveClass(/open/);
   await openMobileMenu();

@@ -68,6 +68,22 @@ test('官方导出字段完整拆分，标题中的日语词可自动映射', ()
   });
 });
 
+test('旧的小红书电脑端错误链接会在导入和读取时恢复为标准笔记链接', () => {
+  const wrappedLink = 'https://www.xiaohongshu.com/404?source=%2F404%2Fsec_test&redirectPath=https%3A%2F%2Fwww.xiaohongshu.com%2Fexplore%2F6a5cc0930000000011004cf7&error_code=300031';
+  const normalized = normalizePublishedImportRow(row({ link: wrappedLink }));
+  assert.equal(normalized.noteId, '6a5cc0930000000011004cf7');
+  assert.equal(normalized.link, 'https://www.xiaohongshu.com/explore/6a5cc0930000000011004cf7');
+
+  const cleaned = cleanPublishedRecord({
+    id: 'legacy-wrapper',
+    word: '尊い',
+    link: wrappedLink,
+    contentLocked: true
+  });
+  assert.equal(cleaned.noteId, '6a5cc0930000000011004cf7');
+  assert.equal(cleaned.link, 'https://www.xiaohongshu.com/explore/6a5cc0930000000011004cf7');
+});
+
 test('同一批次可幂等重放，内容只保存一次，超过 15 天的数据不再变化', () => {
   const rows = [
     row({ description: '首次获取的正文', coverUrl: 'https://example.com/first.jpg' }),

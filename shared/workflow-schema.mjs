@@ -4,6 +4,10 @@ import {
   cleanSelectionSource,
   mergePublishedMetricSnapshots
 } from './published-import.mjs';
+import {
+  extractXiaohongshuNoteId,
+  normalizeXiaohongshuUrl
+} from './xiaohongshu-url.mjs';
 
 const SCHEMA_VERSION = 3;
 const WORDS_LIMIT = 500;
@@ -245,12 +249,13 @@ export function cleanPublishedRecord(record = {}, index = 0) {
   const syncStatus = ['idle', 'success', 'failed', 'frozen'].includes(record?.syncState?.status)
     ? record.syncState.status
     : (record?.metricsFrozen ? 'frozen' : 'idle');
+  const noteId = extractXiaohongshuNoteId(record?.link, record?.noteId);
   return {
     id,
     sourceKey: cleanText(record?.sourceKey, 160),
     word,
-    noteId: cleanText(record?.noteId, 120),
-    link: cleanText(record?.link, 1000),
+    noteId,
+    link: normalizeXiaohongshuUrl(record?.link, noteId),
     title: cleanText(record?.title, 200),
     description: cleanText(record?.description, 12000),
     coverUrl: cleanText(record?.coverUrl, 1000),
