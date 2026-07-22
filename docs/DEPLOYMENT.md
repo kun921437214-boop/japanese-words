@@ -38,7 +38,16 @@ npm run deploy:tencent -- --dry-run
 npm run deploy:tencent -- --confirm=DEPLOY
 ```
 
-The deploy command only accepts a clean working tree and a fast-forward update from `codex/fix-daily-automation-assets`. It retries transient GitHub fetch failures, rejects dependency-lock changes, builds and runs all quality checks outside the live directory, creates a complete workflow/image backup, swaps the built static artifact, restarts the runtime, and rolls back if the local health check fails. It does not create a deploy key or schedule future deployments.
+The deploy command only accepts a clean working tree and a fast-forward update from `codex/fix-daily-automation-assets`. It first checks the lightweight remote branch advertisement, which avoids downloading a Git pack when Production is already current. For a real update it tries the normal Git transport, an HTTP/1.1 path, and a conservative low-bandwidth path. If Git smart HTTP is still unavailable, it downloads and verifies the official bundle published by this repository's `Publish Tencent Deploy Bundle` workflow. It then rejects dependency-lock changes, builds and runs all quality checks outside the live directory, creates a complete workflow/image backup, swaps the built static artifact, restarts the runtime, and rolls back if the local health check fails. It does not use a third-party proxy, create a deploy key, or schedule future deployments.
+
+The official bundle is a transport fallback only. GitHub remains the source of truth, and the same fast-forward, test, backup, confirmation, health-check, and rollback gates still apply. If both GitHub paths are unavailable, transfer a bundle created from the reviewed branch through the trusted Tencent console and pin its full commit explicitly:
+
+```bash
+bash server/deploy-production.sh \
+  --bundle=/path/to/japanese-words-production.bundle \
+  --expected-commit=<full-40-character-git-hash> \
+  --confirm=DEPLOY
+```
 
 After it succeeds, run the read-only smoke check from a trusted workstation and visually check the affected desktop and mobile workflows. A GitHub push is never sufficient authorization to run this command.
 

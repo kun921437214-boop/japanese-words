@@ -115,4 +115,4 @@ npm run deploy:tencent -- --dry-run
 npm run deploy:tencent -- --confirm=DEPLOY
 ```
 
-The command is deliberately manual: GitHub is the source of truth, while Production still requires explicit approval. It uses the public read-only GitHub remote, so no deploy key or long-lived GitHub credential is stored on the server. Dependency-lock changes and non-fast-forward histories stop for a separate manual review.
+The command is deliberately manual: GitHub is the source of truth, while Production still requires explicit approval. It uses the public read-only GitHub remote, first checks whether Production already matches the advertised commit, and retries updates through normal, HTTP/1.1, and low-bandwidth Git transports. The repository also publishes a verified fallback Git bundle to its own GitHub release channel; the server downloads it only after smart HTTP fails. No third-party proxy, deploy key, or long-lived GitHub credential is stored on the server. Dependency-lock changes and non-fast-forward histories stop for a separate manual review.
