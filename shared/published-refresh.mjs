@@ -5,6 +5,9 @@ import {
   mergePublishedMetricSnapshots
 } from './published-import.mjs';
 import { cleanPublishedRecord } from './workflow-schema.mjs';
+import { normalizeXiaohongshuUrl } from './xiaohongshu-url.mjs';
+
+export { normalizeXiaohongshuUrl } from './xiaohongshu-url.mjs';
 
 export const SNAPSHOT_NODE_ORDER = ['1h', '2h', '4h', '24h', '72h'];
 
@@ -12,7 +15,6 @@ const REFRESH_STATUS_VALUES = ['idle', 'success', 'failed', 'partial'];
 const PUBLISHED_FETCH_TIMEOUT_MS = 12 * 1000;
 const PUBLISHED_FETCH_MAX_BYTES = 2 * 1024 * 1024;
 const PUBLISHED_FETCH_MAX_REDIRECTS = 4;
-const XHS_HOSTS = ['xhslink.com', 'xiaohongshu.com'];
 
 export function cleanAutoRefreshState(state = {}) {
   return {
@@ -155,25 +157,6 @@ export function extractStatsFromText(text = '') {
     views: extractJsonNumber(normalized, ['viewCount', 'views', 'browseCount', 'impressionCount', 'exposureCount', 'view_count'])
       || extractLabeledNumber(normalized, ['浏览', '曝光', '阅读', '观看', 'views?', 'impressions?'])
   });
-}
-
-function isAllowedXiaohongshuHostname(hostname) {
-  const cleanHostname = String(hostname || '').trim().toLowerCase().replace(/\.$/, '');
-  return XHS_HOSTS.some(host => cleanHostname === host || cleanHostname.endsWith(`.${host}`));
-}
-
-export function normalizeXiaohongshuUrl(url) {
-  const raw = String(url || '').trim();
-  if (!raw) return '';
-  try {
-    const parsed = new URL(raw);
-    if (parsed.protocol !== 'https:' || parsed.username || parsed.password) return '';
-    if (parsed.port && parsed.port !== '443') return '';
-    if (isAllowedXiaohongshuHostname(parsed.hostname)) return parsed.toString();
-  } catch (error) {
-    return '';
-  }
-  return '';
 }
 
 async function readResponseTextWithLimit(response, maxBytes = PUBLISHED_FETCH_MAX_BYTES) {

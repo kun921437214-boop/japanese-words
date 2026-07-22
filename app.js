@@ -8272,7 +8272,7 @@ function renderPublishedDetail(record, cachedWord = null) {
   const coverFallback = buildPublishedCoverFallback(contentLabel);
   const coverSrc = coverUrls[0] || coverFallback;
   const coverFallbacks = coverUrls.length ? [...coverUrls.slice(1), coverFallback] : [];
-  const noteLink = normalizeXiaohongshuUrl(record.link);
+  const noteLink = normalizeXiaohongshuUrl(record.link, record.noteId);
   const publishedMeaning = resolvePublishedContentSubLabel(record, word);
   const views = metrics.views || 0;
   const comparisonByKey = new Map(
@@ -8331,7 +8331,13 @@ function renderPublishedDetail(record, cachedWord = null) {
               <div><dt>内容状态</dt><dd>${record.contentLocked ? '已保存，不再覆盖' : '等待从笔记管理读取'}</dd></div>
               <div><dt>数据更新</dt><dd>${escapeHTML(updateState.description)}</dd></div>
             </dl>
-            ${noteLink ? `<a class="btn btn-ghost published-open-link" href="${escapeHTML(noteLink)}" target="_blank" rel="noopener">打开小红书笔记 ↗</a>` : ''}
+            ${noteLink ? `
+              <div class="published-note-actions">
+                <a class="btn btn-ghost published-open-link published-note-mobile-action" href="${escapeHTML(noteLink)}" target="_blank" rel="noopener">打开小红书笔记 ↗</a>
+                <a class="btn btn-primary published-note-desktop-action" href="https://creator.xiaohongshu.com/new/note-manager" target="_blank" rel="noopener">在创作中心查看 ↗</a>
+                <a class="btn btn-ghost published-note-desktop-action" href="${escapeHTML(noteLink)}" target="_blank" rel="noopener">尝试小红书网页版 ↗</a>
+              </div>
+              <p class="published-note-desktop-hint published-note-desktop-action">电脑网页版可能受小红书登录或笔记可见权限限制；创作中心对自己的已发布内容更稳定。</p>` : ''}
           </div>
         </section>
 

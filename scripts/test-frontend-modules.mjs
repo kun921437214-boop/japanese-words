@@ -862,6 +862,16 @@ https://www.xiaohongshu.com/explore/abc123，
   assert.doesNotMatch(parsed.description, /https?:\/\//);
 });
 
+test('published record parser unwraps Xiaohongshu desktop error links', () => {
+  const parsed = parseXiaohongshuSharePayload(`
+电脑端中转链接
+https://www.xiaohongshu.com/404?redirectPath=https%3A%2F%2Fwww.xiaohongshu.com%2Fexplore%2F6a5cc0930000000011004cf7
+  `);
+
+  assert.equal(parsed.url, 'https://www.xiaohongshu.com/explore/6a5cc0930000000011004cf7');
+  assert.equal(parsed.noteId, '6a5cc0930000000011004cf7');
+});
+
 test('published record parser rejects lookalike and insecure URLs', () => {
   const lookalike = parseXiaohongshuSharePayload('测试标题\nhttps://xiaohongshu.com.evil.example/explore/abc');
   const insecure = parseXiaohongshuSharePayload('测试标题\nhttp://www.xiaohongshu.com/explore/abc');
@@ -1725,4 +1735,7 @@ test('published detail uses one metric grid and marks its below-median values in
   assert.doesNotMatch(appSource, /class="published-comparison-strip"/);
   assert.match(stylesSource, /\.published-detail-metrics > \.is-below-median/);
   assert.doesNotMatch(stylesSource, /\.published-comparison-strip/);
+  assert.match(appSource, /https:\/\/creator\.xiaohongshu\.com\/new\/note-manager/);
+  assert.match(appSource, /published-note-mobile-action/);
+  assert.match(stylesSource, /\.published-note-desktop-action \{ display:none; \}/);
 });

@@ -1,3 +1,8 @@
+import {
+  extractXiaohongshuNoteId,
+  normalizeXiaohongshuUrl
+} from './xiaohongshu-url.mjs';
+
 export const PUBLISHED_METRIC_UPDATE_DAYS = 15;
 export const PUBLISHED_METRIC_SNAPSHOT_LIMIT = 16;
 
@@ -182,14 +187,15 @@ export function normalizePublishedImportRow(row = {}, wordMappings = {}) {
   const mappedWord = cleanText(wordMappings[title] || row?.word, 80);
   const inferredWord = mappedWord || extractPublishedWordFromTitle(title);
   const contentCategory = cleanPublishedContentCategory(row?.contentCategory, inferredWord);
+  const noteId = extractXiaohongshuNoteId(row?.link, row?.noteId);
   return {
     title,
     publishedAt,
     contentType: cleanText(row?.contentType ?? row?.['体裁'], 20) === '视频' ? '视频' : '图文',
     contentCategory,
     word: contentCategory === 'non_word' ? '' : inferredWord,
-    noteId: cleanText(row?.noteId, 120),
-    link: cleanText(row?.link, 1000),
+    noteId,
+    link: normalizeXiaohongshuUrl(row?.link, noteId),
     description: cleanText(row?.description, 12000),
     coverUrl: cleanText(row?.coverUrl, 1000),
     sourceKey: buildPublishedSourceKey(title, publishedAt),
