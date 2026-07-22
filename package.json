@@ -32,5 +32,8 @@
     "eslint": "9.39.1",
     "typescript": "5.9.3",
     "wrangler": "4.110.0"
+  },
+  "overrides": {
+    "sharp": "0.35.3"
   }
 }
