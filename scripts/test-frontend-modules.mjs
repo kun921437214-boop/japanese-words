@@ -1766,6 +1766,10 @@ test('module migration removes inline handlers and the temporary window compatib
   assert.ok(indexSource.includes('data-image-fallback="parent-text"'));
   assert.doesNotMatch(indexSource, /assets\/illustrations\/[^"']+\.png/);
   assert.doesNotMatch(indexSource, /<link[^>]+fonts\.googleapis\.com[^>]+rel="stylesheet"/);
+  assert.match(indexSource, /rel="icon"[^>]+sizes="32x32"[^>]+memory-bread-favicon-32\.png/);
+  assert.match(indexSource, /rel="icon"[^>]+sizes="192x192"[^>]+memory-bread-favicon-192\.png/);
+  assert.match(indexSource, /rel="icon"[^>]+sizes="512x512"[^>]+memory-bread-favicon-512\.png/);
+  assert.match(indexSource, /rel="apple-touch-icon"[^>]+sizes="180x180"[^>]+memory-bread-apple-touch-icon\.png/);
   assert.match(indexSource, /rel="modulepreload" href="app\.js" fetchpriority="high"/);
   assert.doesNotMatch(indexSource, /fonts\.googleapis\.com/);
   assert.ok(appSource.includes('data-manual-word-action="submit"'));
