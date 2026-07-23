@@ -31,6 +31,7 @@ import {
 import {
   applyFavoriteAction,
   buildAppWorkflowView,
+  buildCandidateDetailView,
   buildFavoriteCommandView,
   buildPublishedDetailView
 } from '../functions/favorites.js';
@@ -145,6 +146,13 @@ test('app 工作流只返回页面所需候选且不改变云端完整候选池'
       meaning: '今日测试词',
       sourceType: 'deepseek_generated',
       sourceText: '不应发送到 app view 的生成原文',
+      aiCard: {
+        ...readyCard,
+        summary: '列表需要的摘要',
+        explanation: '只应在词卡详情接口返回的完整解释',
+        suggestedTitles: ['列表标题', '详情备用标题'],
+        interactionPrompts: ['只应在完整详情返回']
+      },
       aiCardHistory: [{ cardStatus: 'ready', summary: '旧词卡' }]
     },
     发布词: { kanji: '发布词', kana: 'はっぴょうし', meaning: '发布测试词', sourceType: 'deepseek_reviewed' },
@@ -195,9 +203,15 @@ test('app 工作流只返回页面所需候选且不改变云端完整候选池'
   assert.equal(todayScope.appView.scope, 'today');
   assert.equal(todayScope.appView.partialCandidatePool, true);
   assert.equal(todayScope.appView.partialPublishedRecords, true);
+  assert.equal(todayScope.appView.candidateProjection, 'list');
   assert.deepEqual(todayScope.publishedRecords, []);
   assert.deepEqual(todayScope.candidatePool['今日词'].aiCardHistory, []);
   assert.equal(todayScope.candidatePool['今日词'].sourceText, '');
+  assert.equal(todayScope.candidatePool['今日词'].candidateProjection, 'list');
+  assert.equal(todayScope.candidatePool['今日词'].aiCard.projection, 'list');
+  assert.equal(todayScope.candidatePool['今日词'].aiCard.summary, '列表需要的摘要');
+  assert.equal(todayScope.candidatePool['今日词'].aiCard.explanation, undefined);
+  assert.deepEqual(todayScope.candidatePool['今日词'].aiCard.suggestedTitles, ['列表标题']);
   assert.deepEqual(todayScope.historySnapshots['2026-07-18'].recommendationAudit, {});
   const historyScope = buildAppWorkflowView(fullWorkflow, { scope: 'today', historyDate: '2026-07-18' });
   assert.deepEqual(Object.keys(historyScope.candidatePool), ['历史词']);
@@ -218,6 +232,13 @@ test('app 工作流只返回页面所需候选且不改变云端完整候选池'
   assert.equal(publishedDetail.record.metricSnapshots.length, 1);
   assert.equal(publishedDetail.candidate.kanji, '发布词');
   assert.equal(buildPublishedDetailView(fullWorkflow, 'missing-record').ok, false);
+  const candidateDetail = buildCandidateDetailView(fullWorkflow, '今日词');
+  assert.equal(candidateDetail.ok, true);
+  assert.equal(candidateDetail.candidate.candidateProjection, 'detail');
+  assert.equal(candidateDetail.candidate.aiCard.projection, 'detail');
+  assert.equal(candidateDetail.candidate.aiCard.explanation, '只应在词卡详情接口返回的完整解释');
+  assert.deepEqual(candidateDetail.candidate.aiCard.suggestedTitles, ['列表标题', '详情备用标题']);
+  assert.equal(buildCandidateDetailView(fullWorkflow, '不存在').ok, false);
   const unrelatedCandidatePool = { ...candidatePool };
   Object.defineProperty(unrelatedCandidatePool, '大型无关词', {
     enumerable: true,

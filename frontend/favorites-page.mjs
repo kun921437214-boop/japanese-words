@@ -162,12 +162,26 @@ export function createFavoritesPageController(options = {}) {
     else if (action === 'status-filter') invoke(options.onStatusFilter, actionElement.value || 'all');
   }
 
+  function handleDetailIntent(event) {
+    const target = event.target;
+    if (!target?.closest) return;
+    const actionElement = target.closest('[data-favorites-action="open-detail"]');
+    if (!actionElement || !belongsToRoot(actionElement)) return;
+    invoke(options.onPrefetchDetail, actionElement.dataset.wordId || actionElement.dataset.kanji || '');
+  }
+
   root.addEventListener('click', handleClick);
   root.addEventListener('change', handleChange);
+  root.addEventListener('pointerover', handleDetailIntent);
+  root.addEventListener('pointerdown', handleDetailIntent);
+  root.addEventListener('focusin', handleDetailIntent);
   return {
     destroy() {
       root.removeEventListener?.('click', handleClick);
       root.removeEventListener?.('change', handleChange);
+      root.removeEventListener?.('pointerover', handleDetailIntent);
+      root.removeEventListener?.('pointerdown', handleDetailIntent);
+      root.removeEventListener?.('focusin', handleDetailIntent);
     }
   };
 }

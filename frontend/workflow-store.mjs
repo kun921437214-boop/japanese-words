@@ -105,6 +105,18 @@ export function createWorkflowStore(options = {}) {
 
   function prepareRemoteState(remoteWorkflow = {}, currentState = {}, config = {}) {
     const data = cleanWorkflow(remoteWorkflow);
+    if (data.appView?.candidateProjection === 'list') {
+      data.candidatePool = Object.fromEntries(
+        Object.entries(data.candidatePool || {}).map(([word, candidate]) => [word, {
+          ...candidate,
+          candidateProjection: 'list',
+          aiCard: {
+            ...(candidate?.aiCard || {}),
+            projection: 'list'
+          }
+        }])
+      );
+    }
     if (!config.allowOlderRevision && data.revision < revision) {
       return { applied: false, stale: true, data, state: currentState };
     }

@@ -155,6 +155,10 @@ async function installApiFixture(page, options = {}) {
     mutationFailuresRemaining: options.mutationFailures || 0,
     commandRequests: 0,
     fullSaveRequests: 0,
+    candidateDetailRequests: 0,
+    publishedDetailRequests: 0,
+    candidateDetailRequestWords: [],
+    publishedDetailRequestIds: [],
     pageErrors: []
   };
   page.on('pageerror', error => controls.pageErrors.push(error.message));
@@ -196,8 +200,36 @@ async function installApiFixture(page, options = {}) {
     const request = route.request();
     const url = new URL(request.url());
     if (request.method() === 'GET') {
+      if (url.searchParams.get('view') === 'candidate-detail') {
+        controls.candidateDetailRequests += 1;
+        const word = url.searchParams.get('word') || '';
+        controls.candidateDetailRequestWords.push(word);
+        const candidateItem = state.candidatePool[word] || null;
+        await route.fulfill({
+          status: candidateItem ? 200 : 404,
+          contentType: 'application/json',
+          body: JSON.stringify({
+            ok: Boolean(candidateItem),
+            candidate: candidateItem ? {
+              ...candidateItem,
+              candidateProjection: 'detail',
+              aiCard: {
+                ...(candidateItem.aiCard || {}),
+                projection: 'detail'
+              }
+            } : null,
+            revision: state.revision,
+            updated: state.updated,
+            schemaVersion: 2
+          })
+        });
+        return;
+      }
       if (url.searchParams.get('view') === 'published-detail') {
-        const record = state.publishedRecords.find(item => item.id === url.searchParams.get('recordId')) || null;
+        controls.publishedDetailRequests += 1;
+        const recordId = url.searchParams.get('recordId') || '';
+        controls.publishedDetailRequestIds.push(recordId);
+        const record = state.publishedRecords.find(item => item.id === recordId) || null;
         await route.fulfill({
           status: record ? 200 : 404,
           contentType: 'application/json',
@@ -215,7 +247,24 @@ async function installApiFixture(page, options = {}) {
       await route.fulfill({
         status: 200,
         contentType: 'application/json',
-        body: JSON.stringify({ ...state, appView: { scope: url.searchParams.get('scope') || 'today' } })
+        body: JSON.stringify({
+          ...state,
+          candidatePool: Object.fromEntries(
+            Object.entries(state.candidatePool).map(([word, candidateItem]) => [word, {
+              ...candidateItem,
+              candidateProjection: 'list',
+              aiCard: {
+                ...(candidateItem.aiCard || {}),
+                projection: 'list'
+              }
+            }])
+          ),
+          appView: {
+            scope: url.searchParams.get('scope') || 'today',
+            partialCandidatePool: true,
+            candidateProjection: 'list'
+          }
+        })
       });
       return;
     }
@@ -374,6 +423,9 @@ test('favorites and published pages progressively render cards and open responsi
   await page.locator('#favGrid .workflow-card').first().click();
   await expect(page.locator('#modalOverlay')).toHaveClass(/open/);
   await expect(page.locator('#modalContainer')).toContainText('検証語1');
+  await expect.poll(
+    () => controls.candidateDetailRequestWords.filter(word => word === '検証語1').length
+  ).toBe(1);
   await page.locator('#modalContainer [data-modal-action="close"]').first().click();
   await expect(page.locator('#modalOverlay')).not.toHaveClass(/open/);
 
@@ -397,6 +449,9 @@ test('favorites and published pages progressively render cards and open responsi
   await expect(page.locator('#modalOverlay')).toHaveClass(/open/);
   await expect(page.locator('.published-detail-shell')).toBeVisible();
   await expect(page.locator('#modalContainer')).toContainText('这是只读帖子正文');
+  await expect.poll(
+    () => controls.publishedDetailRequestIds.filter(recordId => recordId === 'published-performance-1').length
+  ).toBe(1);
   await expect(page.locator('.published-open-link')).toHaveAttribute(
     'href',
     'https://www.xiaohongshu.com/explore/6a5cc0930000000011004cf7'
