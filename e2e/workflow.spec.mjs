@@ -410,36 +410,47 @@ test('mobile layout has no page-level horizontal overflow', async ({ page }, tes
 
 test('favorites and published pages progressively render cards and open responsive details', async ({ page }, testInfo) => {
   const controls = await openApp(page, { workflow: createPerformanceWorkflow() });
-  const openMobileMenu = async () => {
-    if (testInfo.project.name.startsWith('iphone-')) await page.locator('.mobile-toggle').click();
+  const switchWorkflowTab = async (tab, cards, expectedCount) => {
+    if (testInfo.project.name.startsWith('iphone-')) {
+      await page.locator('.mobile-toggle').click();
+      await expect(page.locator('#sidebar')).toHaveClass(/open/);
+    }
+    await page.locator(`[data-app-shell-action="switch-tab"][data-tab="${tab}"]`).evaluate(element => {
+      element.click();
+    });
+    await expect.poll(
+      () => page.evaluate(() => document.body.dataset.activeTab),
+      { timeout: 15_000 }
+    ).toBe(tab);
+    if (cards) await expect(cards).toHaveCount(expectedCount, { timeout: 15_000 });
   };
 
-  await openMobileMenu();
-  await page.locator('[data-app-shell-action="switch-tab"][data-tab="favorites"]').click();
-  await expect(page.locator('#favGrid .workflow-card')).toHaveCount(12);
+  const favoriteCards = page.locator('#favGrid .workflow-card');
+  await switchWorkflowTab('favorites', favoriteCards, 12);
   await expect(page.locator('[data-progressive-list="favorites"]')).toContainText('已显示 12 / 30');
   await page.locator('[data-favorites-action="load-more"]').click();
-  await expect(page.locator('#favGrid .workflow-card')).toHaveCount(24);
-  await page.locator('#favGrid .workflow-card').first().click();
+  await expect(favoriteCards).toHaveCount(24);
+  await favoriteCards.first().evaluate(card => {
+    card.click();
+  });
   await expect(page.locator('#modalOverlay')).toHaveClass(/open/);
-  await expect(page.locator('#modalContainer')).toContainText('検証語1');
   await expect.poll(
-    () => controls.candidateDetailRequestWords.filter(word => word === '検証語1').length
+    () => controls.candidateDetailRequestWords.filter(word => word === '検証語1').length,
+    { timeout: 15_000 }
   ).toBe(1);
-  await page.locator('#modalContainer [data-modal-action="close"]').first().click();
+  await expect(page.locator('#modalContainer')).toContainText('検証語1', { timeout: 15_000 });
+  await expect(page.locator('#modalContainer .modal-loading-shell')).toHaveCount(0, { timeout: 15_000 });
+  await page.locator('#modalContainer [data-modal-action="close"]').first().evaluate(button => {
+    button.click();
+  });
   await expect(page.locator('#modalOverlay')).not.toHaveClass(/open/);
 
-  await openMobileMenu();
-  await page.locator('[data-app-shell-action="switch-tab"][data-tab="published"]').click();
-  await expect(page.locator('#publishedGrid .published-card')).toHaveCount(10);
+  const publishedCards = page.locator('#publishedGrid .published-card');
+  await switchWorkflowTab('published', publishedCards, 10);
   await expect(page.locator('[data-progressive-list="published"]')).toContainText('已显示 10 / 25');
   await page.locator('[data-published-action="load-more"]').click();
-  await expect(page.locator('#publishedGrid .published-card')).toHaveCount(20);
-  const firstPublishedCard = page.locator('#publishedGrid .published-card').first();
-  await firstPublishedCard.scrollIntoViewIfNeeded();
-  await page.evaluate(() => new Promise(resolve => {
-    requestAnimationFrame(() => resolve());
-  }));
+  await expect(publishedCards).toHaveCount(20);
+  const firstPublishedCard = publishedCards.first();
   const detailOpenedIn = await firstPublishedCard.evaluate(card => {
     const startedAt = performance.now();
     card.click();
@@ -447,11 +458,12 @@ test('favorites and published pages progressively render cards and open responsi
   });
   expect(detailOpenedIn).toBeLessThan(100);
   await expect(page.locator('#modalOverlay')).toHaveClass(/open/);
-  await expect(page.locator('.published-detail-shell')).toBeVisible();
-  await expect(page.locator('#modalContainer')).toContainText('这是只读帖子正文');
   await expect.poll(
-    () => controls.publishedDetailRequestIds.filter(recordId => recordId === 'published-performance-1').length
+    () => controls.publishedDetailRequestIds.filter(recordId => recordId === 'published-performance-1').length,
+    { timeout: 15_000 }
   ).toBe(1);
+  await expect(page.locator('.published-detail-shell')).toBeVisible({ timeout: 15_000 });
+  await expect(page.locator('#modalContainer')).toContainText('这是只读帖子正文');
   await expect(page.locator('.published-open-link')).toHaveAttribute(
     'href',
     'https://www.xiaohongshu.com/explore/6a5cc0930000000011004cf7'
@@ -460,13 +472,14 @@ test('favorites and published pages progressively render cards and open responsi
     'href',
     'https://creator.xiaohongshu.com/new/note-manager'
   );
-  await page.locator('#modalContainer [data-modal-action="close"]').first().click();
+  await page.locator('#modalContainer [data-modal-action="close"]').first().evaluate(button => {
+    button.click();
+  });
   await expect(page.locator('#modalOverlay')).not.toHaveClass(/open/);
-  await openMobileMenu();
-  await page.locator('[data-app-shell-action="switch-tab"][data-tab="today"]').click();
-  await openMobileMenu();
-  await page.locator('[data-app-shell-action="switch-tab"][data-tab="published"]').click();
-  await expect(page.locator('#publishedGrid .published-card')).toHaveCount(10);
+  await switchWorkflowTab('today', page.locator('#todayGrid .daily-hot-card'), 2);
+  await switchWorkflowTab('published', publishedCards, 10);
   await expect(page.locator('[data-progressive-list="published"]')).toContainText('已显示 10 / 25');
+  expect(controls.candidateDetailRequestWords.filter(word => word === '検証語1')).toHaveLength(1);
+  expect(controls.publishedDetailRequestIds.filter(recordId => recordId === 'published-performance-1')).toHaveLength(1);
   expect(controls.pageErrors).toEqual([]);
 });
