@@ -317,12 +317,24 @@ export function createPublishedPageController(options = {}) {
     actionElement.click?.();
   }
 
+  function handleDetailIntent(event) {
+    const actionElement = event.target?.closest?.('[data-published-action="open-detail"]');
+    if (!actionElement || !root.contains(actionElement)) return;
+    invoke(options.onPrefetchDetail, actionElement.dataset.recordId || '');
+  }
+
   root.addEventListener('click', handleClick);
   root.addEventListener('keydown', handleKeydown);
+  root.addEventListener('pointerover', handleDetailIntent);
+  root.addEventListener('pointerdown', handleDetailIntent);
+  root.addEventListener('focusin', handleDetailIntent);
   return {
     destroy() {
       root.removeEventListener?.('click', handleClick);
       root.removeEventListener?.('keydown', handleKeydown);
+      root.removeEventListener?.('pointerover', handleDetailIntent);
+      root.removeEventListener?.('pointerdown', handleDetailIntent);
+      root.removeEventListener?.('focusin', handleDetailIntent);
     }
   };
 }

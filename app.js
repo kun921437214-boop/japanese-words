@@ -99,6 +99,8 @@ let favoriteStatuses = {};
 let wordFeedback = {};
 let publishedRecords = [];
 const publishedDetailCache = new Map();
+const publishedDetailLoads = new Map();
+const candidateDetailLoads = new Map();
 let candidatePool = {};
 let aiBatches = [];
 let todaySnapshot = {};
@@ -2215,6 +2217,25 @@ function ensureReviewedSeedWordsInCandidatePool() {
 
 function mergeCandidatePool(localPool, remotePool) {
   const nonEmpty = (preferred, fallback, maxLength = 1000) => cleanShortText(preferred, maxLength) || cleanShortText(fallback, maxLength);
+  const cleanEntryWithProjection = (kanji, entry = {}) => {
+    const cleaned = cleanCandidatePoolEntry(kanji || entry.kanji, entry);
+    if (!cleaned) return null;
+    const candidateProjection = entry.candidateProjection === 'detail'
+      ? 'detail'
+      : (entry.candidateProjection === 'list' ? 'list' : '');
+    const cardProjection = entry.aiCard?.projection === 'detail'
+      ? 'detail'
+      : (entry.aiCard?.projection === 'list' ? 'list' : '');
+    if (!candidateProjection && !cardProjection) return cleaned;
+    return {
+      ...cleaned,
+      ...(candidateProjection ? { candidateProjection } : {}),
+      aiCard: {
+        ...(cleaned.aiCard || {}),
+        ...(cardProjection ? { projection: cardProjection } : {})
+      }
+    };
+  };
   const isMeaningfulCard = card => Boolean(card && (
     card.cardStatus !== 'none'
     || card.summary
@@ -2223,8 +2244,18 @@ function mergeCandidatePool(localPool, remotePool) {
     || safeArray(card.suggestedTitles).length
   ));
   const chooseAiCard = (left, right) => {
-    const localCard = cleanAiCard(left || {});
-    const remoteCard = cleanAiCard(right || {});
+    const cleanCardWithProjection = card => {
+      const cleaned = cleanAiCard(card || {});
+      const projection = card?.projection === 'detail'
+        ? 'detail'
+        : (card?.projection === 'list' ? 'list' : '');
+      return projection ? { ...cleaned, projection } : cleaned;
+    };
+    const localCard = cleanCardWithProjection(left);
+    const remoteCard = cleanCardWithProjection(right);
+    if (remoteCard?.projection === 'list' && localCard?.projection !== 'list' && isMeaningfulCard(localCard)) {
+      return localCard;
+    }
     if (localCard?.cardStatus === 'ready' && remoteCard?.cardStatus !== 'ready') return localCard;
     if (remoteCard?.cardStatus === 'ready' && localCard?.cardStatus !== 'ready') return remoteCard;
     if (!isMeaningfulCard(remoteCard)) return localCard;
@@ -2259,7 +2290,11 @@ function mergeCandidatePool(localPool, remotePool) {
     const manualSource = current.manualReviewState || current.manualReviewNote ? current : incoming;
     const scoreSource = String(incoming.lastScoredAt || '') >= String(current.lastScoredAt || '') ? incoming : current;
     const recommendedSource = String(incoming.lastRecommendedAt || '') >= String(current.lastRecommendedAt || '') ? incoming : current;
-    return cleanCandidatePoolEntry(newer.kanji || older.kanji, {
+    const candidateProjection = [current.candidateProjection, incoming.candidateProjection].includes('detail')
+      ? 'detail'
+      : (newer.candidateProjection || older.candidateProjection || '');
+    const aiCard = chooseAiCard(current.aiCard, incoming.aiCard);
+    const cleanedEntry = cleanCandidatePoolEntry(newer.kanji || older.kanji, {
       ...older,
       ...newer,
       kanji: newer.kanji || older.kanji,
@@ -2270,7 +2305,7 @@ function mergeCandidatePool(localPool, remotePool) {
       riskWarning: nonEmpty(newer.riskWarning, older.riskWarning, 500),
       reviewReason: nonEmpty(newer.reviewReason, older.reviewReason, 500),
       reason: nonEmpty(newer.reason, older.reason, 1000),
-      aiCard: chooseAiCard(current.aiCard, incoming.aiCard),
+      aiCard,
       aiCardHistory: [...safeArray(current.aiCardHistory), ...safeArray(incoming.aiCardHistory)].map(cleanAiCard).filter(Boolean).slice(0, 10),
       coverHistory: [...safeArray(current.coverHistory), ...safeArray(incoming.coverHistory)]
         .map(cleanSharedCoverVersionSnapshot)
@@ -2296,9 +2331,21 @@ function mergeCandidatePool(localPool, remotePool) {
       manualReviewNote: manualSource.manualReviewNote || '',
       updatedAt: [current.updatedAt, incoming.updatedAt].filter(Boolean).sort().pop() || null
     });
+    if (!cleanedEntry || !candidateProjection) return cleanedEntry;
+    return {
+      ...cleanedEntry,
+      candidateProjection,
+      aiCard: {
+        ...(cleanedEntry.aiCard || {}),
+        projection: aiCard?.projection || candidateProjection
+      }
+    };
   };
   const merged = new Map();
-  [...Object.values(cleanCandidatePool(localPool)), ...Object.values(cleanCandidatePool(remotePool))].forEach(entry => {
+  [
+    ...Object.entries(localPool || {}).map(([kanji, entry]) => cleanEntryWithProjection(kanji, entry)),
+    ...Object.entries(remotePool || {}).map(([kanji, entry]) => cleanEntryWithProjection(kanji, entry))
+  ].filter(Boolean).forEach(entry => {
     const current = merged.get(entry.kanji);
     if (!current) {
       merged.set(entry.kanji, entry);
@@ -2427,6 +2474,7 @@ function cleanStoredWorkflow(data = {}) {
       partialCandidatePool: Boolean(data.appView?.partialCandidatePool),
       partialPublishedRecords: Boolean(data.appView?.partialPublishedRecords),
       publishedSummary: Boolean(data.appView?.publishedSummary),
+      candidateProjection: data.appView?.candidateProjection === 'list' ? 'list' : '',
       candidateCount: clamp(toInt(data.appView?.candidateCount, Object.keys(cleanedCandidatePool).length), 0, 500)
     },
     updated: typeof data.updated === 'string' ? data.updated : null,
@@ -2788,10 +2836,7 @@ function updateAiBatchImportStats(batchId, importedDelta = 0, skippedDelta = 0) 
 const workflowStore = createWorkflowStore({
   cleanWorkflow: cleanStoredWorkflow,
   mergePublishedRecords,
-  mergeCandidatePool: (localPool, remotePool) => cleanCandidatePool({
-    ...(localPool || {}),
-    ...(remotePool || {})
-  }),
+  mergeCandidatePool,
   mergeHistorySnapshots,
   mergeTodaySnapshotHistory
 });
@@ -3044,6 +3089,14 @@ function getFavoriteCommandEndpoint(kanji) {
   if (!SYNC_API_URL) return '';
   const url = new URL(`${SYNC_API_URL}/favorites`, window.location.origin);
   url.searchParams.set('view', 'command');
+  url.searchParams.set('word', cleanShortText(kanji, 80));
+  return url.toString();
+}
+
+function getCandidateDetailEndpoint(kanji) {
+  if (!SYNC_API_URL) return '';
+  const url = new URL(`${SYNC_API_URL}/favorites`, window.location.origin);
+  url.searchParams.set('view', 'candidate-detail');
   url.searchParams.set('word', cleanShortText(kanji, 80));
   return url.toString();
 }
@@ -8337,7 +8390,55 @@ function showModalLoadingShell(options = {}) {
   document.body.style.overflow = 'hidden';
 }
 
-function openDetail(idOrKanji) {
+function needsCandidateDetail(kanji) {
+  const entry = candidatePool[kanji] || {};
+  return entry.candidateProjection === 'list' || entry.aiCard?.projection === 'list';
+}
+
+async function ensureCandidateDetail(idOrKanji) {
+  const word = findWord(idOrKanji);
+  const kanji = cleanShortText(word?.kanji || idOrKanji, 80);
+  if (!kanji || !needsCandidateDetail(kanji)) return true;
+  if (candidateDetailLoads.has(kanji)) return candidateDetailLoads.get(kanji);
+  const endpoint = getCandidateDetailEndpoint(kanji);
+  if (!endpoint) return false;
+  const load = (async () => {
+    const response = await apiFetch(endpoint, {
+      headers: { Accept: 'application/json' }
+    }, { timeoutMs: 15000 });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok || !data.ok || !data.candidate) throw createApiError(data, response.status);
+    const cleanedCandidate = cleanCandidatePoolEntry(kanji, data.candidate);
+    if (!cleanedCandidate) return false;
+    const detailedCandidate = {
+      ...cleanedCandidate,
+      candidateProjection: 'detail',
+      aiCard: {
+        ...(cleanedCandidate.aiCard || {}),
+        projection: 'detail'
+      }
+    };
+    candidatePool = mergeCandidatePool(candidatePool, { [kanji]: detailedCandidate });
+    workflowStore.acceptRevision(data.revision);
+    scheduleWorkflowCacheWrite(data.updated || nowIso());
+    return true;
+  })().catch(error => {
+    console.warn('完整词卡读取失败', kanji, error);
+    return false;
+  }).finally(() => {
+    if (candidateDetailLoads.get(kanji) === load) candidateDetailLoads.delete(kanji);
+  });
+  candidateDetailLoads.set(kanji, load);
+  return load;
+}
+
+function prefetchCandidateDetail(idOrKanji) {
+  const word = findWord(idOrKanji);
+  if (!word?.kanji || !needsCandidateDetail(word.kanji)) return;
+  void ensureCandidateDetail(word.kanji);
+}
+
+async function openDetail(idOrKanji) {
   const word = findWord(idOrKanji);
   if (!word) return;
   currentWordForModal = word;
@@ -8348,9 +8449,14 @@ function openDetail(idOrKanji) {
     title: word.kanji,
     message: '词卡已打开'
   });
+  const detailed = await ensureCandidateDetail(word.kanji);
+  if (renderVersion !== modalRenderVersion || currentWordForModal?.kanji !== word.kanji) return;
   scheduleModalRender(() => {
     if (renderVersion !== modalRenderVersion || currentWordForModal?.kanji !== word.kanji) return;
     renderWordDetail(word);
+    if (!detailed && needsCandidateDetail(word.kanji)) {
+      showToast('完整词卡读取失败，已显示当前摘要');
+    }
   });
 }
 
@@ -8573,6 +8679,52 @@ function openLibraryCleanupModal() {
   document.body.style.overflow = 'hidden';
 }
 
+async function loadPublishedDetail(recordId) {
+  if (publishedDetailCache.has(recordId)) return publishedDetailCache.get(recordId);
+  if (publishedDetailLoads.has(recordId)) return publishedDetailLoads.get(recordId);
+  if (!publishedDisplayItemsCache) getPublishedDisplayItems();
+  const item = publishedDisplayItemsById.get(recordId);
+  const record = item?.record;
+  if (!record) return null;
+  const endpoint = getPublishedDetailEndpoint(recordId);
+  if (!endpoint) return record;
+  const load = (async () => {
+    const response = await apiFetch(endpoint, {
+      headers: { Accept: 'application/json' }
+    }, { timeoutMs: 15000 });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok || !data.ok || !data.record) throw createApiError(data, response.status);
+    const detailedRecord = cleanPublishedRecord(data.record);
+    const mergedRecord = mergePublishedRecords([record], [detailedRecord])[0] || detailedRecord;
+    publishedDetailCache.set(recordId, mergedRecord);
+    if (data.candidate && mergedRecord.word) {
+      const cleanedCandidate = cleanCandidatePoolEntry(mergedRecord.word, data.candidate);
+      const candidate = cleanedCandidate ? {
+        ...cleanedCandidate,
+        candidateProjection: 'detail',
+        aiCard: {
+          ...(cleanedCandidate.aiCard || {}),
+          projection: 'detail'
+        }
+      } : null;
+      if (candidate) candidatePool = mergeCandidatePool(candidatePool, { [mergedRecord.word]: candidate });
+    }
+    workflowStore.acceptRevision(data.revision);
+    return mergedRecord;
+  })().finally(() => {
+    if (publishedDetailLoads.get(recordId) === load) publishedDetailLoads.delete(recordId);
+  });
+  publishedDetailLoads.set(recordId, load);
+  return load;
+}
+
+function prefetchPublishedDetail(recordId) {
+  if (!recordId || publishedDetailCache.has(recordId)) return;
+  void loadPublishedDetail(recordId).catch(error => {
+    console.warn('已发布详情预读取失败', recordId, error);
+  });
+}
+
 async function openPublishedDetail(recordId) {
   if (!publishedDisplayItemsCache) getPublishedDisplayItems();
   const item = publishedDisplayItemsById.get(recordId);
@@ -8592,26 +8744,10 @@ async function openPublishedDetail(recordId) {
     title: getPublishedContentLabel(record, item.word),
     message: '详情已打开'
   });
-  const endpoint = getPublishedDetailEndpoint(recordId);
-  if (!endpoint) {
-    if (currentPublishedRecordId === recordId && modalRenderVersion === renderVersion) renderPublishedDetail(record, item.word);
-    return;
-  }
   try {
-    const response = await apiFetch(endpoint, {
-      headers: { Accept: 'application/json' }
-    }, { cancelKey: `published-detail:${recordId}`, timeoutMs: 15000 });
-    const data = await response.json().catch(() => ({}));
-    if (!response.ok || !data.ok || !data.record) throw createApiError(data, response.status);
-    const detailedRecord = cleanPublishedRecord(data.record);
-    const mergedRecord = mergePublishedRecords([record], [detailedRecord])[0] || detailedRecord;
-    publishedDetailCache.set(recordId, mergedRecord);
-    if (data.candidate && mergedRecord.word) {
-      const candidate = cleanCandidatePoolEntry(mergedRecord.word, data.candidate);
-      if (candidate) candidatePool[mergedRecord.word] = candidate;
-    }
+    const mergedRecord = await loadPublishedDetail(recordId);
     if (currentPublishedRecordId === recordId && modalRenderVersion === renderVersion) {
-      renderPublishedDetail(mergedRecord, item.word);
+      renderPublishedDetail(mergedRecord || record, item.word);
     }
   } catch (error) {
     console.warn('已发布详情读取失败', error);
@@ -9329,6 +9465,7 @@ createDailyHotPageController({
   onExport: exportSelected,
   onShiftHistory: shiftHistoryDate,
   onOpenDetail: openDetail,
+  onPrefetchDetail: prefetchCandidateDetail,
   onToggleFavorite: toggleFavorite,
   onDismiss: dismissDailyHotRecommendation,
   onGenerateCard: generateTodayAiCard,
@@ -9345,6 +9482,7 @@ createDailyHotPageController({
 createFavoritesPageController({
   root: document.getElementById('page-favorites'),
   onOpenDetail: openDetail,
+  onPrefetchDetail: prefetchCandidateDetail,
   onLoadMore: loadMoreFavorites,
   onToggleFavorite: toggleFavorite,
   onToggleStatus: toggleStatusMenu,
@@ -9362,6 +9500,7 @@ createFavoritesPageController({
 createPublishedPageController({
   root: document.getElementById('page-published'),
   onOpenDetail: openPublishedDetail,
+  onPrefetchDetail: prefetchPublishedDetail,
   onLoadMore: loadMorePublished,
   onRefresh: refreshPublishedMetrics,
   onRender: refreshPublishedPageFromCloud,

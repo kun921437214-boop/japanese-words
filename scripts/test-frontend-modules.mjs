@@ -1044,13 +1044,18 @@ test('workflow store merges scoped candidates and history without dropping local
   store.replaceMetadata({ revision: 3 });
   const result = store.prepareRemoteState({
     words: ['云端收藏'],
-    candidatePool: { 云端词: { kanji: '云端词' } },
+    candidatePool: { 云端词: { kanji: '云端词', aiCard: { cardStatus: 'ready', summary: '列表摘要' } } },
     historySnapshots: { '2026-07-19': { words: ['云端词'] } },
     todaySnapshotHistory: [{ dateKey: '2026-07-19' }],
     publishedRecords: [{ id: 'remote-published' }],
     revision: 4,
     auditLog: [{ id: 'revision-4' }],
-    appView: { scope: 'favorites', partialCandidatePool: true, partialPublishedRecords: true }
+    appView: {
+      scope: 'favorites',
+      partialCandidatePool: true,
+      partialPublishedRecords: true,
+      candidateProjection: 'list'
+    }
   }, {
     candidatePool: { 本地词: { kanji: '本地词' } },
     historySnapshots: { '2026-07-18': { words: ['本地词'] } },
@@ -1060,6 +1065,8 @@ test('workflow store merges scoped candidates and history without dropping local
   assert.equal(result.applied, true);
   assert.equal(result.mergePartialState, true);
   assert.deepEqual(Object.keys(result.state.candidatePool), ['本地词', '云端词']);
+  assert.equal(result.state.candidatePool.云端词.candidateProjection, 'list');
+  assert.equal(result.state.candidatePool.云端词.aiCard.projection, 'list');
   assert.deepEqual(Object.keys(result.state.historySnapshots), ['2026-07-18', '2026-07-19']);
   assert.deepEqual(result.state.todaySnapshotHistory.map(item => item.dateKey), ['2026-07-18', '2026-07-19']);
   assert.deepEqual(result.state.publishedRecords.map(item => item.id), ['local-published', 'remote-published']);
@@ -1220,6 +1227,7 @@ test('daily hot controller routes filters, cards and keyboard preview without in
     onSourceChange: (scope, value) => calls.push(['source', scope, value]),
     onManage: action => calls.push(['manage', action]),
     onOpenDetail: id => calls.push(['detail', id]),
+    onPrefetchDetail: id => calls.push(['prefetch', id]),
     onToggleFavorite: kanji => calls.push(['favorite', kanji]),
     onOpenCodexPreview: index => calls.push(['preview', index]),
     onShiftHistory: step => calls.push(['shift', step])
@@ -1245,6 +1253,13 @@ test('daily hot controller routes filters, cards and keyboard preview without in
   dispatch('click', { dataset: { dailyHotAction: 'manage', manageAction: 'audit' } });
   dispatch('click', { dataset: { dailyHotAction: 'manage', manageAction: 'exportAudit' } });
   dispatch('click', { dataset: { dailyHotAction: 'open-detail', wordId: 'today-1' } });
+  listeners.get('pointerover')({
+    target: {
+      closest: selector => selector === '[data-daily-hot-action="open-detail"]'
+        ? { dataset: { wordId: 'today-1' } }
+        : null
+    }
+  });
   assert.equal(dispatch('click', { dataset: { dailyHotAction: 'toggle-favorite', kanji: '思い切って' } }, { stopContains: true }).stopped, true);
   dispatch('click', { dataset: { dailyHotAction: 'shift-history', step: '-1' } });
   const keyResult = dispatch('keydown', { dataset: { dailyHotAction: 'open-codex-preview', index: '3' } }, { key: 'Enter' });
@@ -1260,6 +1275,7 @@ test('daily hot controller routes filters, cards and keyboard preview without in
     ['manage', 'audit'],
     ['manage', 'exportAudit'],
     ['detail', 'today-1'],
+    ['prefetch', 'today-1'],
     ['favorite', '思い切って'],
     ['shift', -1],
     ['preview', 3]
@@ -1376,6 +1392,7 @@ test('favorites page controller delegates card and filter actions without window
   const controller = createFavoritesPageController({
     root,
     onOpenDetail: id => calls.push(['detail', id]),
+    onPrefetchDetail: id => calls.push(['prefetch', id]),
     onLoadMore: () => calls.push(['load-more']),
     onToggleFavorite: (kanji, forceState) => calls.push(['favorite', kanji, forceState]),
     onSelectStatus: (kanji, status) => calls.push(['status', kanji, status]),
@@ -1399,6 +1416,13 @@ test('favorites page controller delegates card and filter actions without window
   };
 
   dispatch('click', { dataset: { favoritesAction: 'open-detail', wordId: 'favorite-card-1' } });
+  listeners.get('focusin')({
+    target: {
+      closest: selector => selector === '[data-favorites-action="open-detail"]'
+        ? { dataset: { wordId: 'favorite-card-1' } }
+        : null
+    }
+  });
   dispatch('click', { dataset: { favoritesAction: 'load-more' } });
   const stopped = dispatch('click', {
     dataset: { favoritesAction: 'toggle-favorite', kanji: '思い切って', forceState: 'false' }
@@ -1410,6 +1434,7 @@ test('favorites page controller delegates card and filter actions without window
   assert.equal(stopped, true);
   assert.deepEqual(calls, [
     ['detail', 'favorite-card-1'],
+    ['prefetch', 'favorite-card-1'],
     ['load-more'],
     ['favorite', '思い切って', false],
     ['status', '詰めが甘い', 'pending'],
@@ -1617,6 +1642,7 @@ test('published page controller routes detail, refresh and render actions', () =
   const controller = createPublishedPageController({
     root,
     onOpenDetail: recordId => calls.push(['detail', recordId]),
+    onPrefetchDetail: recordId => calls.push(['prefetch', recordId]),
     onLoadMore: () => calls.push(['load-more']),
     onRefresh: recordId => calls.push(['refresh', recordId]),
     onRender: () => calls.push(['render'])
@@ -1631,11 +1657,19 @@ test('published page controller routes detail, refresh and render actions', () =
   };
 
   dispatch({ dataset: { publishedAction: 'open-detail', recordId: 'record-1' } });
+  listeners.get('pointerdown')({
+    target: {
+      closest: selector => selector === '[data-published-action="open-detail"]'
+        ? { dataset: { recordId: 'record-1' } }
+        : null
+    }
+  });
   dispatch({ dataset: { publishedAction: 'load-more' } });
   dispatch({ dataset: { publishedAction: 'refresh', recordId: 'record-1' } });
   dispatch({ dataset: { publishedAction: 'render' } });
   assert.deepEqual(calls, [
     ['detail', 'record-1'],
+    ['prefetch', 'record-1'],
     ['load-more'],
     ['refresh', 'record-1'],
     ['render']
@@ -1804,8 +1838,9 @@ test('published detail uses one metric grid and marks its below-median values in
     appSource.indexOf('function renderPublishedDetail')
   );
   assert.match(openDetailSource, /showModalLoadingShell/);
-  assert.match(openDetailSource, /getPublishedDetailEndpoint\(recordId\)/);
-  assert.match(openDetailSource, /renderPublishedDetail\(mergedRecord, item\.word\)/);
+  assert.match(openDetailSource, /loadPublishedDetail\(recordId\)/);
+  assert.match(openDetailSource, /renderPublishedDetail\(mergedRecord \|\| record, item\.word\)/);
+  assert.match(appSource, /function loadPublishedDetail\(recordId\)[\s\S]*?getPublishedDetailEndpoint\(recordId\)/);
   assert.doesNotMatch(openDetailSource, /scheduleModalRender/);
   assert.match(appSource, /const comparisonByKey = new Map\(/);
   assert.match(appSource, /published-detail-metrics[\s\S]*?belowMedian \? 'is-below-median'/);
