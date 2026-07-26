@@ -5,7 +5,10 @@ import {
   cleanStoredRanking,
   dateKey
 } from '../shared/rankings.mjs';
-import { isStoredDailyWordCount } from '../shared/daily-config.mjs';
+import {
+  getExpectedDailyWordCount,
+  isStoredDailyWordCount
+} from '../shared/daily-config.mjs';
 import { refreshPublishedRecords } from '../shared/published-refresh.mjs';
 import { persistPublishedRecordCovers } from '../functions/published-cover.js';
 import {
@@ -34,11 +37,15 @@ import { commitWorkflowMutation } from '../shared/workflow-coordinator.mjs';
 const DAILY_REFRESH_CRON = '0 16 * * *';
 const PUBLISHED_REFRESH_CRON = '30 6 * * *';
 const CODEX_LATE_PROMOTION_CRON = '5,25,45 * * * *';
+export const DAILY_DRAFT_HEALTH_CRON = '15 9 * * *';
+export const DAILY_SNAPSHOT_HEALTH_CRON = '10 16 * * *';
 const AI_CARD_BATCH_CRONS = new Set([
   '10,20,30,40,50 16 * * *',
   '0 17 * * *'
 ]);
 const AI_CARD_BATCH_MAX_WORDS = 5;
+const DAILY_HEALTH_TTL_SECONDS = 30 * 24 * 60 * 60;
+const DAILY_HEALTH_NOTIFICATION_COOLDOWN_MS = 30 * 60 * 1000;
 export const AI_CARD_FAILED_RETRY_TTL_MS = 30 * 60 * 1000;
 
 function toCount(value) {
@@ -102,6 +109,160 @@ async function readLimitedText(response, maxLength = 500) {
   return text.slice(0, maxLength);
 }
 
+function cleanAlertUrl(value) {
+  const text = String(value || '').trim();
+  if (!text) return '';
+  try {
+    const url = new URL(text);
+    return ['https:', 'http:'].includes(url.protocol) ? url.toString() : '';
+  } catch {
+    return '';
+  }
+}
+
+function dailyHealthStorageKey(kind, targetDateKey) {
+  return `operations-health:daily:${kind}:${targetDateKey}`;
+}
+
+async function sendOperationsAlert(env, record, options = {}) {
+  const webhookUrl = cleanAlertUrl(env.OPS_ALERT_WEBHOOK_URL);
+  if (!webhookUrl) return { configured: false, sent: false, error: '' };
+  const fetchImpl = options.fetchImpl || fetch;
+  const stateLabel = record.status === 'healthy' ? '恢复' : '异常';
+  try {
+    const response = await fetchImpl(webhookUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        text: `[japanese-words] 每日内容${stateLabel}：${record.kind} ${record.targetDateKey}（${record.reasons.join('；') || '检查通过'}）`,
+        event: 'japanese_words_daily_health',
+        status: record.status,
+        kind: record.kind,
+        targetDateKey: record.targetDateKey,
+        reasons: record.reasons,
+        checkedAt: record.checkedAt
+      }),
+      signal: globalThis.AbortSignal?.timeout?.(10_000)
+    });
+    if (!response.ok) {
+      const message = await readLimitedText(response);
+      throw new Error(`HTTP ${response.status}${message ? `: ${message}` : ''}`);
+    }
+    return { configured: true, sent: true, error: '' };
+  } catch (error) {
+    return {
+      configured: true,
+      sent: false,
+      error: String(error?.message || error).slice(0, 500)
+    };
+  }
+}
+
+function buildDraftHealthRecord(draft, targetDateKey, checkedAt) {
+  const expectedWordCount = getExpectedDailyWordCount(targetDateKey);
+  const reasons = [];
+  if (!draft) reasons.push('draft_missing');
+  if (draft && draft.targetDateKey !== targetDateKey) reasons.push('draft_date_mismatch');
+  if (draft && !['valid', 'published'].includes(draft.status)) reasons.push('draft_not_valid');
+  if (draft && !draft.validation?.valid) reasons.push('draft_validation_failed');
+  if (draft && Number(draft.wordCount) !== expectedWordCount) reasons.push('draft_word_count_incomplete');
+  if (draft && Number(draft.cardReadyCount) !== expectedWordCount) reasons.push('draft_cards_incomplete');
+  return {
+    kind: 'tomorrow-draft',
+    targetDateKey,
+    status: reasons.length ? 'unhealthy' : 'healthy',
+    reasons,
+    checkedAt,
+    expectedWordCount,
+    wordCount: Number(draft?.wordCount) || 0,
+    cardReadyCount: Number(draft?.cardReadyCount) || 0,
+    imageReadyCount: Number(draft?.imageReadyCount) || 0,
+    source: 'codex-draft',
+    draftStatus: String(draft?.status || 'missing')
+  };
+}
+
+function buildSnapshotHealthRecord(workflow, targetDateKey, checkedAt) {
+  const snapshot = workflow.todaySnapshot || {};
+  const expectedWordCount = getExpectedDailyWordCount(targetDateKey);
+  const reasons = [];
+  if (snapshot.dateKey !== targetDateKey) reasons.push('snapshot_date_mismatch');
+  if (snapshot.words.length !== expectedWordCount) reasons.push('snapshot_word_count_incomplete');
+  return {
+    kind: 'today-snapshot',
+    targetDateKey,
+    status: reasons.length ? 'unhealthy' : 'healthy',
+    reasons,
+    checkedAt,
+    expectedWordCount,
+    wordCount: snapshot.words.length,
+    source: String(snapshot.source || 'missing')
+  };
+}
+
+export async function runDailyOperationsHealthCheck(env, options = {}) {
+  if (!env.FAVORITES) throw new Error('daily health check requires FAVORITES storage');
+  const kind = options.kind === 'tomorrow-draft' ? 'tomorrow-draft' : 'today-snapshot';
+  const now = options.now instanceof Date ? options.now : new Date();
+  const checkedAt = now.toISOString();
+  const currentDateKey = dateKey(now);
+  const targetDateKey = kind === 'tomorrow-draft' ? addDays(currentDateKey, 1) : currentDateKey;
+  const key = dailyHealthStorageKey(kind, targetDateKey);
+  const previous = await env.FAVORITES.get(key, 'json');
+  const record = kind === 'tomorrow-draft'
+    ? buildDraftHealthRecord(
+      await env.FAVORITES.get(getCodexDraftStorageKey(targetDateKey), 'json'),
+      targetDateKey,
+      checkedAt
+    )
+    : buildSnapshotHealthRecord(
+      cleanStoredWorkflow(await env.FAVORITES.get('favorites:global', 'json')),
+      targetDateKey,
+      checkedAt
+    );
+
+  const previousAttemptMs = Date.parse(String(previous?.lastNotificationAttemptAt || ''));
+  const notificationDue = record.status === 'unhealthy'
+    && (!Number.isFinite(previousAttemptMs) || now.getTime() - previousAttemptMs >= DAILY_HEALTH_NOTIFICATION_COOLDOWN_MS);
+  const recoveryDue = record.status === 'healthy' && previous?.status === 'unhealthy';
+  let notification = {
+    configured: Boolean(cleanAlertUrl(env.OPS_ALERT_WEBHOOK_URL)),
+    sent: false,
+    error: '',
+    skipped: true
+  };
+  let lastNotificationAttemptAt = String(previous?.lastNotificationAttemptAt || '');
+  if (notificationDue || recoveryDue) {
+    notification = {
+      ...(await sendOperationsAlert(env, record, options)),
+      skipped: false
+    };
+    lastNotificationAttemptAt = checkedAt;
+  }
+  const storedRecord = {
+    ...record,
+    previousStatus: String(previous?.status || ''),
+    lastNotificationAttemptAt,
+    notification
+  };
+  await env.FAVORITES.put(key, JSON.stringify(storedRecord), {
+    expirationTtl: DAILY_HEALTH_TTL_SECONDS
+  });
+  if (record.status === 'unhealthy') {
+    throw new Error(`daily ${record.kind} health check failed for ${targetDateKey}: ${record.reasons.join(', ')}`);
+  }
+  return storedRecord;
+}
+
+async function requireScheduledSuccess(label, promise) {
+  const result = await promise;
+  if (!result?.ok) {
+    const reason = result?.reason || result?.error || `HTTP ${result?.status || 0}`;
+    throw new Error(`${label} failed: ${reason}`);
+  }
+  return result;
+}
+
 export async function triggerDailyPublishOrFallback(env, fetchImpl = fetch) {
   const siteUrl = String(env.SITE_URL || '').trim().replace(/\/+$/, '');
   const autoRefreshSecret = String(env.AUTO_REFRESH_SECRET || '').trim();
@@ -134,6 +295,7 @@ export async function triggerDailyPublishOrFallback(env, fetchImpl = fetch) {
 
   const refreshUrl = new URL(`${siteUrl}/daily-refresh`);
   refreshUrl.searchParams.set('mode', 'manual');
+  refreshUrl.searchParams.set('runInline', 'true');
   refreshUrl.searchParams.set('skipCards', 'true');
   const response = await fetchImpl(refreshUrl.toString(), {
     method: 'POST',
@@ -143,13 +305,24 @@ export async function triggerDailyPublishOrFallback(env, fetchImpl = fetch) {
     },
     body: JSON.stringify({ action: 'scheduled_fallback', targetDateKey })
   });
-  if (!response.ok) {
-    const text = await readLimitedText(response);
-    console.warn('daily refresh trigger returned non-OK', response.status, text);
-    return { ok: false, source: 'deepseek', status: response.status };
+  const result = await response.json().catch(() => null);
+  if (!response.ok || result?.ok === false || result?.queued === true || result?.status === 'failed') {
+    const reason = result?.error?.code || result?.error || result?.status || 'daily_refresh_failed';
+    console.warn('daily refresh did not complete', response.status, reason);
+    return {
+      ok: false,
+      source: 'deepseek',
+      status: response.status,
+      reason: String(reason).slice(0, 200)
+    };
   }
-  console.log('daily refresh trigger completed', response.status);
-  return { ok: true, source: 'deepseek', status: response.status };
+  console.log('daily refresh completed', response.status, result?.status || 'completed');
+  return {
+    ok: true,
+    source: 'deepseek',
+    status: response.status,
+    refreshStatus: String(result?.status || 'completed')
+  };
 }
 
 export async function triggerCodexPromotionIfAvailable(env, fetchImpl = fetch) {
@@ -697,8 +870,16 @@ export default {
     const cron = String(controller?.cron || '').trim();
     if (cron === DAILY_REFRESH_CRON) {
       ctx.waitUntil(
-        triggerDailyPublishOrFallback(env).catch(error => console.warn('daily publish trigger failed', error?.message || error))
+        requireScheduledSuccess('daily publish', triggerDailyPublishOrFallback(env))
       );
+    }
+
+    if (cron === DAILY_DRAFT_HEALTH_CRON) {
+      ctx.waitUntil(runDailyOperationsHealthCheck(env, { kind: 'tomorrow-draft' }));
+    }
+
+    if (cron === DAILY_SNAPSHOT_HEALTH_CRON) {
+      ctx.waitUntil(runDailyOperationsHealthCheck(env, { kind: 'today-snapshot' }));
     }
 
     if (cron === CODEX_LATE_PROMOTION_CRON) {

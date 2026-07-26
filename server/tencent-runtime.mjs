@@ -14,7 +14,10 @@ import { onRequest as publishedCover } from '../functions/published-cover.js';
 import { onRequest as publishedRefresh } from '../functions/published-refresh.js';
 import { onRequest as rankings } from '../functions/rankings.js';
 import { onRequest as todaySnapshot } from '../functions/today-snapshot.js';
-import scheduledWorker from '../worker/favorites-worker.js';
+import scheduledWorker, {
+  DAILY_DRAFT_HEALTH_CRON,
+  DAILY_SNAPSHOT_HEALTH_CRON
+} from '../worker/favorites-worker.js';
 import { FileKV } from './file-kv.mjs';
 import { LocalWorkflowCoordinator } from './local-coordinator.mjs';
 import { onRequest as publishedCoverThumbnail } from './published-cover-thumbnail.mjs';
@@ -44,6 +47,8 @@ const ROUTES = new Map([
 const SCHEDULES = [
   '30 6 * * *',
   '0 16 * * *',
+  DAILY_DRAFT_HEALTH_CRON,
+  DAILY_SNAPSHOT_HEALTH_CRON,
   '5,25,45 * * * *',
   '10,20,30,40,50 16 * * *',
   '0 17 * * *'
@@ -82,6 +87,7 @@ function buildRuntimeEnv(options = {}) {
     DEEPSEEK_API_KEY: process.env.DEEPSEEK_API_KEY || '',
     DEEPSEEK_MODEL: process.env.DEEPSEEK_MODEL || '',
     AUTO_REFRESH_SECRET: process.env.AUTO_REFRESH_SECRET || '',
+    OPS_ALERT_WEBHOOK_URL: process.env.OPS_ALERT_WEBHOOK_URL || '',
     ADMIN_API_TOKEN: process.env.ADMIN_API_TOKEN || '',
     CODEX_AUTOMATION_SECRET: process.env.CODEX_AUTOMATION_SECRET || '',
     TEAM_ACCESS_EMAILS: process.env.TEAM_ACCESS_EMAILS || '',
@@ -207,14 +213,26 @@ function startScheduler(env, options = {}) {
     if (env.AUTO_REFRESH_SECRET) {
       await runOnce(`scheduler-critical:daily:${businessDate}`, '0 16 * * *');
     }
+    if (businessMinute >= 10) {
+      await runOnce(`scheduler-critical:snapshot-health:${businessDate}`, DAILY_SNAPSHOT_HEALTH_CRON);
+    }
     if (businessMinute >= 14 * 60 + 30) {
       await runOnce(`scheduler-critical:published:${businessDate}`, '30 6 * * *');
+    }
+    if (businessMinute >= 17 * 60 + 15) {
+      await runOnce(`scheduler-critical:draft-health:${businessDate}`, DAILY_DRAFT_HEALTH_CRON);
     }
     if (env.AUTO_REFRESH_SECRET && businessMinute >= 60) {
       await runOnce(`scheduler-critical:ai-cards-1:${businessDate}`, '0 17 * * *');
       await runOnce(`scheduler-critical:ai-cards-2:${businessDate}`, '0 17 * * *');
     }
-    for (const cron of SCHEDULES.filter(item => !['0 16 * * *', '30 6 * * *'].includes(item) && matchesSchedule(item, now))) {
+    const catchUpSchedules = new Set([
+      '0 16 * * *',
+      '30 6 * * *',
+      DAILY_DRAFT_HEALTH_CRON,
+      DAILY_SNAPSHOT_HEALTH_CRON
+    ]);
+    for (const cron of SCHEDULES.filter(item => !catchUpSchedules.has(item) && matchesSchedule(item, now))) {
       await runOnce(`scheduler-run:${cron}:${minuteKey}`, cron);
     }
   };

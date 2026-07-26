@@ -9,6 +9,8 @@ Production uses the existing Tencent Cloud Lighthouse instance in Beijing:
 - `FileKV` replaces Cloudflare KV with atomic, mode-`0600` files under `/var/lib/japanese-words`.
 - `LocalWorkflowCoordinator` serializes workflow writes in the same process, preserving the existing revision, idempotency, and audit behavior.
 - The same process runs the current Worker schedule and records daily run markers. Daily promotion and the 14:30 published refresh have restart catch-up protection.
+- Daily fallback completion is checked synchronously. The scheduler does not mark a queued or failed DeepSeek refresh as successful.
+- At 00:10 Asia/Shanghai the runtime verifies the current snapshot; at 17:15 it verifies the next-day Codex draft. Health records stay in FileKV, and an optional `OPS_ALERT_WEBHOOK_URL` receives failure/recovery JSON notifications.
 - Pages Functions receive a real `waitUntil` implementation, so long DeepSeek jobs are queued in the Node process instead of holding the Nginx request open until a 504.
 - A systemd timer writes a complete state bundle every day at 15:00 Asia/Shanghai. The bundle includes the main workflow, auxiliary workflow KV keys such as Codex drafts, and all reference images.
 - Cloudflare Pages, Worker, KV, and the coordinator remain intact during the rollback window; only Worker cron triggers are disabled after Tencent scheduling is verified.
@@ -91,6 +93,7 @@ Before DNS changes:
 1. Point `@` and `www` at the Lighthouse public IPv4 address with a low TTL.
 2. Issue one certificate for `bijinihaitan.cn` and `www.bijinihaitan.cn` through the dedicated ACME webroot, then switch Nginx to `server/nginx/japanese-words-https.conf`. Keep the ACME location active so renewals do not depend on application routes.
 3. Set `DISABLE_SCHEDULER=false`, `SITE_URL=https://bijinihaitan.cn`, and the matching allowed origins.
+   If an approved HTTPS alert receiver is available, also set `OPS_ALERT_WEBHOOK_URL`; never put its address or credentials in Git.
 4. Update `.env.codex-daily` so the 14:00/16:00/17:00 Codex task submits to `https://bijinihaitan.cn`.
 5. Restart the application and run `SITE_URL=https://bijinihaitan.cn npm run smoke:production`.
 6. After Tencent logs confirm successful published refresh, daily promotion, and aiCard jobs, deploy `wrangler.worker.toml` with an empty cron list. Keep the Worker, coordinator, Pages project, and KV namespaces intact for rollback.
@@ -104,6 +107,19 @@ Before DNS changes:
 5. Compare revisions before deciding whether a guarded data restore is needed.
 
 Cloudflare resources must remain intact until the Tencent site has completed at least seven daily cycles. During rollback, re-enable the reviewed cron list only after Tencent scheduling has been disabled.
+
+## Backup Restore Drill
+
+A running backup timer is not sufficient proof of recoverability. Periodically select the latest `state-*` bundle and restore it into an isolated directory:
+
+```bash
+restore_dir="$(mktemp -d /var/tmp/japanese-words-restore.XXXXXX)"
+node server/import-cloudflare-backup.mjs /var/backups/japanese-words/state-<timestamp>-r<revision> \
+  --data-dir="${restore_dir}" \
+  --apply --confirm=IMPORT
+```
+
+Verify the manifest digest, workflow revision, workflow-key count, Codex draft count, reference-image count, and at least one image's metadata. Never point a rehearsal at `/var/lib/japanese-words`.
 
 ## Routine Updates After Cutover
 

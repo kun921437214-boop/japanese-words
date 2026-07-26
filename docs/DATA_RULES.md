@@ -2,7 +2,9 @@
 
 ## Source Of Truth
 
-- Cloudflare KV workflow is the team source of truth in production.
+- GitHub `main` is the code source of truth after reviewed pull requests are merged.
+- Tencent Cloud FileKV under `/var/lib/japanese-words` is the team workflow source of truth in Production.
+- Cloudflare KV is retained only as rollback infrastructure and must not receive routine Production writes while Tencent is active.
 - localStorage is only a cache for the last loaded workflow.
 - `data/words-data.json` is historical seed data, not the formal word-card source.
 - `candidatePool` is the unified active candidate pool.
@@ -132,7 +134,8 @@ Without a ready card, show only basic information and a "generate DeepSeek word 
 ## Import / Export Rules
 
 - Do not export local template content as a formal word card.
-- Full workflow backup must include `candidatePool`, `aiBatches`, `todaySnapshot`, and `publishedRecords`.
+- Full Production backup must include the main workflow, auxiliary workflow keys such as `codex-draft:*` and operation-health records, and all first-party reference images.
+- A backup is not considered verified until it has been restored into an isolated directory and its workflow revision, candidate/card counts, drafts, and image metadata have been checked.
 - Do not upload real private user data, API keys, large videos, or private export files to GitHub.
 
 ## Published Records Rules

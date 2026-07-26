@@ -32,9 +32,13 @@ function request(url = 'https://jiyimianbao.pages.dev/favorites', options = {}) 
 
 test('Pages CSP allows Xiaohongshu image hosts without widening script or API access', () => {
   const headers = readFileSync(new URL('../_headers', import.meta.url), 'utf8');
+  const index = readFileSync(new URL('../index.html', import.meta.url), 'utf8');
   assert.match(headers, /img-src[^;]*https:\/\/\*\.xhscdn\.com/);
   assert.doesNotMatch(headers, /script-src[^;]*xhscdn\.com/);
+  assert.doesNotMatch(headers, /script-src[^;]*'unsafe-inline'/);
   assert.doesNotMatch(headers, /connect-src[^;]*xhscdn\.com/);
+  assert.match(index, /<script src="sync-config\.js"><\/script>/);
+  assert.doesNotMatch(index, /<script>(?:.|\n)*?<\/script>/);
 });
 
 function base64Url(value) {

@@ -26,7 +26,7 @@
 - 近 30 天不能重复。
 - 同日语义簇不能重复。
 - 美妆品类最多 1 个，基础寒暄/教材礼貌词最多 1 个。
-- S 级最多 12 个，人工质量估分至少 75。
+- S 级最多 6 个，人工质量估分至少 75。
 - 高风险、低置信或待复核词不能自动发布。
 - 参考图片缺失会产生 warning，但不会阻断文字卡片，页面使用原有兜底图。
 
@@ -60,6 +60,7 @@ KV 模式下单张图片不能超过 800 KiB，批量命令会在联网前完成
 2. 确认腾讯云 FileKV 和参考图片目录可写、备份定时器已启用，并保持数据与图片分区存放。
 3. 部署腾讯云运行时后，先用只读 status 和 Production smoke 验证。
 4. 再启用固定 Codex 任务的 14:00、16:00 和 17:00 三个 heartbeat。
+5. 如有可用的告警接收端，在 `/etc/japanese-words.env` 配置 `OPS_ALERT_WEBHOOK_URL`；不配置时健康结果仍写入 FileKV 和 systemd 日志。
 
 Cloudflare Pages、Worker、KV 和协调器只作为回滚资源保留；其 Worker cron 已停用，避免与腾讯云内部调度重复运行。图片只能通过带 Codex 专用凭证的 `/codex-image` 写入正式站存储。
 
@@ -83,3 +84,9 @@ Cloudflare Pages、Worker、KV 和协调器只作为回滚资源保留；其 Wor
 16:00 恢复检查：读取同一日期的现有草稿；如果 14:00 因网络或审批链路中断，使用同一个 `upload-images` 命令从缺失图片继续，不重做 ready 内容。
 
 17:00 最终补漏：再次只补未完成词卡或图片。若草稿仍不合格，应在同一 Codex 任务中报告错误并保留 DeepSeek 午夜兜底。
+
+17:15 腾讯云健康检查：验证次日草稿日期、质量门、10 个词和 10 张完整文字卡。异常记录在 `operations-health:daily:tomorrow-draft:<date>`，并在配置 webhook 后主动通知。
+
+00:00 腾讯云发布：Codex 草稿不可用时同步执行 DeepSeek 兜底。只有最终完成才写成功标记；排队中、HTTP 失败或生成失败都会保持可重试。
+
+00:10 腾讯云健康检查：验证当日 `todaySnapshot` 日期和 10 个词。异常记录在 `operations-health:daily:today-snapshot:<date>`，并在配置 webhook 后主动通知。

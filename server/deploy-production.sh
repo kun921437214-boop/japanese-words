@@ -2,7 +2,7 @@
 set -euo pipefail
 
 app_dir="${JAPANESE_WORDS_APP_DIR:-/opt/japanese-words/app}"
-deploy_branch="${JAPANESE_WORDS_DEPLOY_BRANCH:-codex/fix-daily-automation-assets}"
+deploy_branch="${JAPANESE_WORDS_DEPLOY_BRANCH:-main}"
 backup_root="${JAPANESE_WORDS_BACKUP_DIR:-/var/backups/japanese-words}"
 lock_file="${JAPANESE_WORDS_DEPLOY_LOCK:-/run/japanese-words-deploy.lock}"
 bundle_url="${JAPANESE_WORDS_DEPLOY_BUNDLE_URL:-https://github.com/kun921437214-boop/japanese-words/releases/download/tencent-deploy-channel/japanese-words-production.bundle}"

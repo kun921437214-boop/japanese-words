@@ -25,6 +25,7 @@ import {
 import { addDays, dateKey } from '../shared/rankings.mjs';
 import { buildTodayRecommendationAudit } from '../shared/today-snapshot.mjs';
 import {
+  runDailyOperationsHealthCheck,
   triggerCodexPromotionIfAvailable,
   triggerDailyPublishOrFallback
 } from '../worker/favorites-worker.js';
@@ -536,12 +537,92 @@ test('midnight trigger prefers Codex and calls DeepSeek only as fallback', async
         headers: { 'Content-Type': 'application/json' }
       });
     }
-    return new Response(JSON.stringify({ ok: true }), { status: 200 });
+    return new Response(JSON.stringify({ ok: true, status: 'completed', queued: false }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' }
+    });
   });
+  assert.equal(fallbackResult.ok, true);
   assert.equal(fallbackResult.source, 'deepseek');
   assert.equal(fallbackCalls.length, 2);
   assert.match(fallbackCalls[1].url, /\/daily-refresh/);
+  assert.match(fallbackCalls[1].url, /runInline=true/);
   assert.equal(fallbackCalls[1].options.headers['Content-Type'], 'application/json');
+});
+
+test('midnight fallback reports queued or failed refreshes as incomplete', async () => {
+  const result = await triggerDailyPublishOrFallback({
+    SITE_URL: 'https://jiyimianbao.pages.dev',
+    AUTO_REFRESH_SECRET: 'cron-secret'
+  }, async url => {
+    if (url.includes('/codex-daily')) {
+      return new Response(JSON.stringify({ error: { code: 'CODEX_DRAFT_MISSING' } }), {
+        status: 404,
+        headers: { 'Content-Type': 'application/json' }
+      });
+    }
+    return new Response(JSON.stringify({ ok: true, status: 'running', queued: true }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' }
+    });
+  });
+  assert.equal(result.ok, false);
+  assert.equal(result.source, 'deepseek');
+  assert.equal(result.reason, 'running');
+});
+
+test('daily operations health check persists valid tomorrow draft state', async () => {
+  const targetDateKey = '2026-07-27';
+  const kv = makeKv({
+    [getCodexDraftStorageKey(targetDateKey)]: {
+      targetDateKey,
+      status: 'valid',
+      wordCount: CODEX_DAILY_WORD_COUNT,
+      cardReadyCount: CODEX_DAILY_WORD_COUNT,
+      imageReadyCount: CODEX_DAILY_WORD_COUNT,
+      validation: { valid: true }
+    }
+  });
+  const result = await runDailyOperationsHealthCheck({
+    FAVORITES: kv
+  }, {
+    kind: 'tomorrow-draft',
+    now: new Date('2026-07-26T09:15:00.000Z')
+  });
+  assert.equal(result.status, 'healthy');
+  assert.equal(result.targetDateKey, targetDateKey);
+  assert.equal(result.notification.configured, false);
+  const stored = await kv.get(`operations-health:daily:tomorrow-draft:${targetDateKey}`, 'json');
+  assert.equal(stored.status, 'healthy');
+});
+
+test('daily operations health check alerts and rejects a missing current snapshot', async () => {
+  const kv = makeKv({
+    'favorites:global': {
+      todaySnapshot: {
+        dateKey: '2026-07-26',
+        words: DAILY_CURATED_WORDS
+      }
+    }
+  });
+  const alertCalls = [];
+  await assert.rejects(() => runDailyOperationsHealthCheck({
+    FAVORITES: kv,
+    OPS_ALERT_WEBHOOK_URL: 'https://alerts.example.invalid/daily'
+  }, {
+    kind: 'today-snapshot',
+    now: new Date('2026-07-26T16:10:00.000Z'),
+    async fetchImpl(url, options) {
+      alertCalls.push({ url, body: JSON.parse(options.body) });
+      return new Response('{}', { status: 200 });
+    }
+  }), /snapshot_date_mismatch/);
+  assert.equal(alertCalls.length, 1);
+  assert.equal(alertCalls[0].body.status, 'unhealthy');
+  assert.equal(alertCalls[0].body.targetDateKey, '2026-07-27');
+  const stored = await kv.get('operations-health:daily:today-snapshot:2026-07-27', 'json');
+  assert.equal(stored.status, 'unhealthy');
+  assert.equal(stored.notification.sent, true);
 });
 
 test('late Codex promotion skips missing drafts without triggering a fallback', async () => {

@@ -51,6 +51,11 @@ try {
   if (!health.data.storageConfigured) fail('Production FAVORITES binding 未生效');
   if (!health.data.workflowCoordinatorConfigured) fail('Production Durable Object 写入协调 binding 未生效');
   if (!health.data.imageStorageConfigured) fail('Production 图片 KV binding 未生效');
+  const unhealthyDailyOperation = Object.values(health.data.dailyOperations || {})
+    .find(item => item?.status === 'unhealthy');
+  if (unhealthyDailyOperation) {
+    fail('Production 每日内容健康检查仍处于异常状态', unhealthyDailyOperation);
+  }
 
   const workflow = await fetchJson('/favorites?view=app&scope=today');
   const favoritesWorkflow = await fetchJson('/favorites?view=app&scope=favorites');

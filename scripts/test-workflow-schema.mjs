@@ -433,6 +433,8 @@ test('Tencent runtime owns scheduled jobs while Cloudflare rollback cron stays d
   assert.equal(workerConfig.includes('"5,25,45 * * * *"'), false);
   assert.equal(workerConfig.includes('"10,20,30,40,50 16 * * *"'), false);
   assert.equal(workerConfig.includes('"0 17 * * *"'), false);
+  assert.equal(workerConfig.includes('"15 9 * * *"'), false);
+  assert.equal(workerConfig.includes('"10 16 * * *"'), false);
   assert.ok(tencentSource.includes("'0 16 * * *'"));
   assert.ok(tencentSource.includes("'30 6 * * *'"));
   assert.ok(tencentSource.includes("'5,25,45 * * * *'"));
@@ -441,11 +443,14 @@ test('Tencent runtime owns scheduled jobs while Cloudflare rollback cron stays d
   assert.ok(workerSource.includes("const DAILY_REFRESH_CRON = '0 16 * * *';"));
   assert.ok(workerSource.includes("const PUBLISHED_REFRESH_CRON = '30 6 * * *';"));
   assert.ok(workerSource.includes("const CODEX_LATE_PROMOTION_CRON = '5,25,45 * * * *';"));
+  assert.ok(workerSource.includes("DAILY_DRAFT_HEALTH_CRON = '15 9 * * *';"));
+  assert.ok(workerSource.includes("DAILY_SNAPSHOT_HEALTH_CRON = '10 16 * * *';"));
   assert.ok(workerSource.includes("const AI_CARD_BATCH_MAX_WORDS = 5;"));
   assert.ok(workerSource.includes("new URL(`${siteUrl}/codex-daily`)"));
   assert.ok(workerSource.includes("action: 'promote'"));
   assert.ok(workerSource.includes("new URL(`${siteUrl}/daily-refresh`)"));
   assert.ok(workerSource.includes("refreshUrl.searchParams.set('mode', 'manual')"));
+  assert.ok(workerSource.includes("refreshUrl.searchParams.set('runInline', 'true')"));
   assert.ok(workerSource.includes("refreshUrl.searchParams.set('skipCards', 'true')"));
   assert.ok(workerSource.includes("'Content-Type': 'application/json'"));
   assert.ok(workerSource.includes('Authorization: `Bearer ${autoRefreshSecret}`'));
@@ -458,6 +463,8 @@ test('Tencent runtime owns scheduled jobs while Cloudflare rollback cron stays d
   assert.ok(workerSource.includes('if (!plan.shouldRun)'));
   assert.ok(workerSource.includes('cron !== PUBLISHED_REFRESH_CRON'));
   assert.ok(workerSource.includes('triggerCodexPromotionIfAvailable(env)'));
+  assert.ok(workerSource.includes("requireScheduledSuccess('daily publish'"));
+  assert.equal(workerSource.includes('triggerDailyPublishOrFallback(env).catch'), false);
   assert.equal(workerSource.includes('force: true'), false);
 });
 

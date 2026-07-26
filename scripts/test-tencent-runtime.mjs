@@ -72,6 +72,8 @@ test('Tencent runtime dispatches existing API handlers', async () => {
   assert.equal(health.status, 200);
   assert.equal(body.storageConfigured, true);
   assert.equal(body.workflowCoordinatorConfigured, true);
+  assert.equal(body.dailyOperations.todaySnapshot.status, 'unknown');
+  assert.equal(body.dailyOperations.tomorrowDraft.status, 'unknown');
   const missing = await handleWebRequest(new Request('https://bijinihaitan.cn/unknown'), env);
   assert.equal(missing.status, 404);
   await missing.arrayBuffer();
@@ -130,6 +132,8 @@ test('Tencent scheduler matches the existing UTC cron definitions', () => {
   assert.equal(matchesSchedule('30 6 * * *', new Date('2026-07-20T06:29:00Z')), false);
   assert.equal(matchesSchedule('5,25,45 * * * *', new Date('2026-07-20T09:25:00Z')), true);
   assert.equal(matchesSchedule('10,20,30,40,50 16 * * *', new Date('2026-07-20T16:40:00Z')), true);
+  assert.equal(matchesSchedule('15 9 * * *', new Date('2026-07-20T09:15:00Z')), true);
+  assert.equal(matchesSchedule('10 16 * * *', new Date('2026-07-20T16:10:00Z')), true);
 });
 
 test('Tencent installer changes into the resolved repository before relative installs', async () => {
@@ -167,7 +171,7 @@ test('Tencent Production deploy is explicit, guarded, backed up, and self-checki
 
 test('GitHub publishes a credential-free fallback bundle for Tencent Production', async () => {
   const workflow = await readFile(new URL('../.github/workflows/tencent-deploy-bundle.yml', import.meta.url), 'utf8');
-  assert.match(workflow, /codex\/fix-daily-automation-assets/);
+  assert.match(workflow, /branches:\n\s+- main/);
   assert.match(workflow, /permissions:\n  contents: write/);
   assert.match(workflow, /fetch-depth: 0/);
   assert.match(workflow, /git bundle create japanese-words-production\.bundle HEAD/);
