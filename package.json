@@ -37,7 +37,7 @@
   },
   "devDependencies": {
     "@playwright/test": "^1.55.1",
-    "eslint": "9.39.1",
+    "eslint": "10.8.0",
     "typescript": "5.9.3",
     "wrangler": "4.110.0"
   },
