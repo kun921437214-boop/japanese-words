@@ -29,7 +29,10 @@ The public API paths and browser storage keys do not change.
 
 ## First Install
 
-Install Node.js 20 or newer, Git, and Nginx from the OpenCloudOS package repositories. Clone the reviewed branch to `/opt/japanese-words/app`, then run:
+Install Node.js 22.13 or newer, Git, and Nginx. Production is pinned to Node.js
+22.23.1; existing hosts use the guarded runtime upgrade documented in
+`docs/DEPLOYMENT.md`. Clone the reviewed branch to `/opt/japanese-words/app`,
+then run:
 
 ```bash
 cd /opt/japanese-words/app

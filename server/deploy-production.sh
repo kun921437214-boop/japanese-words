@@ -7,6 +7,7 @@ backup_root="${JAPANESE_WORDS_BACKUP_DIR:-/var/backups/japanese-words}"
 lock_file="${JAPANESE_WORDS_DEPLOY_LOCK:-/run/japanese-words-deploy.lock}"
 bundle_url="${JAPANESE_WORDS_DEPLOY_BUNDLE_URL:-https://github.com/kun921437214-boop/japanese-words/releases/download/tencent-deploy-channel/japanese-words-production.bundle}"
 bundle_cache="${JAPANESE_WORDS_DEPLOY_BUNDLE_CACHE:-${backup_root}/deploy-cache/japanese-words-production.bundle}"
+node_runtime_bin="${JAPANESE_WORDS_NODE_BIN_DIR:-/opt/japanese-words/runtime/node-current/bin}"
 confirmation=""
 dry_run=false
 manual_bundle=""
@@ -70,6 +71,10 @@ done
 if [[ ! -d "${app_dir}/.git" ]]; then
   echo "Expected Git repository at ${app_dir}." >&2
   exit 1
+fi
+
+if [[ -x "${node_runtime_bin}/node" && -x "${node_runtime_bin}/npm" ]]; then
+  export PATH="${node_runtime_bin}:${PATH}"
 fi
 
 cd "${app_dir}"
@@ -230,6 +235,7 @@ fi
 echo "Current: ${current_short}"
 echo "Target:  ${target_short} (${deploy_branch})"
 echo "Source:  ${fetch_source}"
+echo "Node:    $(node --version) ($(command -v node))"
 
 if [[ "${current_commit}" == "${target_commit}" ]]; then
   echo "Production is already on the requested commit."

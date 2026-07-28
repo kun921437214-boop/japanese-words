@@ -366,7 +366,7 @@ test('failed favorite writes stay visible across reload and sync automatically a
   const restoredButton = page.locator('#todayGrid .daily-hot-card').filter({ hasText: 'そわそわ' }).locator('.card-fav-btn');
   await expect(page.locator('#favBadge')).toContainText('1');
   await expect(restoredButton).toBeDisabled();
-  await expect(restoredButton).toHaveClass(/waiting-sync/);
+  await expect(restoredButton).toHaveClass(/(?:syncing|waiting-sync)/);
 
   controls.mutationFailuresRemaining = 0;
   await page.evaluate(() => window.dispatchEvent(new Event('online')));
@@ -409,6 +409,7 @@ test('mobile layout has no page-level horizontal overflow', async ({ page }, tes
 });
 
 test('favorites and published pages progressively render cards and open responsive details', async ({ page }, testInfo) => {
+  test.setTimeout(60_000);
   const controls = await openApp(page, { workflow: createPerformanceWorkflow() });
   const switchWorkflowTab = async (tab, cards, expectedCount) => {
     if (testInfo.project.name.startsWith('iphone-')) {

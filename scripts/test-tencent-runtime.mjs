@@ -145,6 +145,35 @@ test('Tencent installer changes into the resolved repository before relative ins
   assert.match(installer, /\/var\/lib\/letsencrypt\/\.well-known\/acme-challenge/);
 });
 
+test('Tencent Node 22 upgrade is pinned, explicit, backed up, and reversible', async () => {
+  const upgrader = await readFile(new URL('../server/upgrade-node-runtime.sh', import.meta.url), 'utf8');
+  const runtimeOverride = await readFile(new URL('../server/systemd/japanese-words-node22.conf', import.meta.url), 'utf8');
+  const backupOverride = await readFile(new URL('../server/systemd/japanese-words-backup-node22.conf', import.meta.url), 'utf8');
+  const packageJson = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8'));
+  const nodeVersion = (await readFile(new URL('../.node-version', import.meta.url), 'utf8')).trim();
+  assert.equal(nodeVersion, '22.23.1');
+  assert.equal(packageJson.engines.node, '>=22.13.0');
+  assert.match(upgrader, /--confirm=UPGRADE_NODE_22/);
+  assert.match(upgrader, /Runtime validation requires --expected-commit=<full Git hash>/);
+  assert.match(upgrader, /--expected-commit=<full Git hash>/);
+  assert.match(upgrader, /flock -n 9/);
+  assert.match(upgrader, /node_version="22\.23\.1"/);
+  assert.match(upgrader, /node_release="node-v\$\{node_version\}-linux-x64"/);
+  assert.match(upgrader, /9749e988f437343b7fa832c69ded82a312e41a03116d766797ac14f6f9eee578/);
+  assert.match(upgrader, /sha256sum/);
+  assert.match(upgrader, /git -C "\$\{app_dir\}" worktree add --detach/);
+  assert.match(upgrader, /npm run lint/);
+  assert.match(upgrader, /npm run typecheck/);
+  assert.match(upgrader, /npm test/);
+  assert.match(upgrader, /import\('\.\/server\/tencent-runtime\.mjs'\)/);
+  assert.match(upgrader, /node server\/tencent-backup\.mjs/);
+  assert.match(upgrader, /Production health check failed under Node/);
+  assert.match(upgrader, /automatic runtime rollback did not restore local health/);
+  assert.match(upgrader, /rollback/);
+  assert.match(runtimeOverride, /ExecStart=\/opt\/japanese-words\/runtime\/node-current\/bin\/node server\/tencent-runtime\.mjs/);
+  assert.match(backupOverride, /ExecStart=\/opt\/japanese-words\/runtime\/node-current\/bin\/node server\/tencent-backup\.mjs/);
+});
+
 test('Tencent Production deploy is explicit, guarded, backed up, and self-checking', async () => {
   const deployer = await readFile(new URL('../server/deploy-production.sh', import.meta.url), 'utf8');
   assert.match(deployer, /--confirm=DEPLOY/);
@@ -165,6 +194,8 @@ test('Tencent Production deploy is explicit, guarded, backed up, and self-checki
   assert.match(deployer, /sha256sum/);
   assert.match(deployer, /Target package-lock\.json does not match --allow-dependency-lock-sha256/);
   assert.match(deployer, /Reviewed dependency lock change approved/);
+  assert.match(deployer, /JAPANESE_WORDS_NODE_BIN_DIR/);
+  assert.match(deployer, /export PATH="\$\{node_runtime_bin\}:\$\{PATH\}"/);
   assert.match(deployer, /git worktree add --detach/);
   assert.match(deployer, /npm run lint/);
   assert.match(deployer, /npm run typecheck/);
