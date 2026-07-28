@@ -14,7 +14,7 @@
 ## 技术栈
 
 - 原生静态前端：`index.html`、`styles.css`、`app.js`
-- 腾讯云 Production：Nginx、Node.js runtime、FileKV、systemd scheduler
+- 腾讯云 Production：Nginx、Node.js 22 runtime、FileKV、systemd scheduler
 - 复用 Pages Function 接口实现：`functions/`
 - Cloudflare Pages / Worker / KV：仅保留为备用回滚环境
 - DeepSeek API：候选词、旧词审核、词卡生成
@@ -41,7 +41,7 @@
 npm install
 ```
 
-CI 和发布环境使用锁文件安装：`npm ci`。
+CI 和发布环境使用 Node.js 22.23.1 与锁文件安装：`npm ci`。
 
 ## 本地运行
 

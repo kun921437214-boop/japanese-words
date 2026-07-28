@@ -84,6 +84,46 @@ dependency-free path remains unchanged.
 
 After it succeeds, run the read-only smoke check from a trusted workstation and visually check the affected desktop and mobile workflows. A GitHub push is never sufficient authorization to run this command.
 
+### Reviewed Node 22 runtime upgrade
+
+Production is pinned to the official Node.js 22.23.1 Linux x64 archive. The
+runtime upgrade is separate from a normal code deployment and requires its own
+explicit authorization. First merge and deploy the reviewed runtime-maintenance
+PR through the normal guarded procedure. Then pin the already-deployed full
+commit and run:
+
+```bash
+cd /opt/japanese-words/app
+bash server/upgrade-node-runtime.sh \
+  --expected-commit=<full-40-character-git-hash> \
+  --dry-run
+
+bash server/upgrade-node-runtime.sh \
+  --expected-commit=<full-40-character-git-hash> \
+  --confirm=UPGRADE_NODE_22
+```
+
+The script accepts `--archive=/trusted/path/node-v22.23.1-linux-x64.tar.xz`
+when the host cannot reach `nodejs.org`. Both download paths require the pinned
+official SHA-256. Before changing systemd it validates the complete application
+under Node 22 in an isolated worktree and creates a complete workflow/image
+backup. It atomically switches both the web runtime and backup service through
+systemd drop-ins, checks the local health endpoint and running executable, and
+restores the previous runtime and units if validation fails. The package-managed
+Node 20 installation remains available for rollback.
+
+After success, confirm the running executable and perform the standard public
+smoke and desktop/mobile browser acceptance:
+
+```bash
+systemctl show japanese-words.service -p MainPID --value
+readlink -f /proc/$(systemctl show japanese-words.service -p MainPID --value)/exe
+SITE_URL=https://bijinihaitan.cn npm run smoke:production
+```
+
+Do not run the runtime upgrade before the reviewed commit is deployed, and do
+not combine it with an unrelated data update.
+
 ## Cloudflare Rollback Stack
 
 Cloudflare Pages, Worker, KV, and the workflow coordinator remain available only as rollback infrastructure. The scheduled Worker has an empty cron list so it cannot compete with the Tencent scheduler.
