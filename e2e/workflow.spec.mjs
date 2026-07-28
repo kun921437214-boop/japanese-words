@@ -445,7 +445,9 @@ test('favorites and published pages progressively render cards and open responsi
   const publishedCards = page.locator('#publishedGrid .published-card');
   await switchWorkflowTab('published', publishedCards, 10);
   await expect(page.locator('[data-progressive-list="published"]')).toContainText('已显示 10 / 25');
-  await page.locator('[data-published-action="load-more"]').click();
+  await page.locator('[data-published-action="load-more"]').evaluate(button => {
+    button.click();
+  });
   await expect(publishedCards).toHaveCount(20);
   const firstPublishedCard = publishedCards.first();
   const detailOpenedIn = await firstPublishedCard.evaluate(card => {

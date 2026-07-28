@@ -51,6 +51,37 @@ bash server/deploy-production.sh \
   --confirm=DEPLOY
 ```
 
+### Reviewed dependency-lock deployment
+
+Routine deployments stop when `package-lock.json` changes. After the dependency
+diff and CI result have been reviewed, calculate the SHA-256 of the exact target
+lockfile from the reviewed commit:
+
+```bash
+git show <full-40-character-git-hash>:package-lock.json | sha256sum
+```
+
+Then dry-run and deploy with both the full target commit and the full lowercase
+lockfile digest pinned:
+
+```bash
+bash server/deploy-production.sh \
+  --bundle=/path/to/japanese-words-production.bundle \
+  --expected-commit=<full-40-character-git-hash> \
+  --allow-dependency-lock-sha256=<full-64-character-sha256> \
+  --dry-run
+
+bash server/deploy-production.sh \
+  --bundle=/path/to/japanese-words-production.bundle \
+  --expected-commit=<full-40-character-git-hash> \
+  --allow-dependency-lock-sha256=<full-64-character-sha256> \
+  --confirm=DEPLOY
+```
+
+The override is rejected unless the bundle HEAD, fetched target commit, and
+target `package-lock.json` digest all match the pinned values. The normal
+dependency-free path remains unchanged.
+
 After it succeeds, run the read-only smoke check from a trusted workstation and visually check the affected desktop and mobile workflows. A GitHub push is never sufficient authorization to run this command.
 
 ## Cloudflare Rollback Stack
