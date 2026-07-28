@@ -11,6 +11,7 @@ confirmation=""
 dry_run=false
 manual_bundle=""
 expected_commit=""
+allowed_dependency_lock_sha256=""
 
 for argument in "$@"; do
   case "${argument}" in
@@ -19,6 +20,9 @@ for argument in "$@"; do
     --branch=*) deploy_branch="${argument#--branch=}" ;;
     --bundle=*) manual_bundle="${argument#--bundle=}" ;;
     --expected-commit=*) expected_commit="${argument#--expected-commit=}" ;;
+    --allow-dependency-lock-sha256=*)
+      allowed_dependency_lock_sha256="${argument#--allow-dependency-lock-sha256=}"
+      ;;
     *)
       echo "Unknown argument: ${argument}" >&2
       exit 2
@@ -41,12 +45,22 @@ if [[ -n "${expected_commit}" && ! "${expected_commit}" =~ ^[0-9a-f]{40}$ ]]; th
   exit 2
 fi
 
+if [[ -n "${allowed_dependency_lock_sha256}" && ! "${allowed_dependency_lock_sha256}" =~ ^[0-9a-f]{64}$ ]]; then
+  echo "Allowed dependency lock SHA-256 must be a full lowercase 64-character hash." >&2
+  exit 2
+fi
+
+if [[ -n "${allowed_dependency_lock_sha256}" && -z "${expected_commit}" ]]; then
+  echo "--allow-dependency-lock-sha256 requires --expected-commit=<full Git hash>." >&2
+  exit 2
+fi
+
 if [[ -n "${manual_bundle}" && -z "${expected_commit}" ]]; then
   echo "A manually supplied bundle requires --expected-commit=<full Git hash>." >&2
   exit 2
 fi
 
-for command_name in awk curl flock git nginx node npm systemctl timeout; do
+for command_name in awk curl flock git nginx node npm sha256sum systemctl timeout; do
   if ! command -v "${command_name}" >/dev/null 2>&1; then
     echo "Missing required command: ${command_name}" >&2
     exit 1
@@ -203,6 +217,11 @@ fi
 target_commit="$(git rev-parse "${remote_ref}")"
 target_short="${target_commit:0:12}"
 
+if [[ -n "${expected_commit}" && "${target_commit}" != "${expected_commit}" ]]; then
+  echo "Fetched target does not match --expected-commit." >&2
+  exit 1
+fi
+
 if [[ -n "${advertised_commit}" && "${target_commit}" != "${advertised_commit}" ]]; then
   echo "Fetched target does not match the commit advertised by GitHub." >&2
   exit 1
@@ -223,8 +242,23 @@ if ! git merge-base --is-ancestor "${current_commit}" "${target_commit}"; then
 fi
 
 if ! git diff --quiet "${current_commit}" "${target_commit}" -- package-lock.json; then
-  echo "package-lock.json changed; use the reviewed manual dependency deployment procedure." >&2
-  exit 1
+  if [[ -z "${allowed_dependency_lock_sha256}" ]]; then
+    echo "package-lock.json changed; use the reviewed manual dependency deployment procedure." >&2
+    exit 1
+  fi
+  target_dependency_lock_sha256="$(
+    git show "${target_commit}:package-lock.json" |
+      sha256sum |
+      awk 'NR == 1 { print $1 }'
+  )"
+  if [[ "${target_dependency_lock_sha256}" != "${allowed_dependency_lock_sha256}" ]]; then
+    echo "Target package-lock.json does not match --allow-dependency-lock-sha256." >&2
+    exit 1
+  fi
+  echo "Reviewed dependency lock change approved: ${target_dependency_lock_sha256}"
+elif [[ -n "${allowed_dependency_lock_sha256}" ]]; then
+  echo "--allow-dependency-lock-sha256 was supplied but package-lock.json did not change." >&2
+  exit 2
 fi
 
 if [[ "${dry_run}" == true ]]; then

@@ -156,8 +156,15 @@ test('Tencent Production deploy is explicit, guarded, backed up, and self-checki
   assert.match(deployer, /git bundle list-heads/);
   assert.match(deployer, /official GitHub release bundle/);
   assert.match(deployer, /--expected-commit=<full Git hash>/);
+  assert.match(deployer, /--allow-dependency-lock-sha256 requires --expected-commit=<full Git hash>/);
+  assert.match(deployer, /Allowed dependency lock SHA-256 must be a full lowercase 64-character hash/);
+  assert.match(deployer, /Fetched target does not match --expected-commit/);
   assert.match(deployer, /git merge-base --is-ancestor/);
   assert.match(deployer, /git diff --quiet .*package-lock\.json/);
+  assert.match(deployer, /git show "\$\{target_commit\}:package-lock\.json"/);
+  assert.match(deployer, /sha256sum/);
+  assert.match(deployer, /Target package-lock\.json does not match --allow-dependency-lock-sha256/);
+  assert.match(deployer, /Reviewed dependency lock change approved/);
   assert.match(deployer, /git worktree add --detach/);
   assert.match(deployer, /npm run lint/);
   assert.match(deployer, /npm run typecheck/);
