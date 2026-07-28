@@ -31,7 +31,8 @@ export function createWorkflowActionsController(options = {}) {
     const dataset = actionElement.dataset || {};
     const action = dataset.workflowAction;
     if (!action) return;
-    if (action === 'generate-today-card') invoke(options.onGenerateTodayCard, dataset.kanji || '');
+    if (action === 'open-word-detail') invoke(options.onOpenWordDetail, dataset.kanji || '');
+    else if (action === 'generate-today-card') invoke(options.onGenerateTodayCard, dataset.kanji || '');
     else if (action === 'generate-deepseek-card') invoke(options.onGenerateDeepSeekCard, dataset.kanji || '', dataset.force === 'true');
     else if (action === 'toggle-status') invoke(options.onToggleStatus, dataset.kanji || '');
     else if (action === 'select-status') invoke(options.onSelectStatus, dataset.kanji || '', dataset.status || 'none');

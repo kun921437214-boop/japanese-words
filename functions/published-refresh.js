@@ -19,6 +19,7 @@ import {
   inspectWorkflowMutation
 } from '../shared/workflow-mutation.mjs';
 import { commitWorkflowMutation } from '../shared/workflow-coordinator.mjs';
+import { persistPublishedRecordCovers } from './published-cover.js';
 
 function cleanSyncCode(value) {
   return String(value || '').trim().replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 64);
@@ -249,9 +250,14 @@ export async function onRequest({ request, env }) {
     fetchImpl: fetch,
     now: new Date()
   });
+  const persistedCovers = await persistPublishedRecordCovers(result.records, env, {
+    recordId: String(body?.recordId || '').trim(),
+    fetchImpl: fetch,
+    nowIso: new Date().toISOString()
+  });
 
   const merged = mergeWorkflow(current, {
-    publishedRecords: cleanWorkflowPublishedRecords(result.records),
+    publishedRecords: cleanWorkflowPublishedRecords(persistedCovers.records),
     updated: new Date().toISOString()
   });
   const mutation = await commitWorkflowMutation(env, key, merged, {
@@ -271,6 +277,7 @@ export async function onRequest({ request, env }) {
     ok: true,
     publishedRecords: nextData.publishedRecords,
     summary: result.summary,
+    coverSummary: persistedCovers.summary,
     updated: nextData.updated,
     revision: nextData.revision,
     mutation: { duplicate: mutation.duplicate, operationId: mutation.event?.id || '' }

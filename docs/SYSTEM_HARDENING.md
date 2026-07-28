@@ -1,5 +1,7 @@
 # System Hardening Runbook
 
+> This document preserves the Cloudflare hardening and rollback procedure. Tencent Cloud is the active Production environment. Do not use the Cloudflare deployment order below unless rollback has been explicitly approved and Tencent scheduling has first been disabled. For routine Production work, use `docs/DEPLOYMENT.md`.
+
 ## Scope
 
 This hardening keeps the static frontend, Pages Functions, scheduled Worker, existing API paths, and KV workflow model. It does not trigger production generation or migrate production data by itself.

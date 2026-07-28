@@ -1,10 +1,80 @@
 import {
+  buildPublishedPerformanceAssessment,
   computePublishedThirtyDayMedians,
   getPublishedAgeDays
 } from '../shared/published-import.mjs';
 
+export const PUBLISHED_PAGE_SIZE = 10;
+
 function safeArray(value) {
   return Array.isArray(value) ? value : [];
+}
+
+export function normalizePublishedCoverUrl(value) {
+  const rawUrl = String(value || '').trim();
+  if (!rawUrl) return '';
+  if (rawUrl.startsWith('/published-cover?')) {
+    try {
+      const parsed = new URL(rawUrl, 'https://bijinihaitan.cn');
+      const key = parsed.searchParams.get('key') || '';
+      if (parsed.pathname !== '/published-cover' || !/^published-covers\/v1\/[a-f0-9]{32}$/i.test(key)) return '';
+      const normalized = new URLSearchParams({ key });
+      if (parsed.searchParams.get('variant') === 'thumb') normalized.set('variant', 'thumb');
+      return `/published-cover?${normalized.toString()}`;
+    } catch {
+      return '';
+    }
+  }
+  try {
+    const parsed = new URL(rawUrl);
+    if (parsed.username || parsed.password || (parsed.port && !['80', '443'].includes(parsed.port))) return '';
+    const hostname = parsed.hostname.toLowerCase();
+    const isXhsImageHost = hostname === 'xhscdn.com' || hostname.endsWith('.xhscdn.com');
+    if (isXhsImageHost) {
+      parsed.protocol = 'https:';
+      parsed.port = '';
+      return parsed.href;
+    }
+    return parsed.protocol === 'https:' ? parsed.href : '';
+  } catch {
+    return '';
+  }
+}
+
+export function getPublishedCoverCandidates(value, options = {}) {
+  const primaryUrl = normalizePublishedCoverUrl(value);
+  if (!primaryUrl) return [];
+  if (primaryUrl.startsWith('/published-cover?')) {
+    const requestedWidth = Number.parseInt(options.width, 10);
+    if (!Number.isFinite(requestedWidth) || requestedWidth > 640) return [primaryUrl];
+    const thumbnailUrl = new URL(primaryUrl, 'https://bijinihaitan.cn');
+    thumbnailUrl.searchParams.set('variant', 'thumb');
+    return [`${thumbnailUrl.pathname}${thumbnailUrl.search}`, primaryUrl];
+  }
+  try {
+    const parsed = new URL(primaryUrl);
+    const hostname = parsed.hostname.toLowerCase();
+    const isXhsImageHost = hostname === 'xhscdn.com' || hostname.endsWith('.xhscdn.com');
+    if (!isXhsImageHost) return [primaryUrl];
+    const assetMatch = parsed.pathname.match(/\/([a-z0-9_-]{30,160})(?:![^/]*)?$/i);
+    if (!assetMatch) return [primaryUrl];
+    const assetKey = assetMatch[1];
+    const sourceUsesNotesNamespace = parsed.pathname.split('/').includes('notes_pre_post');
+    const stablePaths = sourceUsesNotesNamespace
+      ? [`notes_pre_post/${assetKey}`, assetKey]
+      : [assetKey, `notes_pre_post/${assetKey}`];
+    const requestedWidth = Number.parseInt(options.width, 10);
+    const width = Number.isFinite(requestedWidth)
+      ? Math.max(240, Math.min(1600, requestedWidth))
+      : 1080;
+    const stableUrls = stablePaths.map(path => `https://sns-na-i6.xhscdn.com/${path}?imageView2/2/w/${width}/format/jpg&origin=0`);
+
+    // Dated sns-webpic URLs expire with a 403. Prefer the namespace-aware
+    // stable CDN URL so every cover does not begin with a failed request.
+    return [...new Set([...stableUrls, primaryUrl])];
+  } catch {
+    return [];
+  }
 }
 
 function toMetric(value) {
@@ -73,10 +143,13 @@ export function ratePublishedRecord(record = {}, options = {}) {
   const ageHours = getPublishedRecordAgeHours(record, options.now ?? Date.now());
   let level = '待评估';
   if (ageHours >= 72) {
-    if (ratio >= 1.35) level = '优秀';
-    else if (ratio >= 0.75) level = '正常';
-    else if (ratio >= 0.4) level = '偏弱';
-    else level = '异常差';
+    const assessment = buildPublishedPerformanceAssessment(record, options.records || [], options.now ?? Date.now());
+    level = {
+      strong: '优秀',
+      normal: '正常',
+      weak: '偏弱',
+      insufficient: '待评估'
+    }[assessment.topic.level] || '待评估';
   }
   return {
     level,
@@ -89,8 +162,67 @@ export function ratePublishedRecord(record = {}, options = {}) {
   };
 }
 
+export function getPublishedPerformanceAssessment(record = {}, options = {}) {
+  return buildPublishedPerformanceAssessment(record, options.records || [], options.now ?? Date.now());
+}
+
 export function getPublishedSourceLabel(record = {}) {
   return record?.selectionSource?.label || '来源待确认';
+}
+
+const INTERNAL_WORKFLOW_COPY_PATTERN = /(?:AI\s*候选词|等待人工确认|用户已进入工作流|禁止自动删除)/i;
+const PUBLISHED_BODY_READING_PATTERN = /^[（(].+[）)](?:\s*[⓪①②③④⑤⑥⑦⑧⑨0-9]+)?$/u;
+const PUBLISHED_BODY_META_PATTERN = /^(?:[=＝]|全称(?:是|为)|[➡👉💡🥯🥖💅])/u;
+const PUBLISHED_BODY_CONTINUATION_PATTERN = /[；;、，,:：]$/u;
+
+function cleanPublishedBodyLine(value = '') {
+  return String(value || '').replace(/[\t\u00a0]+/g, ' ').replace(/\s+/g, ' ').trim();
+}
+
+export function extractPublishedMeaningFromDescription(record = {}) {
+  if (!record?.contentLocked || record?.contentCategory === 'non_word') return '';
+  const word = String(record?.word || '').trim();
+  if (!word) return '';
+  const lines = String(record?.description || '')
+    .split(/[\r\n\u2028\u2029]+/u)
+    .map(cleanPublishedBodyLine)
+    .filter(Boolean);
+  const wordLineIndex = lines.findIndex(line => line.replace(/^[🍞\s]+/u, '').startsWith(word));
+  if (wordLineIndex < 0) return '';
+
+  function nextMeaningLine(startIndex) {
+    for (let index = startIndex; index < Math.min(lines.length, wordLineIndex + 10); index += 1) {
+      const line = lines[index];
+      if (!line || line.startsWith('⬇')) continue;
+      if (line.startsWith('🍞') || line.startsWith('#')) return null;
+      if (PUBLISHED_BODY_READING_PATTERN.test(line) || PUBLISHED_BODY_META_PATTERN.test(line)) continue;
+      if (!/[\u3400-\u9fff]/u.test(line)) continue;
+      return { index, line: line.slice(0, 240) };
+    }
+    return null;
+  }
+
+  const first = nextMeaningLine(wordLineIndex + 1);
+  if (!first) return '';
+  const meaningLines = [first.line];
+  let current = first;
+  while (PUBLISHED_BODY_CONTINUATION_PATTERN.test(current.line) && meaningLines.length < 3) {
+    const next = nextMeaningLine(current.index + 1);
+    if (!next) break;
+    meaningLines.push(next.line);
+    current = next;
+  }
+  return meaningLines.join(' ').slice(0, 240);
+}
+
+export function getPublishedContentSubLabel(record = {}, options = {}) {
+  if (record?.contentCategory === 'non_word') return '宣传、活动或其他自选内容';
+  const meaning = String(options?.meaning || '').trim().slice(0, 240);
+  if (meaning && !INTERNAL_WORKFLOW_COPY_PATTERN.test(meaning)) return meaning;
+  const publishedMeaning = extractPublishedMeaningFromDescription(record);
+  if (publishedMeaning && !INTERNAL_WORKFLOW_COPY_PATTERN.test(publishedMeaning)) return publishedMeaning;
+  if (record?.word) return '释义待补充';
+  return record?.contentLocked ? '正文已获取，主词待确认' : '等待从「笔记管理」点封面读取详情';
 }
 
 export function getPublishedUpdateState(record = {}, now = new Date()) {
@@ -129,10 +261,19 @@ export function buildPublishedPageModel(items = [], options = {}) {
   const records = visibleItems.map(item => item.record || item).filter(Boolean);
   const medians = computePublishedThirtyDayMedians(records, now);
   const activeCount = records.filter(record => getPublishedUpdateState(record, now).active).length;
+  const pageSize = Math.max(1, Number.parseInt(options.pageSize, 10) || PUBLISHED_PAGE_SIZE);
+  const visibleLimit = Math.max(pageSize, Number.parseInt(options.visibleLimit, 10) || pageSize);
+  const renderItems = visibleItems.slice(0, visibleLimit);
   return {
     items: visibleItems,
+    renderItems,
     medians,
     count: visibleItems.length,
+    renderedCount: renderItems.length,
+    remainingCount: Math.max(0, visibleItems.length - renderItems.length),
+    hasMore: renderItems.length < visibleItems.length,
+    nextLimit: Math.min(visibleItems.length, renderItems.length + pageSize),
+    pageSize,
     activeCount,
     frozenCount: Math.max(0, visibleItems.length - activeCount),
     isEmpty: visibleItems.length === 0,
@@ -163,6 +304,7 @@ export function createPublishedPageController(options = {}) {
     if (!action) return;
     event.preventDefault?.();
     if (action === 'open-detail') invoke(options.onOpenDetail, actionElement.dataset.recordId || '');
+    else if (action === 'load-more') invoke(options.onLoadMore);
     else if (action === 'refresh') invoke(options.onRefresh, actionElement.dataset.recordId || '');
     else if (action === 'render') invoke(options.onRender);
   }
@@ -175,12 +317,24 @@ export function createPublishedPageController(options = {}) {
     actionElement.click?.();
   }
 
+  function handleDetailIntent(event) {
+    const actionElement = event.target?.closest?.('[data-published-action="open-detail"]');
+    if (!actionElement || !root.contains(actionElement)) return;
+    invoke(options.onPrefetchDetail, actionElement.dataset.recordId || '');
+  }
+
   root.addEventListener('click', handleClick);
   root.addEventListener('keydown', handleKeydown);
+  root.addEventListener('pointerover', handleDetailIntent);
+  root.addEventListener('pointerdown', handleDetailIntent);
+  root.addEventListener('focusin', handleDetailIntent);
   return {
     destroy() {
       root.removeEventListener?.('click', handleClick);
       root.removeEventListener?.('keydown', handleKeydown);
+      root.removeEventListener?.('pointerover', handleDetailIntent);
+      root.removeEventListener?.('pointerdown', handleDetailIntent);
+      root.removeEventListener?.('focusin', handleDetailIntent);
     }
   };
 }

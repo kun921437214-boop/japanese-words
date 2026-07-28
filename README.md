@@ -14,9 +14,11 @@
 ## 技术栈
 
 - 原生静态前端：`index.html`、`styles.css`、`app.js`
-- Cloudflare Pages Functions：`functions/`
-- Cloudflare KV：团队 workflow 数据同步
+- 腾讯云 Production：Nginx、Node.js runtime、FileKV、systemd scheduler
+- 复用 Pages Function 接口实现：`functions/`
+- Cloudflare Pages / Worker / KV：仅保留为备用回滚环境
 - DeepSeek API：候选词、旧词审核、词卡生成
+- Codex 自动化：次日选词、完整词卡和参考图片草稿
 - Node.js 脚本：词库构建、部署、数据检查
 
 ## 目录
@@ -63,19 +65,20 @@ npm run backup:workflow
 npm run restore:workflow -- <backup-file>
 npm run test:workflow
 npm run test:e2e
-npm run deploy:coordinator
-npm run deploy
-npm run deploy:worker
+npm run deploy:tencent -- --dry-run
 ```
+
+`npm run deploy:coordinator`、`npm run deploy`、`npm run deploy:worker` 只用于经过明确批准的 Cloudflare 回滚，不能作为日常 Production 部署命令。
 
 ## 环境变量
 
-生产环境在 Cloudflare 中配置，不要写入前端或 GitHub：
+生产环境变量配置在腾讯云 `/etc/japanese-words.env`，不要写入前端或 GitHub：
 
 - `DEEPSEEK_API_KEY`
 - `DEEPSEEK_MODEL`
 - `AUTO_REFRESH_SECRET`
 - `ADMIN_API_TOKEN`
+- `OPS_ALERT_WEBHOOK_URL`（可选，每日内容异常/恢复通知）
 - `TEAM_ACCESS_EMAILS`
 - `CF_ACCESS_TEAM_DOMAIN`
 - `CF_ACCESS_AUD`
@@ -83,6 +86,14 @@ npm run deploy:worker
 - `SITE_URL`
 
 本地参考 `.env.example`。
+
+## Production 与 GitHub
+
+- 正式网站：`https://bijinihaitan.cn`
+- GitHub `main` 是合并后的代码唯一可信来源。
+- 所有修改使用 `codex/*` 分支和 PR。
+- 推送、开 PR 或合并代码都不代表允许部署。
+- Production 部署必须先通过测试、构建、备份和预检，并得到明确授权。
 
 ## 使用方式
 

@@ -48,9 +48,10 @@ export function createWorkflowSync(options = {}) {
       } catch (error) {
         lastError = error;
         if (attempt > 0 || !isRetryableWorkflowMutationError(error)) break;
-        const reconciled = typeof loadRemote === 'function' ? await loadRemote() : false;
-        if (reconciled && config.isSatisfied?.()) {
-          return config.buildReconciledResponse?.() || { ok: true, reconciled: true };
+        const reconcile = typeof config.reconcile === 'function' ? config.reconcile : loadRemote;
+        const reconciled = typeof reconcile === 'function' ? await reconcile() : false;
+        if (reconciled && config.isSatisfied?.(reconciled)) {
+          return config.buildReconciledResponse?.(reconciled) || { ok: true, reconciled: true };
         }
         if (error?.status === 409 && !reconciled) break;
         await delay(config.retryDelayMs || 250);

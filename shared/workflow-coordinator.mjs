@@ -7,9 +7,10 @@ import {
   mergeAutomatedWorkflowUpdate,
   prepareWorkflowMutation
 } from './workflow-mutation.mjs';
+import { applyFavoriteAction } from './favorite-command.mjs';
 
 const WORKFLOW_KEY_PATTERN = /^favorites:(?:global|[a-zA-Z0-9_-]{8,64})$/;
-const MUTATION_STRATEGIES = new Set(['replace', 'merge', 'full-save', 'automated']);
+const MUTATION_STRATEGIES = new Set(['replace', 'merge', 'full-save', 'automated', 'favorite-command']);
 const KV_WRITE_RETRY_DELAY_MS = 1100;
 const KV_WRITE_MAX_ATTEMPTS = 3;
 
@@ -41,6 +42,8 @@ export function buildCoordinatedWorkflowMutation(currentInput = {}, candidateInp
   let nextWorkflow;
   if (strategy === 'full-save') {
     nextWorkflow = mergeWorkflowForFullSave(current, candidateInput);
+  } else if (strategy === 'favorite-command') {
+    nextWorkflow = applyFavoriteAction(current, candidateInput);
   } else if (strategy === 'automated') {
     nextWorkflow = mergeAutomatedWorkflowUpdate(current, candidateInput);
   } else if (strategy === 'merge') {
@@ -48,7 +51,9 @@ export function buildCoordinatedWorkflowMutation(currentInput = {}, candidateInp
   } else {
     nextWorkflow = cleanStoredWorkflow(candidateInput);
   }
-  return prepareWorkflowMutation(current, nextWorkflow, metadata);
+  return prepareWorkflowMutation(current, nextWorkflow, strategy === 'favorite-command'
+    ? { ...metadata, expectedRevision: null }
+    : metadata);
 }
 
 async function putWorkflowWithRetry(binding, key, workflow) {

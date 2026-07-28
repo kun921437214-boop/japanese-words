@@ -1,6 +1,43 @@
 import { expect, test } from '@playwright/test';
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 const GENERATOR_VERSION = 'daily-v4-dedup30-server';
+const STATIC_BUILD_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'dist');
+const STATIC_CONTENT_TYPES = {
+  '.css': 'text/css; charset=utf-8',
+  '.html': 'text/html; charset=utf-8',
+  '.jpeg': 'image/jpeg',
+  '.jpg': 'image/jpeg',
+  '.js': 'text/javascript; charset=utf-8',
+  '.json': 'application/json; charset=utf-8',
+  '.mjs': 'text/javascript; charset=utf-8',
+  '.png': 'image/png',
+  '.svg': 'image/svg+xml',
+  '.webp': 'image/webp'
+};
+
+async function installStaticBuildFixture(page) {
+  if (process.env.E2E_ROUTE_STATIC !== '1') return;
+  await page.route('http://app.test/**', async route => {
+    const pathname = decodeURIComponent(new URL(route.request().url()).pathname);
+    const relativePath = pathname === '/' ? 'index.html' : pathname.replace(/^\/+/, '');
+    const filePath = path.resolve(STATIC_BUILD_ROOT, relativePath);
+    const isSafeFile = filePath.startsWith(`${STATIC_BUILD_ROOT}${path.sep}`)
+      && fs.existsSync(filePath)
+      && fs.statSync(filePath).isFile();
+    if (!isSafeFile) {
+      await route.fulfill({ status: 404, body: 'Not found' });
+      return;
+    }
+    await route.fulfill({
+      status: 200,
+      contentType: STATIC_CONTENT_TYPES[path.extname(filePath).toLowerCase()] || 'application/octet-stream',
+      path: filePath
+    });
+  });
+}
 
 function shanghaiDateKey(offsetDays = 0) {
   const formatter = new Intl.DateTimeFormat('en-CA', {
@@ -66,12 +103,62 @@ function createWorkflow() {
   };
 }
 
-async function installApiFixture(page, options = {}) {
+function createPerformanceWorkflow() {
   const state = createWorkflow();
+  const words = Array.from({ length: 30 }, (_, index) => `検証語${index + 1}`);
+  words.forEach((word, index) => {
+    state.candidatePool[word] = {
+      ...candidate(word, `けんしょうご${index + 1}`, `性能验收词 ${index + 1}`),
+      aiCard: { cardStatus: 'ready', summary: `性能验收词卡 ${index + 1}` }
+    };
+  });
+  state.words = words;
+  state.publishedRecords = Array.from({ length: 25 }, (_, index) => ({
+    id: `published-performance-${index + 1}`,
+    word: words[index],
+    title: `已发布性能验收 ${index + 1}`,
+    description: `🍞${words[index]}\n（けんしょうご）\n性能验收词 ${index + 1}\n这是只读帖子正文。`,
+    contentType: '图文',
+    contentCategory: 'word_card',
+    contentLocked: true,
+    contentImportedAt: '2026-07-20T08:00:00.000Z',
+    contentSource: 'xhs_note_manager',
+    publishedAt: `2026-07-${String(20 - (index % 10)).padStart(2, '0')}T09:00:00+08:00`,
+    latestMetrics: {
+      impressions: 1000 + index * 50,
+      views: 500 + index * 20,
+      coverClickRate: 0.08,
+      likes: 50 + index,
+      comments: 5 + index,
+      favorites: 20 + index,
+      follows: 2 + index,
+      shares: 3 + index,
+      avgWatchSeconds: 8,
+      danmaku: 0
+    },
+    metricSnapshots: [],
+    lastMetricsImportedAt: '2026-07-21T06:30:00.000Z',
+    selectionSource: { type: 'daily_hot_codex', label: 'Codex 每日热门' },
+    noteId: index === 0 ? '6a5cc0930000000011004cf7' : '',
+    link: index === 0
+      ? 'https://www.xiaohongshu.com/404?redirectPath=https%3A%2F%2Fwww.xiaohongshu.com%2Fexplore%2F6a5cc0930000000011004cf7'
+      : '',
+    updatedAt: '2026-07-21T06:30:00.000Z'
+  }));
+  return state;
+}
+
+async function installApiFixture(page, options = {}) {
+  await installStaticBuildFixture(page);
+  const state = options.workflow || createWorkflow();
   const controls = {
     mutationFailuresRemaining: options.mutationFailures || 0,
     commandRequests: 0,
     fullSaveRequests: 0,
+    candidateDetailRequests: 0,
+    publishedDetailRequests: 0,
+    candidateDetailRequestWords: [],
+    publishedDetailRequestIds: [],
     pageErrors: []
   };
   page.on('pageerror', error => controls.pageErrors.push(error.message));
@@ -113,10 +200,71 @@ async function installApiFixture(page, options = {}) {
     const request = route.request();
     const url = new URL(request.url());
     if (request.method() === 'GET') {
+      if (url.searchParams.get('view') === 'candidate-detail') {
+        controls.candidateDetailRequests += 1;
+        const word = url.searchParams.get('word') || '';
+        controls.candidateDetailRequestWords.push(word);
+        const candidateItem = state.candidatePool[word] || null;
+        await route.fulfill({
+          status: candidateItem ? 200 : 404,
+          contentType: 'application/json',
+          body: JSON.stringify({
+            ok: Boolean(candidateItem),
+            candidate: candidateItem ? {
+              ...candidateItem,
+              candidateProjection: 'detail',
+              aiCard: {
+                ...(candidateItem.aiCard || {}),
+                projection: 'detail'
+              }
+            } : null,
+            revision: state.revision,
+            updated: state.updated,
+            schemaVersion: 2
+          })
+        });
+        return;
+      }
+      if (url.searchParams.get('view') === 'published-detail') {
+        controls.publishedDetailRequests += 1;
+        const recordId = url.searchParams.get('recordId') || '';
+        controls.publishedDetailRequestIds.push(recordId);
+        const record = state.publishedRecords.find(item => item.id === recordId) || null;
+        await route.fulfill({
+          status: record ? 200 : 404,
+          contentType: 'application/json',
+          body: JSON.stringify({
+            ok: Boolean(record),
+            record,
+            candidate: record?.word ? (state.candidatePool[record.word] || null) : null,
+            revision: state.revision,
+            updated: state.updated,
+            schemaVersion: 2
+          })
+        });
+        return;
+      }
       await route.fulfill({
         status: 200,
         contentType: 'application/json',
-        body: JSON.stringify({ ...state, appView: { scope: url.searchParams.get('scope') || 'today' } })
+        body: JSON.stringify({
+          ...state,
+          candidatePool: Object.fromEntries(
+            Object.entries(state.candidatePool).map(([word, candidateItem]) => [word, {
+              ...candidateItem,
+              candidateProjection: 'list',
+              aiCard: {
+                ...(candidateItem.aiCard || {}),
+                projection: 'list'
+              }
+            }])
+          ),
+          appView: {
+            scope: url.searchParams.get('scope') || 'today',
+            partialCandidatePool: true,
+            candidateProjection: 'list'
+          }
+        })
       });
       return;
     }
@@ -205,19 +353,34 @@ test('favorite and pending status persist through command synchronization', asyn
   expect(controls.pageErrors).toEqual([]);
 });
 
-test('conflicting favorite writes reconcile to the remote workflow', async ({ page }) => {
-  const controls = await openApp(page, { mutationFailures: 2 });
-  await page.locator('#todayGrid .daily-hot-card').filter({ hasText: 'そわそわ' }).locator('.card-fav-btn').click();
-  await expect(page.locator('#toast')).toContainText('团队同步失败');
-  await expect(page.locator('#favBadge')).toBeHidden();
-  expect(controls.commandRequests).toBe(2);
+test('failed favorite writes stay visible across reload and sync automatically after recovery', async ({ page }) => {
+  const controls = await openApp(page, { mutationFailures: Number.POSITIVE_INFINITY });
+  const favoriteButton = page.locator('#todayGrid .daily-hot-card').filter({ hasText: 'そわそわ' }).locator('.card-fav-btn');
+  await favoriteButton.click();
+  await expect(page.locator('#toast')).toContainText('收藏已记下');
+  await expect(page.locator('#favBadge')).toContainText('1');
+  await expect(favoriteButton).toBeDisabled();
+  await expect(favoriteButton).toHaveClass(/waiting-sync/);
+
+  await page.reload();
+  const restoredButton = page.locator('#todayGrid .daily-hot-card').filter({ hasText: 'そわそわ' }).locator('.card-fav-btn');
+  await expect(page.locator('#favBadge')).toContainText('1');
+  await expect(restoredButton).toBeDisabled();
+  await expect(restoredButton).toHaveClass(/waiting-sync/);
+
+  controls.mutationFailuresRemaining = 0;
+  await page.evaluate(() => window.dispatchEvent(new Event('online')));
+  await expect(restoredButton).toBeEnabled();
+  await expect(restoredButton).toHaveClass(/favorited/);
+  await expect(restoredButton).not.toHaveClass(/waiting-sync/);
+  expect(controls.commandRequests).toBeGreaterThanOrEqual(3);
   expect(controls.pageErrors).toEqual([]);
 });
 
-test('validated backup stays read-only when restore confirmation is cancelled', async ({ page }, testInfo) => {
+test('validated backup stays read-only when restore confirmation is cancelled', async ({ page }) => {
   const controls = await openApp(page);
-  if (testInfo.project.name.startsWith('iphone-')) await page.locator('.mobile-toggle').click();
-  await page.locator('[data-app-shell-action="open-settings"]').click();
+  await expect(page.locator('[data-app-shell-action="open-settings"]')).toHaveCount(0);
+  await page.locator('#settingsOverlay').evaluate(element => element.classList.add('open'));
   await expect(page.locator('#settingsOverlay')).toHaveClass(/open/);
   const dialogPromise = page.waitForEvent('dialog');
   await page.locator('#workflowRestoreInput').setInputFiles({
@@ -242,5 +405,78 @@ test('mobile layout has no page-level horizontal overflow', async ({ page }, tes
   }));
   expect(dimensions.documentWidth).toBeLessThanOrEqual(dimensions.viewport + 1);
   expect(dimensions.bodyWidth).toBeLessThanOrEqual(dimensions.viewport + 1);
+  expect(controls.pageErrors).toEqual([]);
+});
+
+test('favorites and published pages progressively render cards and open responsive details', async ({ page }, testInfo) => {
+  const controls = await openApp(page, { workflow: createPerformanceWorkflow() });
+  const switchWorkflowTab = async (tab, cards, expectedCount) => {
+    if (testInfo.project.name.startsWith('iphone-')) {
+      await page.locator('.mobile-toggle').click();
+      await expect(page.locator('#sidebar')).toHaveClass(/open/);
+    }
+    await page.locator(`[data-app-shell-action="switch-tab"][data-tab="${tab}"]`).evaluate(element => {
+      element.click();
+    });
+    await expect.poll(
+      () => page.evaluate(() => document.body.dataset.activeTab),
+      { timeout: 15_000 }
+    ).toBe(tab);
+    if (cards) await expect(cards).toHaveCount(expectedCount, { timeout: 15_000 });
+  };
+
+  const favoriteCards = page.locator('#favGrid .workflow-card');
+  await switchWorkflowTab('favorites', favoriteCards, 12);
+  await expect(page.locator('[data-progressive-list="favorites"]')).toContainText('已显示 12 / 30');
+  await page.locator('[data-favorites-action="load-more"]').click();
+  await expect(favoriteCards).toHaveCount(24);
+  await favoriteCards.first().evaluate(card => {
+    card.click();
+  });
+  await expect(page.locator('#modalOverlay')).toHaveClass(/open/);
+  await expect(page.locator('#modalContainer')).toContainText('検証語1', { timeout: 15_000 });
+  await expect(page.locator('#modalContainer .modal-loading-shell')).toHaveCount(0, { timeout: 15_000 });
+  expect(controls.candidateDetailRequestWords.filter(word => word === '検証語1').length).toBeLessThanOrEqual(1);
+  await page.locator('#modalContainer [data-modal-action="close"]').first().evaluate(button => {
+    button.click();
+  });
+  await expect(page.locator('#modalOverlay')).not.toHaveClass(/open/);
+
+  const publishedCards = page.locator('#publishedGrid .published-card');
+  await switchWorkflowTab('published', publishedCards, 10);
+  await expect(page.locator('[data-progressive-list="published"]')).toContainText('已显示 10 / 25');
+  await page.locator('[data-published-action="load-more"]').click();
+  await expect(publishedCards).toHaveCount(20);
+  const firstPublishedCard = publishedCards.first();
+  const detailOpenedIn = await firstPublishedCard.evaluate(card => {
+    const startedAt = performance.now();
+    card.click();
+    return performance.now() - startedAt;
+  });
+  expect(detailOpenedIn).toBeLessThan(100);
+  await expect(page.locator('#modalOverlay')).toHaveClass(/open/);
+  await expect.poll(
+    () => controls.publishedDetailRequestIds.filter(recordId => recordId === 'published-performance-1').length,
+    { timeout: 15_000 }
+  ).toBe(1);
+  await expect(page.locator('.published-detail-shell')).toBeVisible({ timeout: 15_000 });
+  await expect(page.locator('#modalContainer')).toContainText('这是只读帖子正文');
+  await expect(page.locator('.published-open-link')).toHaveAttribute(
+    'href',
+    'https://www.xiaohongshu.com/explore/6a5cc0930000000011004cf7'
+  );
+  await expect(page.locator('.published-note-desktop-action').first()).toHaveAttribute(
+    'href',
+    'https://creator.xiaohongshu.com/new/note-manager'
+  );
+  await page.locator('#modalContainer [data-modal-action="close"]').first().evaluate(button => {
+    button.click();
+  });
+  await expect(page.locator('#modalOverlay')).not.toHaveClass(/open/);
+  await switchWorkflowTab('today', page.locator('#todayGrid .daily-hot-card'), 2);
+  await switchWorkflowTab('published', publishedCards, 10);
+  await expect(page.locator('[data-progressive-list="published"]')).toContainText('已显示 10 / 25');
+  expect(controls.candidateDetailRequestWords.filter(word => word === '検証語1').length).toBeLessThanOrEqual(1);
+  expect(controls.publishedDetailRequestIds.filter(recordId => recordId === 'published-performance-1')).toHaveLength(1);
   expect(controls.pageErrors).toEqual([]);
 });

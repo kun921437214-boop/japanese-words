@@ -1,7 +1,5 @@
-import {
-  cleanStoredWorkflow as cleanWorkflowSchema,
-  mergeWorkflowForFullSave
-} from '../shared/workflow-schema.mjs';
+import { cleanStoredWorkflow as cleanWorkflowSchema } from '../shared/workflow-schema.mjs';
+import { applyFavoriteAction } from '../shared/favorite-command.mjs';
 import {
   API_LIMITS,
   authorizeRequest,
@@ -32,18 +30,6 @@ function cleanWords(words) {
 
 function cleanStatus(status) {
   return ['pending', 'published'].includes(status) ? status : 'none';
-}
-
-function cleanStatuses(statuses, words) {
-  const allowedWords = new Set(cleanWords(words));
-  return Object.entries(statuses || {}).reduce((result, [word, status]) => {
-    const cleanWord = String(word || '').trim().slice(0, 80);
-    const cleanStatusValue = cleanStatus(status);
-    if (allowedWords.has(cleanWord) && cleanStatusValue !== 'none') {
-      result[cleanWord] = cleanStatusValue;
-    }
-    return result;
-  }, {});
 }
 
 function cleanFeedback(feedback) {
@@ -432,6 +418,64 @@ function cleanStoredData(data) {
 const APP_CANDIDATE_LIMIT = 240;
 const APP_VIEW_SCOPES = new Set(['all', 'today', 'favorites', 'published']);
 
+function projectReferenceImageForList(referenceImage = {}) {
+  return {
+    status: referenceImage?.status || 'missing',
+    url: referenceImage?.url || '',
+    key: referenceImage?.key || '',
+    provider: referenceImage?.provider || '',
+    generatedAt: referenceImage?.generatedAt || ''
+  };
+}
+
+function projectAiCardForList(aiCard = {}) {
+  return {
+    cardStatus: aiCard?.cardStatus || 'none',
+    cardSource: aiCard?.cardSource || '',
+    cardModel: aiCard?.cardModel || '',
+    cardVersion: aiCard?.cardVersion || 1,
+    coverVersion: aiCard?.coverVersion || 1,
+    generatedAt: aiCard?.generatedAt || '',
+    coverGeneratedAt: aiCard?.coverGeneratedAt || '',
+    summary: aiCard?.summary || '',
+    suggestedTitles: Array.isArray(aiCard?.suggestedTitles) ? aiCard.suggestedTitles.slice(0, 1) : [],
+    referenceImage: projectReferenceImageForList(aiCard?.referenceImage),
+    projection: 'list'
+  };
+}
+
+export function projectCandidateForList(entry = {}) {
+  return {
+    ...entry,
+    aiCard: projectAiCardForList(entry?.aiCard),
+    aiCardHistory: [],
+    coverHistory: [],
+    generationFeedback: {},
+    publicationSnapshot: null,
+    examples: [],
+    suggestedTitles: [],
+    coverSuggestion: {},
+    sourceText: '',
+    discoveryContext: '',
+    candidateProjection: 'list'
+  };
+}
+
+function projectPublishedRecordForList(record = {}) {
+  return {
+    ...record,
+    link: '',
+    description: '',
+    metricSnapshots: [],
+    importBatchIds: [],
+    sourceFileName: '',
+    syncState: {
+      ...(record?.syncState || {}),
+      lastMessage: ''
+    }
+  };
+}
+
 function compactSnapshotForApp(snapshot = {}, includeAudit = false) {
   return {
     ...snapshot,
@@ -440,44 +484,82 @@ function compactSnapshotForApp(snapshot = {}, includeAudit = false) {
 }
 
 export function buildAppWorkflowView(data = {}, options = {}) {
-  const workflow = cleanStoredData(data);
+  const source = data && typeof data === 'object' && !Array.isArray(data) ? data : {};
   const requestedScope = String(options.scope || 'all');
   const scope = APP_VIEW_SCOPES.has(requestedScope) ? requestedScope : 'all';
   const historyDate = /^\d{4}-\d{2}-\d{2}$/.test(String(options.historyDate || ''))
     ? String(options.historyDate)
     : '';
+  const sourceHistorySnapshots = source.historySnapshots && typeof source.historySnapshots === 'object'
+    ? source.historySnapshots
+    : {};
+  const sourceTodaySnapshotHistory = Array.isArray(source.todaySnapshotHistory)
+    ? source.todaySnapshotHistory
+    : [];
   const requestedHistory = historyDate
-    ? (workflow.historySnapshots[historyDate]
-      || workflow.todaySnapshotHistory.find(snapshot => snapshot.dateKey === historyDate)
+    ? (sourceHistorySnapshots[historyDate]
+      || sourceTodaySnapshotHistory.find(snapshot => snapshot?.dateKey === historyDate)
       || {})
     : {};
   const todayWords = historyDate && requestedHistory.words?.length
-    ? requestedHistory.words
-    : workflow.todaySnapshot.words;
+    ? cleanWords(requestedHistory.words)
+    : cleanWords(source.todaySnapshot?.words);
+  const favoriteWords = cleanWords(source.words);
+  const publishedRecords = Array.isArray(source.publishedRecords) ? source.publishedRecords : [];
+  const projectedPublishedRecords = scope === 'all'
+    ? publishedRecords
+    : (scope === 'published' ? publishedRecords.map(projectPublishedRecordForList) : []);
   const scopeWords = {
     today: todayWords,
-    favorites: workflow.words,
+    favorites: favoriteWords,
     published: cleanWords([
-      ...workflow.publishedRecords.map(record => record.word),
-      ...workflow.words.filter(word => workflow.statuses[word] === 'published')
+      ...publishedRecords.map(record => record?.word),
+      ...favoriteWords.filter(word => source.statuses?.[word] === 'published')
     ])
   };
   const appWords = cleanWords(scope === 'all'
     ? [
-      ...workflow.todaySnapshot.words,
+      ...cleanWords(source.todaySnapshot?.words),
       ...(requestedHistory.words || []),
-      ...workflow.words,
-      ...workflow.publishedRecords.map(record => record.word)
+      ...favoriteWords,
+      ...publishedRecords.map(record => record?.word)
     ]
     : scopeWords[scope]).slice(0, APP_CANDIDATE_LIMIT);
-  const candidatePool = appWords.reduce((result, word) => {
-    if (workflow.candidatePool[word]) {
-      result[word] = {
-        ...workflow.candidatePool[word],
-        aiCardHistory: [],
-        sourceText: ''
-      };
-    }
+  const selectedCandidatePool = appWords.reduce((result, word) => {
+    if (source.candidatePool?.[word]) result[word] = projectCandidateForList(source.candidatePool[word]);
+    return result;
+  }, {});
+  const selectedHistorySnapshots = scope === 'all'
+    ? sourceHistorySnapshots
+    : (scope === 'today'
+      ? Object.entries(sourceHistorySnapshots).reduce((result, [dateKey, snapshot]) => {
+        result[dateKey] = compactSnapshotForApp(snapshot, dateKey === historyDate);
+        return result;
+      }, {})
+      : {});
+  if (scope === 'today' && historyDate && requestedHistory.words?.length && !selectedHistorySnapshots[historyDate]) {
+    selectedHistorySnapshots[historyDate] = compactSnapshotForApp(requestedHistory, true);
+  }
+  const selectedTodaySnapshotHistory = scope === 'all'
+    ? sourceTodaySnapshotHistory
+    : (scope === 'today'
+      ? sourceTodaySnapshotHistory.map(snapshot => compactSnapshotForApp(snapshot, snapshot?.dateKey === historyDate))
+      : []);
+
+  // Project the stored workflow before schema cleaning. The production candidate
+  // pool can contain hundreds of full AI cards, while an app view needs at most
+  // the words visible in the current tab. Cleaning the full pool first made the
+  // first request CPU-heavy even though those entries were discarded afterwards.
+  const workflow = cleanStoredData({
+    ...source,
+    publishedRecords: projectedPublishedRecords,
+    candidatePool: selectedCandidatePool,
+    aiBatches: [],
+    historySnapshots: selectedHistorySnapshots,
+    todaySnapshotHistory: selectedTodaySnapshotHistory
+  });
+  const candidatePool = Object.entries(workflow.candidatePool).reduce((result, [word, entry]) => {
+    result[word] = projectCandidateForList(entry);
     return result;
   }, {});
   const historySnapshots = scope === 'all'
@@ -488,9 +570,6 @@ export function buildAppWorkflowView(data = {}, options = {}) {
         return result;
       }, {})
       : {});
-  if (scope === 'today' && historyDate && requestedHistory.words?.length && !historySnapshots[historyDate]) {
-    historySnapshots[historyDate] = compactSnapshotForApp(requestedHistory, true);
-  }
   const todaySnapshotHistory = scope === 'all'
     ? workflow.todaySnapshotHistory
     : (scope === 'today'
@@ -505,9 +584,82 @@ export function buildAppWorkflowView(data = {}, options = {}) {
     appView: {
       scope,
       historyDate,
-      partialCandidatePool: scope !== 'all',
+      partialCandidatePool: true,
+      partialPublishedRecords: scope !== 'all',
+      publishedSummary: scope === 'published',
+      candidateProjection: 'list',
       candidateCount: Object.keys(candidatePool).length
     }
+  };
+}
+
+export function buildCandidateDetailView(data = {}, targetWord = '') {
+  const source = data && typeof data === 'object' && !Array.isArray(data) ? data : {};
+  const word = cleanWords([targetWord])[0] || '';
+  const sourceCandidate = word ? source.candidatePool?.[word] : null;
+  if (!sourceCandidate) {
+    return {
+      ok: false,
+      candidate: null,
+      revision: Math.max(0, Number.parseInt(source.revision, 10) || 0),
+      updated: typeof source.updated === 'string' ? source.updated : null,
+      schemaVersion: Math.max(1, Number.parseInt(source.schemaVersion, 10) || 2)
+    };
+  }
+  const workflow = cleanStoredData({
+    candidatePool: { [word]: sourceCandidate },
+    revision: source.revision,
+    updated: source.updated,
+    schemaVersion: source.schemaVersion
+  });
+  const candidate = workflow.candidatePool[word] || null;
+  return {
+    ok: Boolean(candidate),
+    candidate: candidate ? {
+      ...candidate,
+      candidateProjection: 'detail',
+      aiCard: {
+        ...(candidate.aiCard || {}),
+        projection: 'detail'
+      }
+    } : null,
+    revision: workflow.revision,
+    updated: workflow.updated,
+    schemaVersion: workflow.schemaVersion
+  };
+}
+
+export function buildPublishedDetailView(data = {}, recordId = '') {
+  const source = data && typeof data === 'object' && !Array.isArray(data) ? data : {};
+  const cleanRecordId = String(recordId || '').trim().slice(0, 120);
+  const sourceRecord = Array.isArray(source.publishedRecords)
+    ? source.publishedRecords.find(record => String(record?.id || '').trim() === cleanRecordId)
+    : null;
+  if (!sourceRecord) {
+    return {
+      ok: false,
+      record: null,
+      candidate: null,
+      revision: Math.max(0, Number.parseInt(source.revision, 10) || 0),
+      updated: typeof source.updated === 'string' ? source.updated : null,
+      schemaVersion: Math.max(1, Number.parseInt(source.schemaVersion, 10) || 2)
+    };
+  }
+  const word = String(sourceRecord.word || '').trim().slice(0, 80);
+  const workflow = cleanStoredData({
+    publishedRecords: [sourceRecord],
+    candidatePool: word && source.candidatePool?.[word] ? { [word]: source.candidatePool[word] } : {},
+    revision: source.revision,
+    updated: source.updated,
+    schemaVersion: source.schemaVersion
+  });
+  return {
+    ok: true,
+    record: workflow.publishedRecords[0] || null,
+    candidate: word ? (workflow.candidatePool[word] || null) : null,
+    revision: workflow.revision,
+    updated: workflow.updated,
+    schemaVersion: workflow.schemaVersion
   };
 }
 
@@ -529,6 +681,8 @@ export function buildFavoriteCommandView(data = {}, targetWord = '') {
 function getWorkflowResponseData(data, url) {
   const view = url.searchParams.get('view');
   if (view === 'command') return buildFavoriteCommandView(data, url.searchParams.get('word'));
+  if (view === 'candidate-detail') return buildCandidateDetailView(data, url.searchParams.get('word'));
+  if (view === 'published-detail') return buildPublishedDetailView(data, url.searchParams.get('recordId'));
   if (view === 'app') {
     return buildAppWorkflowView(data, {
       historyDate: url.searchParams.get('historyDate'),
@@ -543,35 +697,7 @@ function getStorageKey(url) {
   return code.length >= 8 ? `favorites:${code}` : 'favorites:global';
 }
 
-export function applyFavoriteAction(currentWorkflow = {}, body = {}) {
-  const current = cleanStoredData(currentWorkflow);
-  const word = cleanWords([body.word])[0];
-  const currentWords = current.words;
-  let words = currentWords;
-  if (body.action === 'add') words = cleanWords([word, ...currentWords]);
-  if (body.action === 'remove') words = currentWords.filter(item => item !== word);
-  if (body.action === 'status' && !currentWords.includes(word)) words = cleanWords([word, ...currentWords]);
-  const statuses = cleanStatuses(current.statuses, words);
-  if (body.action === 'remove') delete statuses[word];
-  if (body.action === 'status' && words.includes(word)) {
-    const status = cleanStatus(body.status);
-    if (status === 'none') delete statuses[word];
-    else statuses[word] = status;
-  }
-
-  const patch = {
-    words,
-    statuses,
-    updated: new Date().toISOString()
-  };
-  if (body.feedback) patch.feedback = body.feedback;
-  if (body.publishedRecords) patch.publishedRecords = body.publishedRecords;
-  if (body.candidatePool) patch.candidatePool = body.candidatePool;
-  if (body.aiBatches) patch.aiBatches = body.aiBatches;
-  if (body.aiPreview) patch.aiPreview = body.aiPreview;
-
-  return mergeWorkflowForFullSave(current, patch);
-}
+export { applyFavoriteAction };
 
 export async function onRequest({ request, env }) {
   const methods = ['GET', 'POST', 'PUT', 'OPTIONS'];
@@ -637,15 +763,22 @@ export async function onRequest({ request, env }) {
       return fail(400, 'INVALID_ACTION', 'action 必须是 add、remove 或 status');
     }
 
-    const stored = await env.FAVORITES.get(key, 'json');
-    const current = cleanWorkflowSchema(stored);
-    const next = applyFavoriteAction(current, body);
-    const mutation = await commitWorkflowMutation(env, key, next, getWorkflowMutationMetadata(request, body, {
+    const command = {
+      action: body.action,
+      word,
+      status: cleanStatus(body.status),
+      candidatePool: body?.candidatePool?.[word] ? { [word]: body.candidatePool[word] } : {}
+    };
+    const metadata = getWorkflowMutationMetadata(request, body, {
       action: `favorite.${body.action}`,
       actor: authorization.actor,
       target: word,
       summary: body.action === 'status' ? `状态更新为 ${cleanStatus(body.status)}` : ''
-    }), { strategy: 'full-save' });
+    });
+    const mutation = await commitWorkflowMutation(env, key, command, {
+      ...metadata,
+      expectedRevision: null
+    }, { strategy: 'favorite-command' });
     if (mutation.conflict) {
       return respond({
         ok: false,

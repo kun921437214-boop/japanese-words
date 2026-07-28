@@ -1,6 +1,7 @@
 import { getExpectedDailyWordCount } from '../shared/daily-config.mjs';
+import { summarizeFavoriteCandidateCoverage } from './smoke-production-model.mjs';
 
-const SITE_URL = String(process.env.SITE_URL || 'https://jiyimianbao.pages.dev').replace(/\/+$/, '');
+const SITE_URL = String(process.env.SITE_URL || 'https://bijinihaitan.cn').replace(/\/+$/, '');
 const TIMEOUT_MS = 30000;
 
 function fail(message, details = {}) {
@@ -50,6 +51,11 @@ try {
   if (!health.data.storageConfigured) fail('Production FAVORITES binding 未生效');
   if (!health.data.workflowCoordinatorConfigured) fail('Production Durable Object 写入协调 binding 未生效');
   if (!health.data.imageStorageConfigured) fail('Production 图片 KV binding 未生效');
+  const unhealthyDailyOperation = Object.values(health.data.dailyOperations || {})
+    .find(item => item?.status === 'unhealthy');
+  if (unhealthyDailyOperation) {
+    fail('Production 每日内容健康检查仍处于异常状态', unhealthyDailyOperation);
+  }
 
   const workflow = await fetchJson('/favorites?view=app&scope=today');
   const favoritesWorkflow = await fetchJson('/favorites?view=app&scope=favorites');
@@ -69,10 +75,13 @@ try {
   if (readyImages.length !== words.length) fail('Production 今日图片尚未全部 ready', { ready: readyImages.length, total: words.length });
   if (workflow.data.appView?.scope !== 'today') fail('Production 今日页面未返回 scoped app view');
   if (favoritesWorkflow.data.appView?.scope !== 'favorites') fail('Production 收藏页面未返回 scoped app view');
-  const favoriteWords = Array.isArray(favoritesWorkflow.data.words) ? favoritesWorkflow.data.words : [];
-  const favoriteCandidates = Object.keys(favoritesWorkflow.data.candidatePool || {});
-  if (favoriteCandidates.length < favoriteWords.length) {
-    fail('Production 收藏页面候选词卡不完整', { favorites: favoriteWords.length, candidates: favoriteCandidates.length });
+  const favoriteCoverage = summarizeFavoriteCandidateCoverage(favoritesWorkflow.data);
+  if (favoriteCoverage.missingActiveWords.length) {
+    fail('Production 活跃收藏页面候选词卡不完整', {
+      activeFavorites: favoriteCoverage.activeFavorites,
+      candidates: favoriteCoverage.candidateCount,
+      missing: favoriteCoverage.missingActiveWords
+    });
   }
 
   const revision = Number(workflow.data.revision) || 0;
@@ -100,7 +109,10 @@ try {
     ok: true,
     site: SITE_URL,
     dateKey,
-    favorites: favoriteWords.length,
+    favorites: favoriteCoverage.activeFavorites,
+    totalFavorites: favoriteCoverage.totalFavorites,
+    publishedFavorites: favoriteCoverage.publishedFavorites,
+    favoriteCandidates: favoriteCoverage.candidateCount,
     todayWords: words.length,
     readyCards: readyCards.length,
     readyImages: readyImages.length,

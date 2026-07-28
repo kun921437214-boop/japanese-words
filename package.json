@@ -5,11 +5,12 @@
   "scripts": {
     "build:words": "node scripts/build-words-data.mjs",
     "build": "npm run build:words && node scripts/build-static.mjs",
-    "lint": "eslint app.js sync-config.js frontend functions worker durable-object shared scripts e2e playwright.config.mjs --max-warnings=0 && node scripts/check-cycles.mjs",
+    "lint": "eslint app.js sync-config.js frontend functions worker durable-object shared server scripts e2e playwright.config.mjs --max-warnings=0 && node scripts/check-cycles.mjs",
     "typecheck": "tsc -p tsconfig.json",
-    "test": "npm run test:workflow && npm run test:published && npm run test:frontend && npm run test:hardening && npm run test:codex",
+    "test": "npm run test:workflow && npm run test:published && npm run test:frontend && npm run test:hardening && npm run test:codex && npm run test:tencent",
     "test:frontend": "node --test scripts/test-frontend-modules.mjs",
     "test:codex": "node --test scripts/test-codex-daily.mjs",
+    "test:tencent": "node --test scripts/test-tencent-runtime.mjs",
     "test:hardening": "node --test scripts/test-hardening.mjs",
     "test:workflow": "node scripts/test-workflow-schema.mjs",
     "test:published": "node --test scripts/test-published-import.mjs",
@@ -22,14 +23,21 @@
     "codex:daily": "node scripts/codex-daily.mjs",
     "published:extract": "python3 scripts/extract-xhs-published-xlsx.py",
     "published:import": "node scripts/import-xhs-published.mjs",
+    "start:tencent": "node server/tencent-runtime.mjs",
+    "import:tencent": "node server/import-cloudflare-backup.mjs",
+    "backup:tencent": "node server/tencent-backup.mjs",
+    "deploy:tencent": "bash server/deploy-production.sh",
     "deploy:coordinator": "node scripts/deploy-coordinator.mjs",
     "deploy": "npm run build && node scripts/deploy-pages.mjs",
     "deploy:pages": "npm run deploy",
     "deploy:worker": "node scripts/deploy-worker.mjs"
   },
+  "dependencies": {
+    "sharp": "0.35.3"
+  },
   "devDependencies": {
     "@playwright/test": "^1.55.1",
-    "eslint": "9.39.1",
+    "eslint": "10.8.0",
     "typescript": "5.9.3",
     "wrangler": "4.110.0"
   },

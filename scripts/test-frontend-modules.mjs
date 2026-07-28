@@ -32,12 +32,17 @@ import {
   normalizeDailyHotDateSelection
 } from '../frontend/daily-hot-page.mjs';
 import {
+  FAVORITES_PAGE_SIZE,
   buildFavoritesPageModel,
   createFavoritesPageController,
   normalizeFavoriteStatusFilter,
   transitionFavoriteStatus,
   transitionFavoriteToggle
 } from '../frontend/favorites-page.mjs';
+import {
+  applyFavoriteIntents,
+  createFavoriteIntentStore
+} from '../frontend/favorite-intents.mjs';
 import { createImageFallbackController } from '../frontend/image-fallback.mjs';
 import { createManualWordModalController } from '../frontend/manual-word-modal.mjs';
 import { createModalActionsController } from '../frontend/modal-actions.mjs';
@@ -48,12 +53,18 @@ import {
   parseXiaohongshuSharePayload
 } from '../frontend/published-record-parser.mjs';
 import {
+  PUBLISHED_PAGE_SIZE,
   buildPublishedMetricRows,
   buildPublishedPageModel,
   createPublishedPageController,
+  extractPublishedMeaningFromDescription,
+  getPublishedContentSubLabel,
+  getPublishedCoverCandidates,
+  getPublishedPerformanceAssessment,
   getPublishedPerformanceScore,
   getPublishedUpdateState,
   getRecentPublishedAverage,
+  normalizePublishedCoverUrl,
   ratePublishedRecord
 } from '../frontend/published-page.mjs';
 import { createWorkflowCache } from '../frontend/workflow-cache.mjs';
@@ -61,6 +72,7 @@ import { createWorkflowStore } from '../frontend/workflow-store.mjs';
 import { createWorkflowSync } from '../frontend/workflow-sync.mjs';
 import { buildWordCardViewModel, WORD_CARD_STATUS_LABELS } from '../frontend/word-card-view.mjs';
 import { createWorkflowActionsController } from '../frontend/workflow-actions.mjs';
+import { summarizeFavoriteCandidateCoverage } from './smoke-production-model.mjs';
 import {
   MAX_WORKFLOW_BACKUP_BYTES,
   buildWorkflowBackup,
@@ -180,6 +192,8 @@ test('AI-card request builders preserve limits, retry flags, and account context
     force: true,
     retryFailed: true,
     retryStalePending: true,
+    regenerationScope: '',
+    feedbackReason: '',
     maxWords: 5
   });
 
@@ -189,7 +203,12 @@ test('AI-card request builders preserve limits, retry flags, and account context
     favorites: ['気が重い'],
     negativeFeedback: { 基本: { reason: 'tooBasic' } },
     publishedWords: ['抜け感'],
-    accountLearningSummary: { priority: 'saves' }
+    accountLearningSummary: { priority: 'saves' },
+    regeneration: {
+      scope: 'cover',
+      reason: 'mobileUnreadable',
+      currentCard: { cardStatus: 'ready', coverVersion: 2 }
+    }
   });
   assert.equal(payload.action, 'generate_word_card');
   assert.equal(payload.count, 20);
@@ -197,6 +216,8 @@ test('AI-card request builders preserve limits, retry flags, and account context
   assert.deepEqual(payload.context.favorites, ['気が重い']);
   assert.deepEqual(payload.context.publishedWords, ['抜け感']);
   assert.deepEqual(payload.context.accountLearningSummary, { priority: 'saves' });
+  assert.equal(payload.context.regeneration.scope, 'cover');
+  assert.equal(payload.context.regeneration.reason, 'mobileUnreadable');
   assert.equal(payload.preferences.includeHighRisk, 'review_only');
 });
 
@@ -625,6 +646,7 @@ test('workflow actions controller routes shared card and feedback actions', () =
   let stopped = 0;
   const controller = createWorkflowActionsController({
     root,
+    onOpenWordDetail: kanji => calls.push(['detail', kanji]),
     onGenerateTodayCard: kanji => calls.push(['today-card', kanji]),
     onGenerateDeepSeekCard: (kanji, force) => calls.push(['deepseek-card', kanji, force]),
     onToggleStatus: kanji => calls.push(['toggle-status', kanji]),
@@ -640,6 +662,7 @@ test('workflow actions controller routes shared card and feedback actions', () =
   };
   const click = target => listeners.get('click')({ target, stopPropagation: () => { stopped += 1; } });
 
+  click(action('open-word-detail', { kanji: '抜け感' }));
   click(action('generate-today-card', { kanji: '気が楽' }));
   click(action('generate-deepseek-card', { kanji: '沼', force: 'true' }));
   click(action('toggle-status', { kanji: '沼' }));
@@ -649,6 +672,7 @@ test('workflow actions controller routes shared card and feedback actions', () =
   click(action('apply-feedback', { kanji: 'エモい', reason: 'uninterested', context: 'codex-preview' }));
 
   assert.deepEqual(calls, [
+    ['detail', '抜け感'],
     ['today-card', '気が楽'],
     ['deepseek-card', '沼', true],
     ['toggle-status', '沼'],
@@ -657,7 +681,7 @@ test('workflow actions controller routes shared card and feedback actions', () =
     ['feedback', '沼', 'tooBasic'],
     ['codex-feedback', 'エモい', 'uninterested']
   ]);
-  assert.equal(stopped, 7);
+  assert.equal(stopped, 8);
   controller.destroy();
   assert.equal(listeners.size, 0);
 });
@@ -701,6 +725,9 @@ test('modal actions controller routes all remaining generated modal actions', ()
     onToggleCodexFavorite: kanji => calls.push(['codex-favorite', kanji]),
     onExportRecommendationAudit: () => calls.push(['audit']),
     onMarkPending: kanji => calls.push(['pending', kanji]),
+    onOpenWordDetail: kanji => calls.push(['word-detail', kanji]),
+    onOpenRegenerationReasons: (kanji, target) => calls.push(['regeneration-reasons', kanji, target]),
+    onSelectRegenerationReason: (kanji, target, reason) => calls.push(['regenerate', kanji, target, reason]),
     onOpenPublishedRecord: (recordId, presetKanji) => calls.push(['record', recordId, presetKanji]),
     onCopyLibraryCleanup: mode => calls.push(['cleanup', mode]),
     onAutofillPublishedRecord: () => calls.push(['autofill']),
@@ -719,6 +746,9 @@ test('modal actions controller routes all remaining generated modal actions', ()
   click(action('toggle-codex-favorite', { kanji: '沼' }));
   click(action('export-recommendation-audit'));
   click(action('mark-pending', { kanji: '抜け感' }));
+  click(action('open-regeneration-reasons', { kanji: '抜け感', target: 'cover' }));
+  click(action('select-regeneration-reason', { kanji: '抜け感', target: 'cover', reason: 'mobileUnreadable' }));
+  click(action('back-to-word-detail', { kanji: '抜け感' }));
   click(action('open-published-record', { recordId: 'record-1', presetKanji: '抜け感' }));
   click(action('copy-library-cleanup', { mode: 'dry' }));
   click(action('autofill-published-record'));
@@ -732,6 +762,9 @@ test('modal actions controller routes all remaining generated modal actions', ()
     ['codex-favorite', '沼'],
     ['audit'],
     ['pending', '抜け感'],
+    ['regeneration-reasons', '抜け感', 'cover'],
+    ['regenerate', '抜け感', 'cover', 'mobileUnreadable'],
+    ['word-detail', '抜け感'],
     ['record', 'record-1', '抜け感'],
     ['cleanup', 'dry'],
     ['autofill'],
@@ -791,6 +824,18 @@ test('image fallback controller handles source, text, class and removal fallback
   errorListener({ target: sourceImage });
   assert.equal(sourceImage.removed, true);
 
+  const queuedImage = {
+    dataset: { imageFallback: 'fallback-list', fallbackList: JSON.stringify(['stable.jpg', 'fallback.svg']) },
+    src: 'signed.jpg',
+    remove() { this.removed = true; }
+  };
+  errorListener({ target: queuedImage });
+  assert.equal(queuedImage.src, 'stable.jpg');
+  errorListener({ target: queuedImage });
+  assert.equal(queuedImage.src, 'fallback.svg');
+  errorListener({ target: queuedImage });
+  assert.equal(queuedImage.removed, true);
+
   const textParent = { textContent: '' };
   errorListener({ target: { dataset: { imageFallback: 'parent-text', fallbackText: '🍞' }, parentElement: textParent } });
   assert.equal(textParent.textContent, '🍞');
@@ -839,6 +884,16 @@ https://www.xiaohongshu.com/explore/abc123，
   assert.doesNotMatch(parsed.description, /https?:\/\//);
 });
 
+test('published record parser unwraps Xiaohongshu desktop error links', () => {
+  const parsed = parseXiaohongshuSharePayload(`
+电脑端中转链接
+https://www.xiaohongshu.com/404?redirectPath=https%3A%2F%2Fwww.xiaohongshu.com%2Fexplore%2F6a5cc0930000000011004cf7
+  `);
+
+  assert.equal(parsed.url, 'https://www.xiaohongshu.com/explore/6a5cc0930000000011004cf7');
+  assert.equal(parsed.noteId, '6a5cc0930000000011004cf7');
+});
+
 test('published record parser rejects lookalike and insecure URLs', () => {
   const lookalike = parseXiaohongshuSharePayload('测试标题\nhttps://xiaohongshu.com.evil.example/explore/abc');
   const insecure = parseXiaohongshuSharePayload('测试标题\nhttp://www.xiaohongshu.com/explore/abc');
@@ -852,9 +907,8 @@ test('published record parser rejects lookalike and insecure URLs', () => {
   assert.equal(extractPublishedAtFromShareText('发布于 2026-7-9'), '2026-07-09T00:00');
 });
 
-test('favorite conflict reconciles remote state before sending a duplicate mutation', async () => {
+test('favorite retry reconciles the compact remote state before sending a duplicate mutation', async () => {
   let requestCount = 0;
-  let satisfied = false;
   const sync = createWorkflowSync({
     request: async () => {
       requestCount += 1;
@@ -864,10 +918,6 @@ test('favorite conflict reconciles remote state before sending a duplicate mutat
       });
     },
     createError: createApiError,
-    loadRemote: async () => {
-      satisfied = true;
-      return true;
-    },
     delay: async () => {}
   });
 
@@ -875,12 +925,81 @@ test('favorite conflict reconciles remote state before sending a duplicate mutat
     endpoint: '/favorites',
     payload: { action: 'add', word: '思い切って' },
     operationId: 'favorite-add-once',
-    isSatisfied: () => satisfied,
-    buildReconciledResponse: () => ({ ok: true, reconciled: true })
+    reconcile: async () => ({ words: ['思い切って'], statuses: {} }),
+    isSatisfied: remote => remote.words.includes('思い切って'),
+    buildReconciledResponse: remote => ({ ...remote, ok: true, reconciled: true })
   });
 
-  assert.deepEqual(result, { ok: true, reconciled: true });
+  assert.deepEqual(result, { words: ['思い切って'], statuses: {}, ok: true, reconciled: true });
   assert.equal(requestCount, 1);
+});
+
+test('favorite timeout treats an already committed remote command as success without another POST', async () => {
+  let requestCount = 0;
+  const sync = createWorkflowSync({
+    request: async () => {
+      requestCount += 1;
+      const error = new Error('request timed out');
+      error.code = 'REQUEST_TIMEOUT';
+      throw error;
+    },
+    createError: createApiError,
+    delay: async () => {}
+  });
+
+  const result = await sync.mutate({
+    endpoint: '/favorites',
+    payload: { action: 'add', word: '口をつぐむ' },
+    operationId: 'favorite-timeout-once',
+    reconcile: async () => ({ words: ['口をつぐむ'], statuses: {}, revision: 12 }),
+    isSatisfied: remote => remote.words.includes('口をつぐむ'),
+    buildReconciledResponse: remote => ({ ...remote, reconciled: true })
+  });
+
+  assert.equal(result.reconciled, true);
+  assert.equal(result.revision, 12);
+  assert.equal(requestCount, 1);
+});
+
+test('pending favorite intents survive reload, overlay stale cloud data, and clear after acknowledgement', () => {
+  const values = new Map();
+  const storage = {
+    getItem: key => values.get(key) || null,
+    setItem: (key, value) => values.set(key, value),
+    removeItem: key => values.delete(key)
+  };
+  const store = createFavoriteIntentStore({
+    storage,
+    createOperationId: word => `favorite-op-${word}`,
+    now: () => '2026-07-20T09:48:00.000Z'
+  });
+  const intent = store.stage('口をつぐむ', true);
+  assert.equal(intent.operationId, 'favorite-op-口をつぐむ');
+  assert.deepEqual(store.overlay([], {}).words, ['口をつぐむ']);
+
+  const restored = createFavoriteIntentStore({ storage });
+  assert.equal(restored.get('口をつぐむ').desiredFavorite, true);
+  restored.reconcile([], {});
+  assert.ok(restored.get('口をつぐむ'));
+  restored.reconcile(['口をつぐむ'], {});
+  assert.equal(restored.get('口をつぐむ'), null);
+  assert.equal(values.size, 0);
+});
+
+test('pending remove intent keeps a stale cloud favorite hidden until the server confirms removal', () => {
+  const result = applyFavoriteIntents(
+    ['口をつぐむ', '息をのむ'],
+    { '口をつぐむ': 'pending' },
+    [{
+      word: '口をつぐむ',
+      operationId: 'favorite-remove-op',
+      desiredFavorite: false,
+      state: 'waiting',
+      updatedAt: '2026-07-20T09:50:00.000Z'
+    }]
+  );
+  assert.deepEqual(result.words, ['息をのむ']);
+  assert.equal(result.statuses['口をつぐむ'], undefined);
 });
 
 test('workflow reads stop before fetch when a newer scoped load supersedes them', async () => {
@@ -917,6 +1036,7 @@ test('workflow store rejects stale remote revisions without changing local metad
 test('workflow store merges scoped candidates and history without dropping local entries', () => {
   const store = createWorkflowStore({
     cleanWorkflow: cleanTestWorkflow,
+    mergePublishedRecords: (local, remote) => [...local, ...remote],
     mergeCandidatePool: (local, remote) => ({ ...local, ...remote }),
     mergeHistorySnapshots: (local, remote) => ({ ...local, ...remote }),
     mergeTodaySnapshotHistory: (local, remote) => [...local, ...remote]
@@ -924,22 +1044,32 @@ test('workflow store merges scoped candidates and history without dropping local
   store.replaceMetadata({ revision: 3 });
   const result = store.prepareRemoteState({
     words: ['云端收藏'],
-    candidatePool: { 云端词: { kanji: '云端词' } },
+    candidatePool: { 云端词: { kanji: '云端词', aiCard: { cardStatus: 'ready', summary: '列表摘要' } } },
     historySnapshots: { '2026-07-19': { words: ['云端词'] } },
     todaySnapshotHistory: [{ dateKey: '2026-07-19' }],
+    publishedRecords: [{ id: 'remote-published' }],
     revision: 4,
     auditLog: [{ id: 'revision-4' }],
-    appView: { scope: 'favorites', partialCandidatePool: true }
+    appView: {
+      scope: 'favorites',
+      partialCandidatePool: true,
+      partialPublishedRecords: true,
+      candidateProjection: 'list'
+    }
   }, {
     candidatePool: { 本地词: { kanji: '本地词' } },
     historySnapshots: { '2026-07-18': { words: ['本地词'] } },
-    todaySnapshotHistory: [{ dateKey: '2026-07-18' }]
+    todaySnapshotHistory: [{ dateKey: '2026-07-18' }],
+    publishedRecords: [{ id: 'local-published' }]
   });
   assert.equal(result.applied, true);
   assert.equal(result.mergePartialState, true);
   assert.deepEqual(Object.keys(result.state.candidatePool), ['本地词', '云端词']);
+  assert.equal(result.state.candidatePool.云端词.candidateProjection, 'list');
+  assert.equal(result.state.candidatePool.云端词.aiCard.projection, 'list');
   assert.deepEqual(Object.keys(result.state.historySnapshots), ['2026-07-18', '2026-07-19']);
   assert.deepEqual(result.state.todaySnapshotHistory.map(item => item.dateKey), ['2026-07-18', '2026-07-19']);
+  assert.deepEqual(result.state.publishedRecords.map(item => item.id), ['local-published', 'remote-published']);
   assert.deepEqual(store.getMetadata(), { revision: 4, auditLog: [{ id: 'revision-4' }] });
 });
 
@@ -1035,21 +1165,20 @@ test('workflow cache quota errors do not escape into cloud sync flow', () => {
   assert.equal(warnings[0][0], '本地缓存写入失败，已保留当前云端数据');
 });
 
-test('daily hot date options keep today and tomorrow first and deduplicate history', () => {
+test('daily hot date options keep today first, omit tomorrow preview and deduplicate history', () => {
   const options = buildDailyHotDateOptions({
     todayDateKey: '2026-07-19',
-    tomorrowDateKey: '2026-07-20',
     historyDates: ['2026-07-18', '2026-07-17', '2026-07-18', '2026-07-20', 'invalid'],
     formatWeekday: dateKey => ({ '2026-07-20': '周一', '2026-07-18': '周六', '2026-07-17': '周五' })[dateKey] || ''
   });
 
   assert.deepEqual(options, [
     { value: 'today', label: '今天 · 2026-07-19' },
-    { value: '2026-07-20', label: '明天 · 2026-07-20 · 周一' },
     { value: '2026-07-18', label: '2026-07-18 · 周六' },
     { value: '2026-07-17', label: '2026-07-17 · 周五' }
   ]);
   assert.equal(normalizeDailyHotDateSelection('2026-07-18', options), '2026-07-18');
+  assert.equal(options.some(option => option.label.startsWith('明天')), false);
   assert.equal(normalizeDailyHotDateSelection('2026-06-01', options), 'today');
 });
 
@@ -1098,6 +1227,7 @@ test('daily hot controller routes filters, cards and keyboard preview without in
     onSourceChange: (scope, value) => calls.push(['source', scope, value]),
     onManage: action => calls.push(['manage', action]),
     onOpenDetail: id => calls.push(['detail', id]),
+    onPrefetchDetail: id => calls.push(['prefetch', id]),
     onToggleFavorite: kanji => calls.push(['favorite', kanji]),
     onOpenCodexPreview: index => calls.push(['preview', index]),
     onShiftHistory: step => calls.push(['shift', step])
@@ -1123,6 +1253,13 @@ test('daily hot controller routes filters, cards and keyboard preview without in
   dispatch('click', { dataset: { dailyHotAction: 'manage', manageAction: 'audit' } });
   dispatch('click', { dataset: { dailyHotAction: 'manage', manageAction: 'exportAudit' } });
   dispatch('click', { dataset: { dailyHotAction: 'open-detail', wordId: 'today-1' } });
+  listeners.get('pointerover')({
+    target: {
+      closest: selector => selector === '[data-daily-hot-action="open-detail"]'
+        ? { dataset: { wordId: 'today-1' } }
+        : null
+    }
+  });
   assert.equal(dispatch('click', { dataset: { dailyHotAction: 'toggle-favorite', kanji: '思い切って' } }, { stopContains: true }).stopped, true);
   dispatch('click', { dataset: { dailyHotAction: 'shift-history', step: '-1' } });
   const keyResult = dispatch('keydown', { dataset: { dailyHotAction: 'open-codex-preview', index: '3' } }, { key: 'Enter' });
@@ -1138,6 +1275,7 @@ test('daily hot controller routes filters, cards and keyboard preview without in
     ['manage', 'audit'],
     ['manage', 'exportAudit'],
     ['detail', 'today-1'],
+    ['prefetch', 'today-1'],
     ['favorite', '思い切って'],
     ['shift', -1],
     ['preview', 3]
@@ -1166,6 +1304,45 @@ test('favorites page model applies source and status filters without changing th
   assert.deepEqual(model.autoGenerateWords, ['立て直す']);
   assert.equal(normalizeFavoriteStatusFilter('published'), 'all');
   assert.equal(words.length, 3);
+});
+
+test('favorites page model limits the first paint and exposes the next batch', () => {
+  const words = Array.from({ length: 30 }, (_, index) => ({ kanji: `收藏词${index + 1}`, source: '每日热门' }));
+  const firstPage = buildFavoritesPageModel({ words });
+  assert.equal(firstPage.renderedWords.length, FAVORITES_PAGE_SIZE);
+  assert.equal(firstPage.remaining, 18);
+  assert.equal(firstPage.hasMore, true);
+  assert.equal(firstPage.nextLimit, 24);
+  assert.equal(firstPage.renderedAutoGenerateWords.length, FAVORITES_PAGE_SIZE);
+
+  const nextPage = buildFavoritesPageModel({ words, visibleLimit: 24 });
+  assert.equal(nextPage.renderedWords.length, 24);
+  assert.equal(nextPage.nextLimit, 30);
+});
+
+test('production smoke coverage ignores published history but catches missing active favorites', () => {
+  const complete = summarizeFavoriteCandidateCoverage({
+    words: ['活跃收藏', '待发布', '历史发布'],
+    statuses: { 待发布: 'pending', 历史发布: 'published' },
+    candidatePool: {
+      活跃收藏: { kanji: '活跃收藏' },
+      待发布: { kanji: '待发布' }
+    }
+  });
+  assert.deepEqual(complete, {
+    totalFavorites: 3,
+    activeFavorites: 2,
+    publishedFavorites: 1,
+    candidateCount: 2,
+    missingActiveWords: []
+  });
+
+  const incomplete = summarizeFavoriteCandidateCoverage({
+    words: ['活跃收藏', '历史发布'],
+    statuses: { 历史发布: 'published' },
+    candidatePool: {}
+  });
+  assert.deepEqual(incomplete.missingActiveWords, ['活跃收藏']);
 });
 
 test('favorite transitions are immutable and clear stale status when removing a word', () => {
@@ -1215,6 +1392,8 @@ test('favorites page controller delegates card and filter actions without window
   const controller = createFavoritesPageController({
     root,
     onOpenDetail: id => calls.push(['detail', id]),
+    onPrefetchDetail: id => calls.push(['prefetch', id]),
+    onLoadMore: () => calls.push(['load-more']),
     onToggleFavorite: (kanji, forceState) => calls.push(['favorite', kanji, forceState]),
     onSelectStatus: (kanji, status) => calls.push(['status', kanji, status]),
     onSourceFilter: value => calls.push(['source', value]),
@@ -1237,6 +1416,14 @@ test('favorites page controller delegates card and filter actions without window
   };
 
   dispatch('click', { dataset: { favoritesAction: 'open-detail', wordId: 'favorite-card-1' } });
+  listeners.get('focusin')({
+    target: {
+      closest: selector => selector === '[data-favorites-action="open-detail"]'
+        ? { dataset: { wordId: 'favorite-card-1' } }
+        : null
+    }
+  });
+  dispatch('click', { dataset: { favoritesAction: 'load-more' } });
   const stopped = dispatch('click', {
     dataset: { favoritesAction: 'toggle-favorite', kanji: '思い切って', forceState: 'false' }
   }, { stop: true });
@@ -1247,6 +1434,8 @@ test('favorites page controller delegates card and filter actions without window
   assert.equal(stopped, true);
   assert.deepEqual(calls, [
     ['detail', 'favorite-card-1'],
+    ['prefetch', 'favorite-card-1'],
+    ['load-more'],
     ['favorite', '思い切って', false],
     ['status', '詰めが甘い', 'pending'],
     ['source', '每日热门'],
@@ -1284,6 +1473,78 @@ test('published rating remains a derived compatibility signal instead of a store
   assert.match(rating.reason, /收藏、分享、涨粉/);
 });
 
+test('published assessment separates topic, cover and content after 72 hours', () => {
+  const baselines = ['2026-07-10', '2026-07-11', '2026-07-12'].map((date, index) => ({
+    id: `baseline-${index}`,
+    publishedAt: `${date}T09:00:00+08:00`,
+    latestMetrics: {
+      impressions: 5000,
+      views: 1000,
+      coverClickRate: 0.2,
+      likes: 50,
+      comments: 3,
+      favorites: 20,
+      follows: 2,
+      shares: 5,
+      avgWatchSeconds: 10
+    }
+  }));
+  const record = {
+    id: 'target',
+    word: '抜け感',
+    publishedAt: '2026-07-18T09:00:00+08:00',
+    latestMetrics: {
+      impressions: 5000,
+      views: 1000,
+      coverClickRate: 0.05,
+      likes: 20,
+      comments: 10,
+      favorites: 80,
+      follows: 10,
+      shares: 20,
+      avgWatchSeconds: 5
+    }
+  };
+  const assessment = getPublishedPerformanceAssessment(record, {
+    records: [record, ...baselines],
+    now: Date.parse('2026-07-22T12:00:00+08:00')
+  });
+  assert.equal(assessment.stage, 'early');
+  assert.equal(assessment.topic.level, 'strong');
+  assert.equal(assessment.cover.level, 'weak');
+  assert.notEqual(assessment.content.level, 'insufficient');
+});
+
+test('published cover URLs recover stable Xiaohongshu assets and reject unsafe sources', () => {
+  const key = '1040g3k0322q8fokun2105obdjf8gjbkpcttk3vo';
+  const expiringUrl = `https://sns-webpic-qc.xhscdn.com/202607201442/example/notes_pre_post/${key}!nd_dft_wlteh_webp_3`;
+  const namespacedStableUrl = `https://sns-na-i6.xhscdn.com/notes_pre_post/${key}?imageView2/2/w/1080/format/jpg&origin=0`;
+  const rootStableUrl = `https://sns-na-i6.xhscdn.com/${key}?imageView2/2/w/1080/format/jpg&origin=0`;
+  assert.equal(normalizePublishedCoverUrl(expiringUrl), expiringUrl);
+  const signedUrl = `https://sns-webpic-qc.xhscdn.com/202607201442/hash/${key}!nd_dft_wlteh_webp_3`;
+  assert.deepEqual(getPublishedCoverCandidates(signedUrl), [rootStableUrl, namespacedStableUrl, signedUrl]);
+  assert.deepEqual(getPublishedCoverCandidates(expiringUrl), [namespacedStableUrl, rootStableUrl, expiringUrl]);
+  assert.deepEqual(getPublishedCoverCandidates(expiringUrl, { width: 480 }), [
+    namespacedStableUrl.replace('/w/1080/', '/w/480/'),
+    rootStableUrl.replace('/w/1080/', '/w/480/'),
+    expiringUrl
+  ]);
+  assert.deepEqual(getPublishedCoverCandidates(`http://sns-na-i6.xhscdn.com/notes_pre_post/${key}?old=1`), [
+    namespacedStableUrl,
+    rootStableUrl,
+    `https://sns-na-i6.xhscdn.com/notes_pre_post/${key}?old=1`
+  ]);
+  assert.equal(normalizePublishedCoverUrl('https://images.example.com/cover.jpg'), 'https://images.example.com/cover.jpg');
+  const storedCoverUrl = `/published-cover?key=${encodeURIComponent(`published-covers/v1/${'a'.repeat(32)}`)}`;
+  assert.equal(normalizePublishedCoverUrl(storedCoverUrl), storedCoverUrl);
+  assert.deepEqual(getPublishedCoverCandidates(storedCoverUrl, { width: 480 }), [
+    `${storedCoverUrl}&variant=thumb`,
+    storedCoverUrl
+  ]);
+  assert.equal(normalizePublishedCoverUrl('javascript:alert(1)'), '');
+  assert.equal(normalizePublishedCoverUrl('https://user:pass@images.example.com/cover.jpg'), '');
+});
+
 test('published page model exposes 30-day medians, 15-day state and red-card comparisons', () => {
   const empty = buildPublishedPageModel([]);
   assert.equal(empty.count, 0);
@@ -1300,6 +1561,76 @@ test('published page model exposes 30-day medians, 15-day state and red-card com
   assert.equal(buildPublishedMetricRows(record, { ...model.medians, impressions: 2000 })[0].belowMedian, true);
 });
 
+test('published page model keeps the initial DOM small and exposes later batches', () => {
+  const items = Array.from({ length: 25 }, (_, index) => ({
+    type: 'record',
+    record: {
+      id: `record-${index + 1}`,
+      publishedAt: `2026-07-${String(20 - (index % 10)).padStart(2, '0')}T09:00:00+08:00`,
+      latestMetrics: { views: index + 1 }
+    }
+  }));
+  const firstPage = buildPublishedPageModel(items, { now: new Date('2026-07-21T14:30:00+08:00') });
+  assert.equal(firstPage.renderItems.length, PUBLISHED_PAGE_SIZE);
+  assert.equal(firstPage.remainingCount, 15);
+  assert.equal(firstPage.hasMore, true);
+  assert.equal(firstPage.nextLimit, 20);
+
+  const nextPage = buildPublishedPageModel(items, { visibleLimit: 20, now: new Date('2026-07-21T14:30:00+08:00') });
+  assert.equal(nextPage.renderItems.length, 20);
+  assert.equal(nextPage.nextLimit, 25);
+});
+
+test('published card sublabel never exposes internal workflow reasons as word meanings', () => {
+  assert.equal(getPublishedContentSubLabel({ word: 'メロい' }, { meaning: 'AI 候选词，等待人工确认' }), '释义待补充');
+  assert.equal(getPublishedContentSubLabel({ word: '滅' }, { meaning: '用户已进入工作流，禁止自动删除' }), '释义待补充');
+  assert.equal(getPublishedContentSubLabel({ word: 'グラデリップ' }, { meaning: '渐变唇妆' }), '渐变唇妆');
+  assert.equal(getPublishedContentSubLabel({ contentCategory: 'non_word' }), '宣传、活动或其他自选内容');
+});
+
+test('published card sublabel recovers the author-published meaning from locked body text', () => {
+  const baseRecord = {
+    word: 'ぎゅん',
+    contentCategory: 'word_card',
+    contentLocked: true,
+    description: `⬇️⬇️⬇️
+🍞ぎゅん
+(Gyu n) ⓪
+令人窒息地心动；
+身体某处猛烈抽痛
+🍞俺のウィンクで君のハートをギュンとさせようとした。`
+  };
+  assert.equal(
+    extractPublishedMeaningFromDescription(baseRecord),
+    '令人窒息地心动； 身体某处猛烈抽痛'
+  );
+  assert.equal(
+    getPublishedContentSubLabel(baseRecord, { meaning: '' }),
+    '令人窒息地心动； 身体某处猛烈抽痛'
+  );
+  assert.equal(
+    getPublishedContentSubLabel(baseRecord, { meaning: '正式候选释义' }),
+    '正式候选释义'
+  );
+});
+
+test('published meaning recovery skips body metadata and never reads unlocked content', () => {
+  const lockedRecord = {
+    word: 'まじオワ',
+    contentCategory: 'word_card',
+    contentLocked: true,
+    description: `🍞まじオワ
+(Ma ji o wa• まじおわ) ⓪
+=まじで終わった(ma ji de o wa tta)
+真完了；真是芭比Q了
+🍞土砂降りになりそうなのに、傘を電車に忘れた。`
+  };
+  assert.equal(extractPublishedMeaningFromDescription(lockedRecord), '真完了；真是芭比Q了');
+  assert.equal(extractPublishedMeaningFromDescription({ ...lockedRecord, contentLocked: false }), '');
+  assert.equal(extractPublishedMeaningFromDescription({ ...lockedRecord, contentCategory: 'non_word' }), '');
+  assert.equal(extractPublishedMeaningFromDescription({ ...lockedRecord, word: '別の単語' }), '');
+});
+
 test('published page controller routes detail, refresh and render actions', () => {
   const listeners = new Map();
   const root = {
@@ -1311,6 +1642,8 @@ test('published page controller routes detail, refresh and render actions', () =
   const controller = createPublishedPageController({
     root,
     onOpenDetail: recordId => calls.push(['detail', recordId]),
+    onPrefetchDetail: recordId => calls.push(['prefetch', recordId]),
+    onLoadMore: () => calls.push(['load-more']),
     onRefresh: recordId => calls.push(['refresh', recordId]),
     onRender: () => calls.push(['render'])
   });
@@ -1324,10 +1657,20 @@ test('published page controller routes detail, refresh and render actions', () =
   };
 
   dispatch({ dataset: { publishedAction: 'open-detail', recordId: 'record-1' } });
+  listeners.get('pointerdown')({
+    target: {
+      closest: selector => selector === '[data-published-action="open-detail"]'
+        ? { dataset: { recordId: 'record-1' } }
+        : null
+    }
+  });
+  dispatch({ dataset: { publishedAction: 'load-more' } });
   dispatch({ dataset: { publishedAction: 'refresh', recordId: 'record-1' } });
   dispatch({ dataset: { publishedAction: 'render' } });
   assert.deepEqual(calls, [
     ['detail', 'record-1'],
+    ['prefetch', 'record-1'],
+    ['load-more'],
     ['refresh', 'record-1'],
     ['render']
   ]);
@@ -1455,12 +1798,27 @@ test('module migration removes inline handlers and the temporary window compatib
   assert.ok(indexSource.includes('data-manage-action="audit"'));
   assert.ok(indexSource.includes('data-manage-action="exportAudit"'));
   assert.ok(indexSource.includes('data-image-fallback="parent-text"'));
+  assert.doesNotMatch(indexSource, /assets\/illustrations\/[^"']+\.png/);
+  assert.doesNotMatch(indexSource, /<link[^>]+fonts\.googleapis\.com[^>]+rel="stylesheet"/);
+  assert.match(indexSource, /rel="icon"[^>]+sizes="32x32"[^>]+memory-bread-favicon-32\.png/);
+  assert.match(indexSource, /rel="icon"[^>]+sizes="192x192"[^>]+memory-bread-favicon-192\.png/);
+  assert.match(indexSource, /rel="icon"[^>]+sizes="512x512"[^>]+memory-bread-favicon-512\.png/);
+  assert.match(indexSource, /rel="apple-touch-icon"[^>]+sizes="180x180"[^>]+memory-bread-apple-touch-icon\.png/);
+  assert.match(indexSource, /rel="modulepreload" href="app\.js" fetchpriority="high"/);
+  assert.doesNotMatch(indexSource, /fonts\.googleapis\.com/);
   assert.ok(appSource.includes('data-manual-word-action="submit"'));
   assert.ok(appSource.includes('data-workflow-action="generate-deepseek-card"'));
   assert.equal(appSource.includes('data-workflow-action="candidate-state"'), false);
   assert.equal(appSource.includes('data-workflow-action="ai-preview-selection"'), false);
   assert.ok(indexSource.includes('id="publishedInsightsSummary"'));
   assert.ok(appSource.includes('buildPublishedMetricRows'));
+  assert.match(appSource, /const publishedMeaning = resolvePublishedContentSubLabel\(record, word\)/);
+  assert.match(appSource, /published-detail-word[\s\S]*publishedMeaning/);
+  const publishedCoverSource = appSource.match(/function getPublishedCover\(record, width = 1080\) \{[\s\S]*?\n\}/)?.[0] || '';
+  assert.match(publishedCoverSource, /getPublishedCoverCandidates\(record\.coverUrl, \{ width \}\)/);
+  assert.match(appSource, /getPublishedCover\(record, 480\)/);
+  assert.doesNotMatch(publishedCoverSource, /candidatePool|referenceImage|word\.imageUrl/);
+  assert.ok(appSource.includes('data-cover-source="published-record"'));
   assert.equal(appSource.includes('data-modal-action="save-published-record"'), false);
   assert.ok(appSource.includes('data-image-fallback="fallback-src"'));
 });
@@ -1470,4 +1828,26 @@ test('published page no longer exposes the legacy manual record form', () => {
   assert.equal(appSource.includes("from './frontend/published-record-parser.mjs'"), false);
   assert.doesNotMatch(appSource, /id="recordLink"/);
   assert.doesNotMatch(appSource, /1h \/ 2h \/ 4h \/ 24h \/ 72h/);
+});
+
+test('published detail uses one metric grid and marks its below-median values in place', () => {
+  const appSource = fs.readFileSync(new URL('../app.js', import.meta.url), 'utf8');
+  const stylesSource = fs.readFileSync(new URL('../styles.css', import.meta.url), 'utf8');
+  const openDetailSource = appSource.slice(
+    appSource.indexOf('function openPublishedDetail'),
+    appSource.indexOf('function renderPublishedDetail')
+  );
+  assert.match(openDetailSource, /showModalLoadingShell/);
+  assert.match(openDetailSource, /loadPublishedDetail\(recordId\)/);
+  assert.match(openDetailSource, /renderPublishedDetail\(mergedRecord \|\| record, item\.word\)/);
+  assert.match(appSource, /function loadPublishedDetail\(recordId\)[\s\S]*?getPublishedDetailEndpoint\(recordId\)/);
+  assert.doesNotMatch(openDetailSource, /scheduleModalRender/);
+  assert.match(appSource, /const comparisonByKey = new Map\(/);
+  assert.match(appSource, /published-detail-metrics[\s\S]*?belowMedian \? 'is-below-median'/);
+  assert.doesNotMatch(appSource, /class="published-comparison-strip"/);
+  assert.match(stylesSource, /\.published-detail-metrics > \.is-below-median/);
+  assert.doesNotMatch(stylesSource, /\.published-comparison-strip/);
+  assert.match(appSource, /https:\/\/creator\.xiaohongshu\.com\/new\/note-manager/);
+  assert.match(appSource, /published-note-mobile-action/);
+  assert.match(stylesSource, /\.published-note-desktop-action \{ display:none; \}/);
 });

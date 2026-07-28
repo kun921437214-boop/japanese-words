@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import test from 'node:test';
 import {
   authorizeRequest,
@@ -28,6 +29,17 @@ import { onRequest as handleMiddleware } from '../functions/_middleware.js';
 function request(url = 'https://jiyimianbao.pages.dev/favorites', options = {}) {
   return new Request(url, options);
 }
+
+test('Pages CSP allows Xiaohongshu image hosts without widening script or API access', () => {
+  const headers = readFileSync(new URL('../_headers', import.meta.url), 'utf8');
+  const index = readFileSync(new URL('../index.html', import.meta.url), 'utf8');
+  assert.match(headers, /img-src[^;]*https:\/\/\*\.xhscdn\.com/);
+  assert.doesNotMatch(headers, /script-src[^;]*xhscdn\.com/);
+  assert.doesNotMatch(headers, /script-src[^;]*'unsafe-inline'/);
+  assert.doesNotMatch(headers, /connect-src[^;]*xhscdn\.com/);
+  assert.match(index, /<script src="sync-config\.js"><\/script>/);
+  assert.doesNotMatch(index, /<script>(?:.|\n)*?<\/script>/);
+});
 
 function base64Url(value) {
   const bytes = value instanceof Uint8Array ? value : new TextEncoder().encode(JSON.stringify(value));
@@ -247,6 +259,44 @@ test('coordinated full saves preserve the current workflow and enforce the autho
   assert.equal(mutation.workflow.revision, 5);
 });
 
+test('coordinated favorite commands ignore stale page revisions and preserve unrelated workflow domains', () => {
+  const current = {
+    words: ['既有收藏'],
+    feedback: { 既有收藏: { reasons: { tooBasic: 1 }, lastReason: 'tooBasic' } },
+    publishedRecords: [{ id: 'published-1', word: '既有收藏', title: '已发布内容' }],
+    todaySnapshot: {
+      dateKey: '2026-07-20',
+      words: ['今日词'],
+      generatedAt: '2026-07-20T02:00:00.000Z',
+      generatorVersion: 'daily-v4-dedup30-server',
+      version: 1
+    },
+    candidatePool: { 既有收藏: { kanji: '既有收藏', meaning: '保留' } },
+    revision: 8
+  };
+  const mutation = buildCoordinatedWorkflowMutation(current, {
+    action: 'add',
+    word: '新收藏',
+    feedback: {},
+    publishedRecords: [],
+    todaySnapshot: {},
+    candidatePool: { 新收藏: { kanji: '新收藏', meaning: '新增' } }
+  }, {
+    operationId: 'favorite-command-stale-page',
+    expectedRevision: 1,
+    action: 'favorite.add',
+    actor: 'editor@example.com'
+  }, { strategy: 'favorite-command' });
+
+  assert.equal(mutation.conflict, false);
+  assert.equal(mutation.workflow.revision, 9);
+  assert.deepEqual(mutation.workflow.words, ['新收藏', '既有收藏']);
+  assert.equal(mutation.workflow.feedback['既有收藏'].lastReason, 'tooBasic');
+  assert.equal(mutation.workflow.publishedRecords[0].title, '已发布内容');
+  assert.deepEqual(mutation.workflow.todaySnapshot.words, ['今日词']);
+  assert.equal(mutation.workflow.candidatePool['新收藏'].meaning, '新增');
+});
+
 test('Durable Object serializes same-revision writes before KV commit', async () => {
   const kv = createKv({ words: [], revision: 0, auditLog: [] });
   const coordinator = new WorkflowCoordinator({}, { FAVORITES: kv });
@@ -338,6 +388,22 @@ test('Xiaohongshu URL validation rejects lookalike hosts and unsafe protocols', 
   assert.equal(normalizeXiaohongshuUrl('https://user:pass@www.xiaohongshu.com/a'), '');
 });
 
+test('Xiaohongshu URL validation restores canonical notes from desktop error wrappers', () => {
+  const wrapped = 'https://www.xiaohongshu.com/404?source=%2F404%2Fsec_test&redirectPath=https%3A%2F%2Fwww.xiaohongshu.com%2Fexplore%2F6a5cc0930000000011004cf7&error_code=300031';
+  assert.equal(
+    normalizeXiaohongshuUrl(wrapped),
+    'https://www.xiaohongshu.com/explore/6a5cc0930000000011004cf7'
+  );
+  assert.equal(
+    normalizeXiaohongshuUrl('https://www.xiaohongshu.com/404', '6a5cc0930000000011004cf7'),
+    'https://www.xiaohongshu.com/explore/6a5cc0930000000011004cf7'
+  );
+  assert.equal(
+    normalizeXiaohongshuUrl('https://www.xiaohongshu.com/404?redirectPath=https%3A%2F%2Fevil.example%2Fsteal'),
+    ''
+  );
+});
+
 test('published refresh rejects redirects outside allowed hosts', async () => {
   const result = await fetchPublishedRecordRemote('https://xhslink.com/a/test', async () => new Response(null, {
     status: 302,
@@ -362,7 +428,7 @@ test('workflow and today endpoints reject unauthenticated requests before KV rea
   assert.equal(todayKv.getCalls, 0);
 });
 
-test('favorite mutation is idempotent and rejects a stale revision', async () => {
+test('favorite mutation is idempotent and accepts stale page revisions without losing earlier favorites', async () => {
   const kv = createKv({ words: [], revision: 0, auditLog: [] });
   const makeMutationRequest = (operationId, revision, word = 'モヤる') => request(undefined, {
     method: 'POST',
@@ -398,9 +464,10 @@ test('favorite mutation is idempotent and rejects a stale revision', async () =>
     env: { FAVORITES: kv, ADMIN_API_TOKEN: 'admin-secret' }
   });
   const staleData = await staleResponse.json();
-  assert.equal(staleResponse.status, 409);
-  assert.equal(staleData.error.code, 'REVISION_CONFLICT');
-  assert.equal(kv.putCalls, 1);
+  assert.equal(staleResponse.status, 200);
+  assert.equal(staleData.revision, 2);
+  assert.deepEqual(staleData.words, ['余裕', 'モヤる']);
+  assert.equal(kv.putCalls, 2);
 });
 
 test('favorite command view returns only mutation state and the target candidate', async () => {

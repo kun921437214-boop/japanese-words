@@ -28,7 +28,13 @@ import {
   AI_CARD_PENDING_TTL_MS as FRONTEND_AI_CARD_PENDING_TTL_MS,
   isAiCardStalePending as isFrontendAiCardStalePending
 } from '../frontend/ai-card-generation.mjs';
-import { applyFavoriteAction, buildAppWorkflowView, buildFavoriteCommandView } from '../functions/favorites.js';
+import {
+  applyFavoriteAction,
+  buildAppWorkflowView,
+  buildCandidateDetailView,
+  buildFavoriteCommandView,
+  buildPublishedDetailView
+} from '../functions/favorites.js';
 import {
   applyAiCardGenerationResult,
   isAiCardStalePending,
@@ -75,9 +81,10 @@ test('首次 pageshow 不会取消手机端初始化同步，BFCache 恢复时�
   const appSource = fs.readFileSync(new URL('../app.js', import.meta.url), 'utf8');
   const syncSource = fs.readFileSync(new URL('../frontend/workflow-sync.mjs', import.meta.url), 'utf8');
   assert.ok(appSource.includes("window.addEventListener('pageshow', event =>"));
-  assert.ok(appSource.includes('if (!event.persisted) return;'));
+  assert.ok(appSource.includes('if (!event.persisted) {'));
+  assert.ok(appSource.includes('void flushPendingFavoriteIntents();'));
   assert.ok(syncSource.includes('timeoutMs: config.timeoutMs || 45000'));
-  assert.ok(appSource.includes('void syncRemoteDataInBackground();'));
+  assert.ok(appSource.includes('void syncRemoteDataInBackground().finally(() => flushPendingFavoriteIntents());'));
 });
 
 test('移动端本地缓存超额不会把成功的云端同步误判为失败', () => {
@@ -91,6 +98,17 @@ test('移动端本地缓存超额不会把成功的云端同步误判为失败',
   assert.ok(cacheSource.includes("logger.warn('本地缓存写入失败，已保留当前云端数据'"));
   assert.ok(appSource.includes('const workflowCached = writeLocalWorkflowCache(payload);'));
   assert.equal((cacheSource.match(/storage\.setItem\(/g) || []).length, 1);
+});
+
+test('首屏先渲染本地缓存并并行刷新非依赖数据源', () => {
+  const appSource = fs.readFileSync(new URL('../app.js', import.meta.url), 'utf8');
+  assert.ok(appSource.includes("loadLocalWorkflow({ deferLibraryAudit: true })"));
+  assert.ok(appSource.includes('const [rankingsLoaded, cloudLoaded] = await Promise.all(['));
+  assert.ok(appSource.includes('void scheduleLibraryReviewHydration();'));
+  assert.ok(appSource.includes("apiFetch('data/library-review.json', { cache: 'default' }"));
+  assert.ok(appSource.includes('const [synced, workflowSynced] = await Promise.all(['));
+  assert.equal(appSource.includes('void loadCodexTomorrowDraftStatus();'), false);
+  assert.equal(appSource.includes('await loadCodexTomorrowDraftStatus();'), false);
 });
 
 test('候选池后台从用户界面下线但内部日更数据结构保持不变', () => {
@@ -128,6 +146,13 @@ test('app 工作流只返回页面所需候选且不改变云端完整候选池'
       meaning: '今日测试词',
       sourceType: 'deepseek_generated',
       sourceText: '不应发送到 app view 的生成原文',
+      aiCard: {
+        ...readyCard,
+        summary: '列表需要的摘要',
+        explanation: '只应在词卡详情接口返回的完整解释',
+        suggestedTitles: ['列表标题', '详情备用标题'],
+        interactionPrompts: ['只应在完整详情返回']
+      },
       aiCardHistory: [{ cardStatus: 'ready', summary: '旧词卡' }]
     },
     发布词: { kanji: '发布词', kana: 'はっぴょうし', meaning: '发布测试词', sourceType: 'deepseek_reviewed' },
@@ -137,7 +162,14 @@ test('app 工作流只返回页面所需候选且不改变云端完整候选池'
   const fullWorkflow = {
     words: ['收藏词'],
     statuses: {},
-    publishedRecords: [{ id: 'published-test', word: '发布词', title: '已发布测试' }],
+    publishedRecords: [{
+      id: 'published-test',
+      word: '发布词',
+      title: '已发布测试',
+      description: '只应在详情接口返回的完整正文',
+      contentLocked: true,
+      metricSnapshots: [{ dateKey: '2026-07-19', views: 100 }]
+    }],
     candidatePool,
     aiBatches: [{ id: 'batch-test', action: 'generate_candidates' }],
     todaySnapshot: {
@@ -170,8 +202,16 @@ test('app 工作流只返回页面所需候选且不改变云端完整候选池'
   assert.deepEqual(Object.keys(todayScope.candidatePool), ['今日词']);
   assert.equal(todayScope.appView.scope, 'today');
   assert.equal(todayScope.appView.partialCandidatePool, true);
+  assert.equal(todayScope.appView.partialPublishedRecords, true);
+  assert.equal(todayScope.appView.candidateProjection, 'list');
+  assert.deepEqual(todayScope.publishedRecords, []);
   assert.deepEqual(todayScope.candidatePool['今日词'].aiCardHistory, []);
   assert.equal(todayScope.candidatePool['今日词'].sourceText, '');
+  assert.equal(todayScope.candidatePool['今日词'].candidateProjection, 'list');
+  assert.equal(todayScope.candidatePool['今日词'].aiCard.projection, 'list');
+  assert.equal(todayScope.candidatePool['今日词'].aiCard.summary, '列表需要的摘要');
+  assert.equal(todayScope.candidatePool['今日词'].aiCard.explanation, undefined);
+  assert.deepEqual(todayScope.candidatePool['今日词'].aiCard.suggestedTitles, ['列表标题']);
   assert.deepEqual(todayScope.historySnapshots['2026-07-18'].recommendationAudit, {});
   const historyScope = buildAppWorkflowView(fullWorkflow, { scope: 'today', historyDate: '2026-07-18' });
   assert.deepEqual(Object.keys(historyScope.candidatePool), ['历史词']);
@@ -180,8 +220,37 @@ test('app 工作流只返回页面所需候选且不改变云端完整候选池'
   assert.deepEqual(Object.keys(favoritesScope.candidatePool), ['收藏词']);
   assert.deepEqual(favoritesScope.historySnapshots, {});
   assert.deepEqual(favoritesScope.todaySnapshotHistory, []);
+  assert.deepEqual(favoritesScope.publishedRecords, []);
   const publishedScope = buildAppWorkflowView(fullWorkflow, { scope: 'published' });
   assert.deepEqual(Object.keys(publishedScope.candidatePool), ['发布词']);
+  assert.equal(publishedScope.appView.publishedSummary, true);
+  assert.equal(publishedScope.publishedRecords[0].description, '');
+  assert.deepEqual(publishedScope.publishedRecords[0].metricSnapshots, []);
+  const publishedDetail = buildPublishedDetailView(fullWorkflow, 'published-test');
+  assert.equal(publishedDetail.ok, true);
+  assert.equal(publishedDetail.record.description, '只应在详情接口返回的完整正文');
+  assert.equal(publishedDetail.record.metricSnapshots.length, 1);
+  assert.equal(publishedDetail.candidate.kanji, '发布词');
+  assert.equal(buildPublishedDetailView(fullWorkflow, 'missing-record').ok, false);
+  const candidateDetail = buildCandidateDetailView(fullWorkflow, '今日词');
+  assert.equal(candidateDetail.ok, true);
+  assert.equal(candidateDetail.candidate.candidateProjection, 'detail');
+  assert.equal(candidateDetail.candidate.aiCard.projection, 'detail');
+  assert.equal(candidateDetail.candidate.aiCard.explanation, '只应在词卡详情接口返回的完整解释');
+  assert.deepEqual(candidateDetail.candidate.aiCard.suggestedTitles, ['列表标题', '详情备用标题']);
+  assert.equal(buildCandidateDetailView(fullWorkflow, '不存在').ok, false);
+  const unrelatedCandidatePool = { ...candidatePool };
+  Object.defineProperty(unrelatedCandidatePool, '大型无关词', {
+    enumerable: true,
+    get() {
+      throw new Error('今日视图不应清洗无关候选');
+    }
+  });
+  const projectedTodayScope = buildAppWorkflowView({
+    ...fullWorkflow,
+    candidatePool: unrelatedCandidatePool
+  }, { scope: 'today' });
+  assert.deepEqual(Object.keys(projectedTodayScope.candidatePool), ['今日词']);
   const savedFromCompactCandidate = applyFavoriteAction(fullWorkflow, {
     action: 'status',
     word: '今日词',
@@ -214,6 +283,8 @@ test('前端按页面加载候选并在收藏数据到齐前禁止渲染', () =>
   assert.ok(storeSource.includes('const mergePartialState = Boolean(config.mergeCandidatePool || data.appView?.partialCandidatePool);'));
   assert.ok(storeSource.includes('? mergeHistorySnapshots(currentState.historySnapshots, data.historySnapshots)'));
   assert.ok(appSource.includes('applyWorkflowData(prepared.state);'));
+  assert.ok(appSource.includes('scheduleWorkflowCacheWrite(prepared.data.updated || lastCloudSyncAt);'));
+  assert.ok(appSource.includes('void scheduleLibraryReviewHydration();'));
 });
 
 test('收藏命令只返回小响应且状态操作可补回缺失收藏', () => {
@@ -245,7 +316,7 @@ test('前端收藏使用小命令响应并防止旧同步覆盖新版本', () =>
   const storeSource = fs.readFileSync(new URL('../frontend/workflow-store.mjs', import.meta.url), 'utf8');
   const commandSource = appSource.slice(
     appSource.indexOf('function buildFavoriteCommandPayload'),
-    appSource.indexOf('function isFavoriteCommandSatisfied')
+    appSource.indexOf('async function fetchFavoriteCommandState')
   );
   assert.ok(appSource.includes("url.searchParams.set('view', 'command');"));
   assert.ok(appSource.includes('function applyFavoriteCommandResponse(responseData, kanji)'));
@@ -256,16 +327,20 @@ test('前端收藏使用小命令响应并防止旧同步覆盖新版本', () =>
   assert.ok(storeSource.includes('data.revision < revision'));
   assert.ok(syncSource.includes("error?.code === 'REQUEST_ABORTED'"));
   assert.ok(syncSource.includes('function isRetryableWorkflowMutationError(error)'));
-  assert.ok(appSource.includes('async function requestFavoriteCommand(kanji, action, status = \'\')'));
+  assert.ok(appSource.includes("async function requestFavoriteCommand(kanji, action, status = '', operationId = '')"));
   assert.ok(syncSource.includes('for (let attempt = 0; attempt < 2; attempt += 1)'));
-  assert.ok(appSource.includes('operationId,'));
+  assert.ok(appSource.includes('operationId: operationId || createOperationId'));
   assert.ok(syncSource.includes('timeoutMs: config.timeoutMs || 30000'));
-  assert.ok(appSource.includes('function isFavoriteCommandSatisfied(kanji, action, status = \'\')'));
-  assert.ok(appSource.includes('buildReconciledResponse: () => buildReconciledFavoriteCommandResponse(kanji)'));
+  assert.ok(appSource.includes('function isFavoriteCommandDataSatisfied(responseData, kanji, action, status = \'\')'));
+  assert.ok(appSource.includes('reconcile: () => fetchFavoriteCommandState(kanji)'));
+  assert.ok(appSource.includes('buildReconciledResponse: responseData => ({ ...responseData, ok: true, reconciled: true })'));
   assert.ok(syncSource.includes("if (error?.status === 409 && !reconciled) break;"));
-  assert.ok(appSource.includes('const previousFavorites = [...favorites];'));
-  assert.ok(appSource.includes('if (cloudWorkflowFailed) {'));
+  assert.ok(appSource.includes('const favoriteIntentStore = createFavoriteIntentStore({'));
+  assert.ok(appSource.includes('favoriteIntentStore.markWaiting'));
+  assert.ok(appSource.includes('applyPendingFavoriteIntents();'));
+  assert.equal(appSource.includes('favorites = previousFavorites;'), false);
   assert.ok(appSource.includes("window.addEventListener('online', () =>"));
+  assert.ok(appSource.includes("document.addEventListener('visibilitychange', () =>"));
 });
 
 test('历史日期缺少 aiCard 时安全渲染并按需重新加载词卡', () => {
@@ -342,26 +417,40 @@ test('Codex 参考图在列表卡和详情卡中完整展示', () => {
   assert.ok(appSource.includes('查看原图 ↗'));
   assert.match(styleSource, /\.daily-hot-reference-card \.card-image\s*\{[^}]*object-fit:contain;/);
   assert.match(styleSource, /\.modal-hero-full-reference \.modal-hero-img\s*\{[^}]*object-fit:contain;/);
+  assert.match(styleSource, /\.modal-container\s*\{[^}]*overflow-x:hidden;/);
+  assert.match(styleSource, /@media \(max-width:640px\)[\s\S]*?\.detail-judgement-grid,[\s\S]*?grid-template-columns:1fr;/);
   assert.ok(styleSource.includes('aspect-ratio:3 / 4;'));
 });
 
-test('scheduled Worker 分离日更和 aiCard 批量 cron', () => {
+test('Tencent runtime owns scheduled jobs while Cloudflare rollback cron stays disabled', () => {
   const workerConfig = fs.readFileSync(new URL('../wrangler.worker.toml', import.meta.url), 'utf8');
   const workerSource = fs.readFileSync(new URL('../worker/favorites-worker.js', import.meta.url), 'utf8');
+  const tencentSource = fs.readFileSync(new URL('../server/tencent-runtime.mjs', import.meta.url), 'utf8');
 
-  assert.ok(workerConfig.includes('"0 16 * * *"'));
-  assert.ok(workerConfig.includes('"30 6 * * *"'));
-  assert.ok(workerConfig.includes('"5,25,45 * * * *"'));
-  assert.ok(workerConfig.includes('"10,20,30,40,50 16 * * *"'));
-  assert.ok(workerConfig.includes('"0 17 * * *"'));
+  assert.ok(workerConfig.includes('crons = []'));
+  assert.equal(workerConfig.includes('"0 16 * * *"'), false);
+  assert.equal(workerConfig.includes('"30 6 * * *"'), false);
+  assert.equal(workerConfig.includes('"5,25,45 * * * *"'), false);
+  assert.equal(workerConfig.includes('"10,20,30,40,50 16 * * *"'), false);
+  assert.equal(workerConfig.includes('"0 17 * * *"'), false);
+  assert.equal(workerConfig.includes('"15 9 * * *"'), false);
+  assert.equal(workerConfig.includes('"10 16 * * *"'), false);
+  assert.ok(tencentSource.includes("'0 16 * * *'"));
+  assert.ok(tencentSource.includes("'30 6 * * *'"));
+  assert.ok(tencentSource.includes("'5,25,45 * * * *'"));
+  assert.ok(tencentSource.includes("'10,20,30,40,50 16 * * *'"));
+  assert.ok(tencentSource.includes("'0 17 * * *'"));
   assert.ok(workerSource.includes("const DAILY_REFRESH_CRON = '0 16 * * *';"));
   assert.ok(workerSource.includes("const PUBLISHED_REFRESH_CRON = '30 6 * * *';"));
   assert.ok(workerSource.includes("const CODEX_LATE_PROMOTION_CRON = '5,25,45 * * * *';"));
+  assert.ok(workerSource.includes("DAILY_DRAFT_HEALTH_CRON = '15 9 * * *';"));
+  assert.ok(workerSource.includes("DAILY_SNAPSHOT_HEALTH_CRON = '10 16 * * *';"));
   assert.ok(workerSource.includes("const AI_CARD_BATCH_MAX_WORDS = 5;"));
   assert.ok(workerSource.includes("new URL(`${siteUrl}/codex-daily`)"));
   assert.ok(workerSource.includes("action: 'promote'"));
   assert.ok(workerSource.includes("new URL(`${siteUrl}/daily-refresh`)"));
   assert.ok(workerSource.includes("refreshUrl.searchParams.set('mode', 'manual')"));
+  assert.ok(workerSource.includes("refreshUrl.searchParams.set('runInline', 'true')"));
   assert.ok(workerSource.includes("refreshUrl.searchParams.set('skipCards', 'true')"));
   assert.ok(workerSource.includes("'Content-Type': 'application/json'"));
   assert.ok(workerSource.includes('Authorization: `Bearer ${autoRefreshSecret}`'));
@@ -374,6 +463,8 @@ test('scheduled Worker 分离日更和 aiCard 批量 cron', () => {
   assert.ok(workerSource.includes('if (!plan.shouldRun)'));
   assert.ok(workerSource.includes('cron !== PUBLISHED_REFRESH_CRON'));
   assert.ok(workerSource.includes('triggerCodexPromotionIfAvailable(env)'));
+  assert.ok(workerSource.includes("requireScheduledSuccess('daily publish'"));
+  assert.equal(workerSource.includes('triggerDailyPublishOrFallback(env).catch'), false);
   assert.equal(workerSource.includes('force: true'), false);
 });
 
@@ -584,6 +675,64 @@ test('cleanStoredWorkflow 不删除 candidatePool.aiCard', () => {
   });
   assert.equal(cleaned.candidatePool['こなれ'].aiCard.cardStatus, 'ready');
   assert.equal(cleaned.candidatePool['こなれ'].aiCard.summary, readyCard.summary);
+});
+
+test('cleanStoredWorkflow 保留内容与封面反馈、版本历史和发布留档', () => {
+  const cleaned = cleanStoredWorkflow({
+    feedback: {
+      'こなれ': {
+        reasons: { uninterested: 1, badVisual: 2 },
+        lastAppliedDateByReason: { uninterested: '2026-07-22' },
+        lastUndoneAtByReason: { tooBasic: '2026-07-22T03:30:00.000Z' }
+      }
+    },
+    candidatePool: {
+      'こなれ': {
+        kanji: 'こなれ',
+        sourceType: 'deepseek_generated',
+        aiCard: { ...readyCard, cardVersion: 3, coverVersion: 2 },
+        generationFeedback: {
+          card: { reasons: { unnaturalExamples: 1 }, lastReason: 'unnaturalExamples', updatedAt: '2026-07-22T02:00:00.000Z' },
+          cover: { reasons: { mobileUnreadable: 1 }, lastReason: 'mobileUnreadable', updatedAt: '2026-07-22T03:00:00.000Z' }
+        },
+        coverHistory: [{ coverVersion: 1, coverSuggestion: { coverText: '旧封面' }, generatedAt: '2026-07-20T02:00:00.000Z' }],
+        publicationSnapshot: { capturedAt: '2026-07-22T04:00:00.000Z', cardVersion: 3, coverVersion: 2, suggestedTitle: '最终标题' }
+      }
+    }
+  });
+  assert.equal(cleaned.feedback['こなれ'].lastAppliedDateByReason.uninterested, '2026-07-22');
+  assert.equal(cleaned.feedback['こなれ'].lastUndoneAtByReason.tooBasic, '2026-07-22T03:30:00.000Z');
+  assert.equal(cleaned.candidatePool['こなれ'].generationFeedback.card.reasons.unnaturalExamples, 1);
+  assert.equal(cleaned.candidatePool['こなれ'].generationFeedback.cover.reasons.mobileUnreadable, 1);
+  assert.equal(cleaned.candidatePool['こなれ'].coverHistory[0].coverSuggestion.coverText, '旧封面');
+  assert.equal(cleaned.candidatePool['こなれ'].publicationSnapshot.suggestedTitle, '最终标题');
+});
+
+test('mergeWorkflow 保留较新的负反馈撤销，不被云端旧计数恢复', () => {
+  const merged = mergeWorkflow({
+    feedback: {
+      'こなれ': {
+        reasons: {},
+        lastReason: '',
+        lastAppliedDateByReason: {},
+        lastUndoneAtByReason: { uninterested: '2026-07-22T04:05:00.000Z' },
+        updatedAt: '2026-07-22T04:05:00.000Z'
+      }
+    }
+  }, {
+    feedback: {
+      'こなれ': {
+        reasons: { uninterested: 1 },
+        lastReason: 'uninterested',
+        lastAppliedDateByReason: { uninterested: '2026-07-22' },
+        updatedAt: '2026-07-22T04:00:00.000Z'
+      }
+    }
+  });
+  assert.equal(merged.feedback['こなれ'].reasons.uninterested, undefined);
+  assert.equal(merged.feedback['こなれ'].lastAppliedDateByReason.uninterested, undefined);
+  assert.equal(merged.feedback['こなれ'].lastReason, '');
+  assert.equal(merged.feedback['こなれ'].lastUndoneAtByReason.uninterested, '2026-07-22T04:05:00.000Z');
 });
 
 test('cleanStoredWorkflow 不删除手动添加来源元数据', () => {
@@ -987,6 +1136,44 @@ test('ai-cards ready 默认不重复生成，force=true 才允许', () => {
   });
   assert.equal(applied.workflow.candidatePool[target].aiCard.cardStatus, 'ready');
   assert.equal(applied.workflow.candidatePool[target].aiCardHistory.length, 1);
+});
+
+test('ai-cards 内容重生成保留封面，封面重生成保留单词卡内容', () => {
+  const workflow = makeCardWorkflow();
+  const target = workflow.todaySnapshot.words[0];
+  workflow.candidatePool[target].aiCard = {
+    ...readyCard,
+    cardVersion: 2,
+    coverVersion: 3,
+    coverSuggestion: { coverText: '原封面', mainVisual: '原画面' },
+    referenceImage: { status: 'ready', url: '/codex-image?key=old' }
+  };
+  const cardRegenerated = applyAiCardGenerationResult(workflow, {
+    targets: [target],
+    force: true,
+    regenerationScope: 'card',
+    feedbackReason: 'unnaturalExamples',
+    usage: { model: 'deepseek-test', createdAt: '2026-07-22T04:00:00.000Z' },
+    items: [{ kanji: target, aiCard: { cardStatus: 'ready', summary: '新版内容', coverSuggestion: { coverText: '不应采用' } } }]
+  });
+  assert.equal(cardRegenerated.workflow.candidatePool[target].aiCard.summary, '新版内容');
+  assert.equal(cardRegenerated.workflow.candidatePool[target].aiCard.coverSuggestion.coverText, '原封面');
+  assert.equal(cardRegenerated.workflow.candidatePool[target].aiCard.referenceImage.url, '/codex-image?key=old');
+  assert.equal(cardRegenerated.workflow.candidatePool[target].aiCardHistory.length, 1);
+
+  const coverRegenerated = applyAiCardGenerationResult(workflow, {
+    targets: [target],
+    force: true,
+    regenerationScope: 'cover',
+    feedbackReason: 'mobileUnreadable',
+    usage: { model: 'deepseek-test', createdAt: '2026-07-22T05:00:00.000Z' },
+    items: [{ kanji: target, aiCard: { cardStatus: 'ready', summary: '不应采用', coverSuggestion: { coverText: '新封面', mainVisual: '新画面' } } }]
+  });
+  assert.equal(coverRegenerated.workflow.candidatePool[target].aiCard.summary, readyCard.summary);
+  assert.equal(coverRegenerated.workflow.candidatePool[target].aiCard.coverSuggestion.coverText, '新封面');
+  assert.equal(coverRegenerated.workflow.candidatePool[target].aiCard.referenceImage.status, 'missing');
+  assert.equal(coverRegenerated.workflow.candidatePool[target].coverHistory.length, 1);
+  assert.equal(coverRegenerated.workflow.candidatePool[target].aiCardHistory.length, 0);
 });
 
 test('ai-cards failed 默认不重试，retryFailed=true 才允许', () => {

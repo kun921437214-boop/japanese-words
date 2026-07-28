@@ -21,6 +21,7 @@ const PAYLOAD_FIELDS = [
 export function createWorkflowStore(options = {}) {
   const cleanWorkflow = options.cleanWorkflow;
   const mergeCandidatePool = options.mergeCandidatePool;
+  const mergePublishedRecords = options.mergePublishedRecords;
   const mergeHistorySnapshots = options.mergeHistorySnapshots;
   const mergeTodaySnapshotHistory = options.mergeTodaySnapshotHistory;
   if (typeof cleanWorkflow !== 'function') {
@@ -104,6 +105,18 @@ export function createWorkflowStore(options = {}) {
 
   function prepareRemoteState(remoteWorkflow = {}, currentState = {}, config = {}) {
     const data = cleanWorkflow(remoteWorkflow);
+    if (data.appView?.candidateProjection === 'list') {
+      data.candidatePool = Object.fromEntries(
+        Object.entries(data.candidatePool || {}).map(([word, candidate]) => [word, {
+          ...candidate,
+          candidateProjection: 'list',
+          aiCard: {
+            ...(candidate?.aiCard || {}),
+            projection: 'list'
+          }
+        }])
+      );
+    }
     if (!config.allowOlderRevision && data.revision < revision) {
       return { applied: false, stale: true, data, state: currentState };
     }
@@ -111,6 +124,9 @@ export function createWorkflowStore(options = {}) {
     const mergePartialState = Boolean(config.mergeCandidatePool || data.appView?.partialCandidatePool);
     const state = {
       ...data,
+      publishedRecords: data.appView?.partialPublishedRecords && typeof mergePublishedRecords === 'function'
+        ? mergePublishedRecords(currentState.publishedRecords, data.publishedRecords)
+        : data.publishedRecords,
       candidatePool: mergePartialState && typeof mergeCandidatePool === 'function'
         ? mergeCandidatePool(currentState.candidatePool, data.candidatePool)
         : data.candidatePool,

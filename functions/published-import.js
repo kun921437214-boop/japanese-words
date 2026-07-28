@@ -19,6 +19,7 @@ import {
   inspectWorkflowMutation
 } from '../shared/workflow-mutation.mjs';
 import { commitWorkflowMutation } from '../shared/workflow-coordinator.mjs';
+import { persistPublishedRecordCovers } from './published-cover.js';
 
 function cleanSyncCode(value) {
   return String(value || '').trim().replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 64);
@@ -92,6 +93,9 @@ export async function onRequest({ request, env }) {
   if (imported.summary.ambiguousCount > 0) {
     return fail(422, 'AMBIGUOUS_IMPORT', '导入中存在重复的“标题＋发布时间”，请先处理后再提交');
   }
+  if (imported.summary.missingActiveCount > 0) {
+    return fail(422, 'ACTIVE_PUBLISHED_ROWS_MISSING', '官方导出缺少发布不超过 15 天的活跃帖子，请重新导出后再提交');
+  }
 
   const mutationMetadata = getWorkflowMutationMetadata(request, body, {
     action: 'published.import',
@@ -119,7 +123,14 @@ export async function onRequest({ request, env }) {
     });
   }
 
-  const candidateWorkflow = buildPublishedWorkflow(current, imported);
+  const persistedCovers = await persistPublishedRecordCovers(imported.records, env, {
+    fetchImpl: fetch,
+    nowIso: new Date().toISOString()
+  });
+  const candidateWorkflow = buildPublishedWorkflow(current, {
+    ...imported,
+    records: persistedCovers.records
+  });
   const mutation = await commitWorkflowMutation(env, key, candidateWorkflow, mutationMetadata, { strategy: 'merge' });
   if (mutation.conflict) {
     return respond({
@@ -134,6 +145,7 @@ export async function onRequest({ request, env }) {
     mode,
     batch: imported.batch,
     summary: imported.summary,
+    coverSummary: persistedCovers.summary,
     publishedRecords: mutation.workflow.publishedRecords,
     updated: mutation.workflow.updated,
     revision: mutation.workflow.revision,

@@ -13,14 +13,12 @@ function uniqueStrings(values = []) {
 
 export function buildDailyHotDateOptions(options = {}) {
   const todayDateKey = String(options.todayDateKey || '').trim();
-  const tomorrowDateKey = String(options.tomorrowDateKey || '').trim();
   const formatWeekday = typeof options.formatWeekday === 'function' ? options.formatWeekday : () => '';
   const historyDates = uniqueStrings(options.historyDates)
-    .filter(dateKey => DATE_KEY_PATTERN.test(dateKey) && dateKey !== todayDateKey && dateKey !== tomorrowDateKey)
+    .filter(dateKey => DATE_KEY_PATTERN.test(dateKey) && (!todayDateKey || dateKey < todayDateKey))
     .sort((left, right) => right.localeCompare(left));
   return [
     { value: 'today', label: `今天 · ${todayDateKey}` },
-    { value: tomorrowDateKey, label: `明天 · ${tomorrowDateKey} · ${formatWeekday(tomorrowDateKey)}` },
     ...historyDates.map(dateKey => ({
       value: dateKey,
       label: `${dateKey} · ${formatWeekday(dateKey)}`
@@ -157,14 +155,28 @@ export function createDailyHotPageController(options = {}) {
     routeAction(actionElement);
   }
 
+  function handleDetailIntent(event) {
+    const target = event.target;
+    if (!target?.closest) return;
+    const actionElement = target.closest('[data-daily-hot-action="open-detail"]');
+    if (!actionElement || !belongsToRoot(actionElement)) return;
+    invoke(options.onPrefetchDetail, actionElement.dataset.wordId || actionElement.dataset.kanji || '');
+  }
+
   root.addEventListener('click', handleClick);
   root.addEventListener('change', handleChange);
   root.addEventListener('keydown', handleKeydown);
+  root.addEventListener('pointerover', handleDetailIntent);
+  root.addEventListener('pointerdown', handleDetailIntent);
+  root.addEventListener('focusin', handleDetailIntent);
   return {
     destroy() {
       root.removeEventListener?.('click', handleClick);
       root.removeEventListener?.('change', handleChange);
       root.removeEventListener?.('keydown', handleKeydown);
+      root.removeEventListener?.('pointerover', handleDetailIntent);
+      root.removeEventListener?.('pointerdown', handleDetailIntent);
+      root.removeEventListener?.('focusin', handleDetailIntent);
     }
   };
 }

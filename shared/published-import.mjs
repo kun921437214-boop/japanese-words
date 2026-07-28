@@ -1,5 +1,11 @@
+import {
+  extractXiaohongshuNoteId,
+  normalizeXiaohongshuUrl
+} from './xiaohongshu-url.mjs';
+
 export const PUBLISHED_METRIC_UPDATE_DAYS = 15;
 export const PUBLISHED_METRIC_SNAPSHOT_LIMIT = 16;
+export const PUBLISHED_EXPORT_WINDOW_DAYS = 180;
 
 const APP_TIME_ZONE = 'Asia/Shanghai';
 const SELECTION_SOURCE_TYPES = [
@@ -182,14 +188,15 @@ export function normalizePublishedImportRow(row = {}, wordMappings = {}) {
   const mappedWord = cleanText(wordMappings[title] || row?.word, 80);
   const inferredWord = mappedWord || extractPublishedWordFromTitle(title);
   const contentCategory = cleanPublishedContentCategory(row?.contentCategory, inferredWord);
+  const noteId = extractXiaohongshuNoteId(row?.link, row?.noteId);
   return {
     title,
     publishedAt,
     contentType: cleanText(row?.contentType ?? row?.['体裁'], 20) === '视频' ? '视频' : '图文',
     contentCategory,
     word: contentCategory === 'non_word' ? '' : inferredWord,
-    noteId: cleanText(row?.noteId, 120),
-    link: cleanText(row?.link, 1000),
+    noteId,
+    link: normalizeXiaohongshuUrl(row?.link, noteId),
     description: cleanText(row?.description, 12000),
     coverUrl: cleanText(row?.coverUrl, 1000),
     sourceKey: buildPublishedSourceKey(title, publishedAt),
@@ -297,10 +304,141 @@ export function computePublishedThirtyDayMedians(records = [], now = new Date())
     impressions: median(metrics.map(item => item.impressions)),
     views: median(metrics.map(item => item.views)),
     coverClickRate: median(metrics.map(item => item.coverClickRate)),
+    viewRate: median(metrics.map(item => rate(item.views, item.impressions))),
+    likeRate: median(metrics.map(item => rate(item.likes, item.views))),
     comments: median(metrics.map(item => item.comments)),
+    commentRate: median(metrics.map(item => rate(item.comments, item.views))),
     favoriteRate: median(metrics.map(item => rate(item.favorites, item.views))),
     shareRate: median(metrics.map(item => rate(item.shares, item.views))),
-    followRate: median(metrics.map(item => rate(item.follows, item.views)))
+    followRate: median(metrics.map(item => rate(item.follows, item.views))),
+    avgWatchSeconds: median(metrics.map(item => item.avgWatchSeconds))
+  };
+}
+
+function weightedRelativeScore(items = []) {
+  let weightedScore = 0;
+  let totalWeight = 0;
+  items.forEach(item => {
+    const baseline = Number(item?.baseline) || 0;
+    const value = Number(item?.value) || 0;
+    const weight = Number(item?.weight) || 0;
+    if (baseline <= 0 || weight <= 0) return;
+    weightedScore += Math.min(2, Math.max(0, value / baseline)) * weight;
+    totalWeight += weight;
+  });
+  return totalWeight > 0 ? Math.round((weightedScore / totalWeight) * 100) : 0;
+}
+
+function buildPerformanceDimension(score = 0, sampleSize = 0, label = '') {
+  if (sampleSize < 3 || !score) {
+    return { score: 0, level: 'insufficient', label: '数据不足', reason: `${label}需要至少 3 篇近30天内容作为参照。` };
+  }
+  if (score >= 115) return { score, level: 'strong', label: '表现较强', reason: `${label}高于账号近期常态。` };
+  if (score >= 75) return { score, level: 'normal', label: '表现正常', reason: `${label}处于账号近期正常区间。` };
+  return { score, level: 'weak', label: '表现偏弱', reason: `${label}低于账号近期常态，建议结合其他维度判断。` };
+}
+
+export function buildPublishedPerformanceAssessment(record = {}, records = [], now = new Date()) {
+  const current = now instanceof Date ? now : new Date(now);
+  const metrics = cleanPublishedMetrics(record?.latestMetrics || {});
+  const comparisonRecords = safeArray(records).filter(item => (
+    item && item.id !== record?.id && getPublishedAgeDays(item, current) >= 3
+  ));
+  const medians = computePublishedThirtyDayMedians(comparisonRecords, current);
+  const ageDays = getPublishedAgeDays(record, current);
+  const ageHours = ageDays * 24;
+  const stage = ageHours < 72
+    ? 'collecting'
+    : (ageDays >= PUBLISHED_METRIC_UPDATE_DAYS || record?.metricsFrozen ? 'final' : 'early');
+  const coverScore = weightedRelativeScore([
+    { value: metrics.coverClickRate, baseline: medians.coverClickRate, weight: 0.75 },
+    { value: rate(metrics.views, metrics.impressions), baseline: medians.viewRate, weight: 0.25 }
+  ]);
+  const topicScore = weightedRelativeScore([
+    { value: rate(metrics.favorites, metrics.views), baseline: medians.favoriteRate, weight: 0.4 },
+    { value: rate(metrics.shares, metrics.views), baseline: medians.shareRate, weight: 0.25 },
+    { value: rate(metrics.follows, metrics.views), baseline: medians.followRate, weight: 0.2 },
+    { value: rate(metrics.comments, metrics.views), baseline: medians.commentRate, weight: 0.15 }
+  ]);
+  const contentScore = weightedRelativeScore([
+    { value: metrics.avgWatchSeconds, baseline: medians.avgWatchSeconds, weight: 0.55 },
+    { value: rate(metrics.likes, metrics.views), baseline: medians.likeRate, weight: 0.2 },
+    { value: rate(metrics.comments, metrics.views), baseline: medians.commentRate, weight: 0.15 },
+    { value: rate(metrics.shares, metrics.views), baseline: medians.shareRate, weight: 0.1 }
+  ]);
+  const stageLabel = stage === 'collecting' ? '数据收集中' : stage === 'early' ? '72小时初评' : '15天定评';
+  const topic = buildPerformanceDimension(topicScore, medians.sampleSize, '选题价值');
+  const cover = buildPerformanceDimension(coverScore, medians.sampleSize, '封面包装');
+  const content = buildPerformanceDimension(contentScore, medians.sampleSize, '内容承接');
+  const summary = stage === 'collecting'
+    ? '发布未满72小时，暂不用于调整后续推荐。'
+    : `选题${topic.label}，封面${cover.label}，内容${content.label}；${stage === 'final' ? '已形成最终复盘。' : '当前为初步判断，15天后定稿。'}`;
+  return {
+    stage,
+    stageLabel,
+    assessedAt: current.toISOString(),
+    baselineSampleSize: medians.sampleSize,
+    topic,
+    cover,
+    content,
+    summary
+  };
+}
+
+export function buildPublishedLearningSummary(records = [], now = new Date()) {
+  const assessed = safeArray(records)
+    .filter(record => record?.word && record?.sourceStatus !== 'placeholder')
+    .map(record => ({
+      word: cleanText(record.word, 80),
+      title: cleanText(record.title, 200),
+      assessment: buildPublishedPerformanceAssessment(record, records, now)
+    }))
+    .filter(item => item.assessment.stage !== 'collecting');
+  const pick = (dimension, level) => assessed
+    .filter(item => item.assessment?.[dimension]?.level === level)
+    .sort((left, right) => right.assessment[dimension].score - left.assessment[dimension].score)
+    .slice(0, 8)
+    .map(item => ({ word: item.word, title: item.title, score: item.assessment[dimension].score }));
+  return {
+    sampleSize: assessed.length,
+    strongTopics: pick('topic', 'strong'),
+    weakTopics: pick('topic', 'weak'),
+    strongCovers: pick('cover', 'strong'),
+    weakCovers: pick('cover', 'weak'),
+    strongContent: pick('content', 'strong'),
+    weakContent: pick('content', 'weak'),
+    rule: '选题表现只用于学习词和内容方向；封面表现只用于学习包装；内容表现只用于学习讲解与结构。'
+  };
+}
+
+export function buildPublicationCreativeSnapshot(workflow = {}, word = '', capturedAt = '') {
+  const cleanWord = cleanText(word, 80);
+  const entry = workflow?.candidatePool?.[cleanWord] || {};
+  const prepared = entry?.publicationSnapshot;
+  if (prepared?.capturedAt) return { ...prepared };
+  const card = entry?.aiCard || {};
+  if (!cleanWord || (!card?.generatedAt && !card?.cardVersion)) return null;
+  return {
+    capturedAt: cleanText(capturedAt, 80) || new Date().toISOString(),
+    cardVersion: Math.max(0, Math.min(99, Number.parseInt(card?.cardVersion, 10) || 0)),
+    cardGeneratedAt: cleanText(card?.generatedAt, 80),
+    suggestedTitle: cleanText(safeArray(card?.suggestedTitles)[0], 200),
+    coverVersion: Math.max(0, Math.min(99, Number.parseInt(card?.coverVersion, 10) || 0)),
+    coverSuggestion: {
+      coverText: cleanText(card?.coverSuggestion?.coverText, 120),
+      mainVisual: cleanText(card?.coverSuggestion?.mainVisual, 240),
+      style: cleanText(card?.coverSuggestion?.style, 160),
+      avoid: cleanText(card?.coverSuggestion?.avoid, 240)
+    },
+    referenceImage: {
+      status: ['missing', 'ready', 'failed'].includes(card?.referenceImage?.status) ? card.referenceImage.status : 'missing',
+      url: cleanText(card?.referenceImage?.url, 1000),
+      key: cleanText(card?.referenceImage?.key, 500),
+      visualBrief: cleanText(card?.referenceImage?.visualBrief, 1000),
+      prompt: cleanText(card?.referenceImage?.prompt, 4000),
+      provider: cleanText(card?.referenceImage?.provider, 80),
+      generatedAt: cleanText(card?.referenceImage?.generatedAt, 80)
+    }
   };
 }
 
@@ -375,6 +513,8 @@ export function applyPublishedImport(workflowInput = {}, batchInput = {}, option
   const duplicateKeys = new Map();
   rows.forEach(row => duplicateKeys.set(row.sourceKey, (duplicateKeys.get(row.sourceKey) || 0) + 1));
   const records = safeArray(workflow?.publishedRecords).map(record => ({ ...record }));
+  const existingRecordCount = records.length;
+  const matchedExistingIndexes = new Set();
   const previewRows = [];
   const summary = {
     totalRows: rows.length,
@@ -386,19 +526,16 @@ export function applyPublishedImport(workflowInput = {}, batchInput = {}, option
     unmappedCount: 0,
     nonWordCount: 0,
     ambiguousCount: 0,
-    activeCount: 0
+    activeCount: 0,
+    missingActiveCount: 0,
+    retainedAbsentCount: 0,
+    outsideExportWindowCount: 0
   };
 
   rows.forEach(row => {
-    if (row.contentCategory === 'non_word') summary.nonWordCount += 1;
-    else if (!row.word) summary.unmappedCount += 1;
-    if (duplicateKeys.get(row.sourceKey) > 1) {
-      summary.ambiguousCount += 1;
-      previewRows.push({ title: row.title, publishedAt: row.publishedAt, word: row.word, status: 'ambiguous' });
-      return;
-    }
     const existingIndex = records.findIndex(record => samePublishedIdentity(record, row));
     const existing = existingIndex >= 0 ? records[existingIndex] : null;
+    if (existingIndex >= 0 && existingIndex < existingRecordCount) matchedExistingIndexes.add(existingIndex);
     const identity = {
       id: existing?.id || buildRecordId(row),
       sourceKey: row.sourceKey,
@@ -415,12 +552,28 @@ export function applyPublishedImport(workflowInput = {}, batchInput = {}, option
       publishedAt: existing?.publishedAt || row.publishedAt,
       sourceStatus: 'record'
     };
+    if (identity.contentCategory === 'non_word') summary.nonWordCount += 1;
+    else if (!identity.word) summary.unmappedCount += 1;
+    if (duplicateKeys.get(row.sourceKey) > 1) {
+      summary.ambiguousCount += 1;
+      previewRows.push({
+        id: identity.id,
+        title: identity.title,
+        publishedAt: identity.publishedAt,
+        word: identity.word,
+        contentCategory: identity.contentCategory,
+        status: 'ambiguous'
+      });
+      return;
+    }
     const existingSelectionType = cleanText(existing?.selectionSource?.type, 40);
     const selectionSource = identity.contentCategory === 'non_word'
       ? cleanSelectionSource({ type: 'self_selected', confidence: 'high' })
       : existingSelectionType && existingSelectionType !== 'unknown'
         ? cleanSelectionSource(existing.selectionSource)
         : inferPublishedSelectionSource(identity.word, identity.publishedAt, workflow);
+    const creativeSnapshot = existing?.creativeSnapshot
+      || buildPublicationCreativeSnapshot(workflow, identity.word, capturedAt);
     const ageDays = getPublishedAgeDays(identity, now);
     const updateActive = ageDays <= PUBLISHED_METRIC_UPDATE_DAYS;
     const metricSnapshot = buildMetricSnapshot(row, batch);
@@ -436,6 +589,7 @@ export function applyPublishedImport(workflowInput = {}, batchInput = {}, option
       ...identity,
       ...contentPatch(existing || {}, row, batch),
       selectionSource,
+      creativeSnapshot,
       latestMetrics,
       latestStats: buildLatestStats(latestMetrics),
       metricSnapshots: nextSnapshots,
@@ -471,9 +625,34 @@ export function applyPublishedImport(workflowInput = {}, batchInput = {}, option
     });
   });
 
+  records.slice(0, existingRecordCount).forEach((record, index) => {
+    if (matchedExistingIndexes.has(index) || record?.sourceStatus === 'placeholder') return;
+    const ageDays = getPublishedAgeDays(record, now);
+    const updateActive = ageDays <= PUBLISHED_METRIC_UPDATE_DAYS;
+    const outsideExportWindow = Number.isFinite(ageDays) && ageDays >= PUBLISHED_EXPORT_WINDOW_DAYS;
+    if (updateActive) summary.missingActiveCount += 1;
+    else summary.retainedAbsentCount += 1;
+    if (outsideExportWindow) summary.outsideExportWindowCount += 1;
+    previewRows.push({
+      id: record.id,
+      title: record.title,
+      publishedAt: record.publishedAt,
+      word: record.word,
+      contentCategory: record.contentCategory,
+      status: updateActive ? 'missing_active' : outsideExportWindow ? 'retained_outside_window' : 'retained_absent',
+      selectionSource: record.selectionSource,
+      metricsFrozen: Boolean(record.metricsFrozen || !updateActive)
+    });
+  });
+
+  const assessedRecords = records.map(record => ({
+    ...record,
+    performanceAssessment: buildPublishedPerformanceAssessment(record, records, now)
+  }));
+
   return {
     batch,
-    records: records.sort((left, right) => String(right.publishedAt || '').localeCompare(String(left.publishedAt || ''))),
+    records: assessedRecords.sort((left, right) => String(right.publishedAt || '').localeCompare(String(left.publishedAt || ''))),
     previewRows,
     summary
   };

@@ -8,6 +8,24 @@ export function createImageFallbackController(options = {}) {
     const image = event.target;
     const action = image?.dataset?.imageFallback;
     if (!action) return;
+    if (action === 'fallback-list') {
+      let fallbackList = [];
+      try {
+        fallbackList = JSON.parse(image.dataset.fallbackList || '[]');
+      } catch {
+        fallbackList = [];
+      }
+      const currentIndex = Number.parseInt(image.dataset.fallbackIndex || '-1', 10);
+      const nextIndex = Number.isFinite(currentIndex) ? currentIndex + 1 : 0;
+      const nextSrc = Array.isArray(fallbackList) ? String(fallbackList[nextIndex] || '') : '';
+      if (nextSrc) {
+        image.dataset.fallbackIndex = String(nextIndex);
+        image.src = nextSrc;
+      } else {
+        image.remove?.();
+      }
+      return;
+    }
     if (action === 'fallback-src') {
       const fallbackSrc = image.dataset.fallbackSrc || '';
       if (fallbackSrc && image.dataset.fallbackApplied !== 'true') {
