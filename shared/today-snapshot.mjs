@@ -105,7 +105,7 @@ const NEGATIVE_WORD_RE = /イライラ|うざい|キレる|グチる|めんど�
 const EMOTION_SOCIAL_RE = /大正解|小確幸|自己肯定感|気まずい|モヤる|距離感|気を遣う|空気読む|しんどい|刺さる|だるい|わかりみ|塩対応|すれ違い|共感|情绪|情緒|人际|人際|社交|语感|語感|関係|关系|關係|気持ち|心情/;
 const SEASONAL_PATTERN = /バレンタイン|ホワイトデー|お盆|クリスマス|正月|花見|桜|ハロウィン|七夕|節分|祭り|紅葉|季節|节日|節日|季节|文化/;
 const RECOMMENDATION_ORIGIN_LABELS = {
-  codex_generated: 'Codex 次日草稿',
+  codex_generated: 'Codex 周草稿',
   deepseek_new: 'DeepSeek 新生成',
   candidate_pool: 'AI 候选池旧词',
   history_fallback: '历史热门回流',

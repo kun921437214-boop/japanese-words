@@ -1557,7 +1557,9 @@ test('published page model exposes 30-day medians, 15-day state and red-card com
   const model = buildPublishedPageModel([{ type: 'record', record }], { now: new Date('2026-07-20T14:30:00+08:00') });
   assert.equal(model.activeCount, 1);
   assert.equal(model.medians.impressions, 1000);
-  assert.equal(getPublishedUpdateState(record, new Date('2026-07-20T14:30:00+08:00')).active, true);
+  const updateState = getPublishedUpdateState(record, new Date('2026-07-20T13:20:00+08:00'));
+  assert.equal(updateState.active, true);
+  assert.equal(updateState.description, '发布后第 2 天，数据每天 13:20 更新');
   assert.equal(buildPublishedMetricRows(record, { ...model.medians, impressions: 2000 })[0].belowMedian, true);
 });
 
@@ -1811,6 +1813,8 @@ test('module migration removes inline handlers and the temporary window compatib
   assert.equal(appSource.includes('data-workflow-action="candidate-state"'), false);
   assert.equal(appSource.includes('data-workflow-action="ai-preview-selection"'), false);
   assert.ok(indexSource.includes('id="publishedInsightsSummary"'));
+  assert.match(indexSource, /每天 13:20 更新/);
+  assert.doesNotMatch(indexSource, /每天 14:30 更新/);
   assert.ok(appSource.includes('buildPublishedMetricRows'));
   assert.match(appSource, /const publishedMeaning = resolvePublishedContentSubLabel\(record, word\)/);
   assert.match(appSource, /published-detail-word[\s\S]*publishedMeaning/);

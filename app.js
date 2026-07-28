@@ -230,7 +230,7 @@ const AI_ACTION_LABELS = {
   audit_missing_library_words: '历史种子复核'
 };
 const RECOMMENDATION_ORIGIN_LABELS = {
-  codex_generated: 'Codex 次日草稿',
+  codex_generated: 'Codex 周草稿',
   deepseek_new: 'DeepSeek 新生成',
   candidate_pool: 'AI 候选池旧词',
   history_fallback: '历史热门回流',

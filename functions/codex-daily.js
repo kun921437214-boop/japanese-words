@@ -232,7 +232,7 @@ export async function onRequest({ request, env }) {
       action: 'codex-daily.promote',
       actor: authorization.actor,
       target: expectedDateKey,
-      summary: `发布 Codex 次日草稿 ${promoted.draft.wordCount} 个词`
+      summary: `发布 Codex 周计划草稿 ${promoted.draft.wordCount} 个词`
     }, { strategy: 'automated' });
     await env.FAVORITES.put(draftKey, JSON.stringify(promoted.draft), { expirationTtl: CODEX_DAILY_DRAFT_TTL_SECONDS });
     return respond({

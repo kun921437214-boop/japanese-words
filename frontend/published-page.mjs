@@ -233,7 +233,7 @@ export function getPublishedUpdateState(record = {}, now = new Date()) {
     ageDays,
     label: active ? '每日更新中' : '数据已定格',
     description: active
-      ? `发布后第 ${Math.max(1, Math.floor(ageDays) + 1)} 天，数据每天 14:30 更新`
+      ? `发布后第 ${Math.max(1, Math.floor(ageDays) + 1)} 天，数据每天 13:20 更新`
       : '发布超过 15 天，保留最后一次累计数据'
   };
 }
