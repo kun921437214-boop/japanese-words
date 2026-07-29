@@ -1,20 +1,28 @@
-# Codex 每日内容流水线
+# Codex 周内容流水线
 
 ## 目标
 
-每天北京时间 14:00 在固定的 Codex 对话中准备次日 10 个词、完整词卡和参考图片。腾讯云运行时在午夜把已通过质量门的草稿晋升为正式 `todaySnapshot`；草稿缺失或不合格时，才调用现有 DeepSeek 日更作为保底。
+每周一北京时间 14:30 在固定的 Codex 任务中准备下周周一至周日的内容：先规划 7 天 × 10 词，再按日期连续完成词卡、参考图、验证、上传和草稿提交。腾讯云运行时每天 00:00 把对应日期已通过质量门的草稿晋升为正式 `todaySnapshot`；草稿缺失或不合格时，才调用现有 DeepSeek 日更作为保底。
 
-固定 Codex 任务：`019f5c0e-3d15-75b2-92b1-5f6cb05610aa`。14:00 主任务和 17:00 补漏任务都必须唤醒这一条任务，不能每天创建新任务。
+当前运营自动化：
+
+- `japanese-words`：每天 13:20 同步小红书官方已发布数据，为周一 14:30 的选词、词卡和图片生成提供最新反馈。
+- `japanese-words-2`：每天 13:20 只读检查当天 `todaySnapshot`，确认 00:00 晋升结果为当天恰好 10 词。
+- `japanese-words-codex`：每周一 14:30 生成并上传下周整周内容。
+- `japanese-words-production`：周二至周日 14:40 验收下周整周内容；有问题时从断点修复，任意一天全周通过后写 `verification.json`，本周后续触发只读本地标记并退出。
+
+周一生成任务和周二起的验收任务必须复用同一组周计划、进度与单日断点，不能按日期创建彼此孤立的任务。
 
 ## 数据流
 
-1. Codex 只读请求 `/codex-daily?date=明日&view=context`，取得账号定位、收藏/反馈、候选池和近 30 天快照。
-2. Codex 在本地生成 10 个词和完整词卡，并用 image generation 为每个词准备一张参考图。
+1. 周一 13:20 已发布数据同步完成后，Codex 为下周 7 天逐日请求 `/codex-daily?date=<目标日期>&view=context`，取得账号定位、收藏/反馈、候选池、已发布表现和近 30 天快照。
+2. Codex 先生成 70 词周计划，完成跨日去重与语义簇审计，再按日期连续生成每天 10 个词的完整词卡，并用 image generation 为每个词准备一张参考图。
 3. 图片通过 `PUT /codex-image` 写入独立的 `REFERENCE_IMAGES_KV`；返回的同源 URL 保存到 `aiCard.referenceImage`。若未来开通 R2，接口仍可优先使用 `REFERENCE_IMAGES` R2 binding。
 4. `npm run codex:daily -- validate` 在本地执行同一套质量门。
 5. Codex 使用独立的 `CODEX_AUTOMATION_SECRET` 提交草稿。该凭证不能发布草稿，不能调用 `/favorites`、`/daily-refresh` 或 `/ai-cards`。
 6. 北京时间 00:00，腾讯云内部调度器使用现有 `AUTO_REFRESH_SECRET` 调用 `POST /codex-daily` 的 `promote` 动作。
 7. 只有有效草稿会晋升；否则腾讯云运行时继续调用现有 `/daily-refresh`。后续 aiCard 定时任务仅在仍有缺卡时调用 DeepSeek。
+8. 周二 14:40 起，验收任务逐日检查下周 7 天是否全部达到 10 词、10 张 ready 词卡、10 张 Production ready 图片、`validation.valid=true`、零 error、零 warning。未通过时只修复缺失项；整周通过后本周停止 Production 检查。
 
 ## 发布门
 
@@ -23,12 +31,31 @@
 - 完整词卡必须覆盖 `summary`、`explanation`、`usageScenes`、`examples`、`suggestedTitles`、`coverSuggestion`、`contentAngles`、`targetAudience`、`referenceDirection`、`riskWarning`、`wrongUsage`、`similarWords`、`interactionPrompts`。
 - 内容数量与 DeepSeek 词卡规则对齐：例句 2-4 条、推荐标题 3-6 条、内容角度 3-6 条、互动引导 2-4 条；相近词至少 1 个，并说明语感差异。
 - 例句必须包含自然日语、假名、罗马音、中文和简短语境说明，不能只给直译。
+- 同一周 70 词不能重复或用同义改写凑数。
 - 近 30 天不能重复。
 - 同日语义簇不能重复。
 - 美妆品类最多 1 个，基础寒暄/教材礼貌词最多 1 个。
 - S 级最多 6 个，人工质量估分至少 75。
 - 高风险、低置信或待复核词不能自动发布。
-- 参考图片缺失会产生 warning，但不会阻断文字卡片，页面使用原有兜底图。
+- 下周草稿提交和整周验收要求参考图片全部为 Production ready；图片缺失产生的 warning 必须在提交前消除。
+
+## 周计划与断点
+
+```text
+exports/codex-weekly/<本周周一>/plan.json
+exports/codex-weekly/<本周周一>/progress.json
+exports/codex-weekly/<本周周一>/complete.json
+exports/codex-weekly/<本周周一>/verification.json
+exports/codex-daily/<目标日期>/context.json
+exports/codex-daily/<目标日期>/draft.json
+exports/codex-daily/<目标日期>/validation.json
+exports/codex-daily/<目标日期>/images/
+exports/codex-daily/<目标日期>/image-uploads.json
+```
+
+`progress.json` 记录 `completedDays`、`reservedWords`、`nextTargetDate` 和逐日阶段。每完成一天立即落盘，再继续下一天；中断后从最早未完成日期恢复，不重做已 valid 日期、ready 词卡或 ready 图片。
+
+`complete.json` 表示周一生成与上传已完成；`verification.json` 表示周二起的独立 Production 整周验收已通过。验收标记必须包含本周周一、下周日期范围、7 天逐日计数和检查时间；旧周标记不得复用。
 
 ## 本地命令
 
@@ -59,7 +86,7 @@ KV 模式下单张图片不能超过 800 KiB，批量命令会在联网前完成
 1. 在 `/etc/japanese-words.env` 配置独立 secret `CODEX_AUTOMATION_SECRET`，不要复用 `AUTO_REFRESH_SECRET`。
 2. 确认腾讯云 FileKV 和参考图片目录可写、备份定时器已启用，并保持数据与图片分区存放。
 3. 部署腾讯云运行时后，先用只读 status 和 Production smoke 验证。
-4. 再启用固定 Codex 任务的 14:00、16:00 和 17:00 三个 heartbeat。
+4. 启用周一 14:30 的下周整周生成任务，以及周二至周日 14:40 的整周验收与断点修复任务。
 5. 如有可用的告警接收端，在 `/etc/japanese-words.env` 配置 `OPS_ALERT_WEBHOOK_URL`；不配置时健康结果仍写入 FileKV 和 systemd 日志。
 
 Cloudflare Pages、Worker、KV 和协调器只作为回滚资源保留；其 Worker cron 已停用，避免与腾讯云内部调度重复运行。图片只能通过带 Codex 专用凭证的 `/codex-image` 写入正式站存储。
@@ -79,14 +106,14 @@ Cloudflare Pages、Worker、KV 和协调器只作为回滚资源保留；其 Wor
 
 ## 固定任务行为
 
-14:00 主任务：读取明日上下文，生成并验证 10 个词/卡片/图片，只提交草稿，不发布、不调用 DeepSeek、不部署。
+每天 13:20 已发布数据同步：只使用小红书创作者平台官方导出，preview 无歧义后才提交，提供最新 topic、cover 和 content 表现反馈。
 
-16:00 恢复检查：读取同一日期的现有草稿；如果 14:00 因网络或审批链路中断，使用同一个 `upload-images` 命令从缺失图片继续，不重做 ready 内容。
+每天 13:20 当日快照监控：只读检查 `/healthz` 与 `/favorites`，确认 00:00 晋升后的日期和 10 词，不生成或修复内容。
 
-17:00 最终补漏：再次只补未完成词卡或图片。若草稿仍不合格，应在同一 Codex 任务中报告错误并保留 DeepSeek 午夜兜底。
+周一 14:30 主任务：读取下周 7 天上下文，统一规划 70 词并按日期连续完成 10 词、10 卡、10 图、上传、验证和草稿提交；不发布、不调用 DeepSeek、不部署。
 
-17:15 腾讯云健康检查：验证次日草稿日期、质量门、10 个词和 10 张完整文字卡。异常记录在 `operations-health:daily:tomorrow-draft:<date>`，并在配置 webhook 后主动通知。
+周二至周日 14:40 验收与修复：检查下周整周 7 天是否全部为 10/10/10、valid、零 error、零 warning。发现问题时从同一周进度修复；整周通过后写 `verification.json`，本周后续触发不再访问 Production。
 
-00:00 腾讯云发布：Codex 草稿不可用时同步执行 DeepSeek 兜底。只有最终完成才写成功标记；排队中、HTTP 失败或生成失败都会保持可重试。
+每天 00:00 腾讯云发布：Codex 草稿不可用时同步执行 DeepSeek 兜底。只有最终完成才写成功标记；排队中、HTTP 失败或生成失败都会保持可重试。
 
-00:10 腾讯云健康检查：验证当日 `todaySnapshot` 日期和 10 个词。异常记录在 `operations-health:daily:today-snapshot:<date>`，并在配置 webhook 后主动通知。
+腾讯云运行时代码仍保留 00:10 当日快照和 17:15 次日草稿内部健康记录，作为服务端安全网。它们与上述 Codex 运营监控分层运行；调整运营自动化不能被误写成已经修改运行时 cron。

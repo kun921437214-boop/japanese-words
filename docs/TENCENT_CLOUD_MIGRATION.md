@@ -8,7 +8,8 @@ Production uses the existing Tencent Cloud Lighthouse instance in Beijing:
 - The Node runtime in `server/tencent-runtime.mjs` dispatches the existing API paths to the existing Pages Function handlers.
 - `FileKV` replaces Cloudflare KV with atomic, mode-`0600` files under `/var/lib/japanese-words`.
 - `LocalWorkflowCoordinator` serializes workflow writes in the same process, preserving the existing revision, idempotency, and audit behavior.
-- The same process runs the current Worker schedule and records daily run markers. Daily promotion and the 14:30 published refresh have restart catch-up protection.
+- The same process runs the current Worker schedule and records daily run markers. Daily promotion and the legacy service-side 14:30 published refresh have restart catch-up protection.
+- The primary official Xiaohongshu published-data import is a separate Codex automation at 13:20 Asia/Shanghai, before Monday's 14:30 next-week content generation.
 - Daily fallback completion is checked synchronously. The scheduler does not mark a queued or failed DeepSeek refresh as successful.
 - At 00:10 Asia/Shanghai the runtime verifies the current snapshot; at 17:15 it verifies the next-day Codex draft. Health records stay in FileKV, and an optional `OPS_ALERT_WEBHOOK_URL` receives failure/recovery JSON notifications.
 - Pages Functions receive a real `waitUntil` implementation, so long DeepSeek jobs are queued in the Node process instead of holding the Nginx request open until a 504.
@@ -97,7 +98,7 @@ Before DNS changes:
 2. Issue one certificate for `bijinihaitan.cn` and `www.bijinihaitan.cn` through the dedicated ACME webroot, then switch Nginx to `server/nginx/japanese-words-https.conf`. Keep the ACME location active so renewals do not depend on application routes.
 3. Set `DISABLE_SCHEDULER=false`, `SITE_URL=https://bijinihaitan.cn`, and the matching allowed origins.
    If an approved HTTPS alert receiver is available, also set `OPS_ALERT_WEBHOOK_URL`; never put its address or credentials in Git.
-4. Update `.env.codex-daily` so the 14:00/16:00/17:00 Codex task submits to `https://bijinihaitan.cn`.
+4. Update `.env.codex-daily` so the Monday 14:30 generation task and Tuesday-to-Sunday 14:40 verification/recovery task submit only to `https://bijinihaitan.cn`.
 5. Restart the application and run `SITE_URL=https://bijinihaitan.cn npm run smoke:production`.
 6. After Tencent logs confirm successful published refresh, daily promotion, and aiCard jobs, deploy `wrangler.worker.toml` with an empty cron list. Keep the Worker, coordinator, Pages project, and KV namespaces intact for rollback.
 

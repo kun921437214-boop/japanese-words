@@ -14,7 +14,7 @@ Completed:
 - Tencent Cloud Production runtime serving the existing API paths through Nginx, Node, FileKV, and `LocalWorkflowCoordinator`.
 - Cloudflare Pages, Worker, KV, and coordinator retained as an inactive rollback stack.
 - DeepSeek candidate generation and word-card generation.
-- Codex next-day draft, card, reference-image, validation, and midnight-promotion pipeline.
+- Codex weekly planning, per-day draft/card/image checkpoints, next-week verification, and midnight-promotion pipeline.
 - Candidate Pool with AI metadata, buckets, risks, confidence, review state, and `aiCard`.
 - Team workflow schema and merge rules through `shared/workflow-schema.mjs`.
 - Daily snapshot workflow for stable daily recommendations.
@@ -96,7 +96,9 @@ Production site: `https://bijinihaitan.cn`.
 
 P0:
 
-- Keep the 17:15 next-day-draft and 00:10 current-snapshot monitors healthy.
+- Keep the daily 13:20 published-data sync and current-snapshot monitor healthy so Monday generation can consume fresh feedback.
+- Keep the Monday 14:30 next-week generation and Tuesday-to-Sunday 14:40 full-week verification/recovery tasks healthy. Once a week verifies successfully, later checks that week must stop at the local marker without touching Production.
+- Keep the Tencent runtime's internal 00:10 current-snapshot and 17:15 next-day-draft health records healthy as a separate service-side safety net.
 - Investigate every `scheduled_failure` or `operations-health:daily:*` unhealthy record; do not treat an accepted background request as completion.
 - Keep the Playwright browser E2E fixture aligned with Daily Hot, Favorites, Published, backup, and conflict behavior.
 

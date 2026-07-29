@@ -197,6 +197,14 @@ The daily path has two completion checks:
 - 00:00 Asia/Shanghai promotion first tries the valid Codex draft, then runs DeepSeek inline as fallback. A queued or failed fallback is not success and leaves the scheduler marker retryable.
 - 00:10 checks the current `todaySnapshot`; 17:15 checks the next-day Codex draft. Results are stored as `operations-health:daily:*` records, reported in `/healthz`, and sent to `OPS_ALERT_WEBHOOK_URL` when configured.
 
+The Tencent runtime checks above are a service-side safety net. Current Codex operator automation runs separately:
+
+- 13:20 daily: official published-data sync and read-only current-snapshot monitor.
+- 14:30 Monday: generate and upload the following week's seven daily drafts.
+- 14:40 Tuesday through Sunday: verify the full following week in Production, repair missing work, and stop further checks for the week after the first complete verification.
+
+Changing these Codex automation times does not change the Tencent runtime cron. Any future runtime-cron change requires its own reviewed code PR, tests, Production backup/preflight, and explicit deployment approval.
+
 ## Common Deployment Problems
 
 ### Wrangler authentication fails
