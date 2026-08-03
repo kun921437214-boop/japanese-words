@@ -313,6 +313,23 @@ test('Codex daily context receives separated published learning signals', () => 
   }, '2026-07-22');
   assert.ok(context.publishedLearning);
   assert.match(context.publishedLearning.rule, /选题表现只用于学习词/);
+  assert.equal(context.publishedLearning.guidanceEnabled, false);
+
+  const futureContext = buildCodexDailyContext({
+    publishedRecords: [{
+      id: 'target',
+      word: '抜け感',
+      title: '抜け感',
+      publishedAt: '2026-07-10T09:00:00+08:00',
+      latestMetrics: { impressions: 5000, views: 1000, coverClickRate: 0.05, likes: 20, comments: 10, favorites: 80, follows: 10, shares: 20, avgWatchSeconds: 5 }
+    }, ...baselineRecords]
+  }, '2026-08-10');
+  assert.equal(futureContext.publishedLearning.guidanceEnabled, true);
+  assert.equal(futureContext.publishedLearning.guidanceTargetDateKey, '2026-08-10');
+  assert.equal(futureContext.publishedLearning.guidance.topic.destination, 'topic_selection_only');
+  assert.equal(futureContext.publishedLearning.guidance.cover.destination, 'visual_brief_only');
+  assert.equal(futureContext.publishedLearning.guidance.content.destination, 'card_structure_only');
+  assert.ok(!('rankAdjustment' in futureContext.publishedLearning.guidance.topic));
 });
 
 test('Codex token can submit drafts but cannot publish or write favorites', async () => {

@@ -206,6 +206,94 @@ test('发布导入自动留档当前内容版本并生成72小时分层复盘', 
   assert.ok(learning.weakCovers.some(item => item.word === '抜け感'));
 });
 
+test('发布学习 guidance 按用途分流并防止单篇过拟合', () => {
+  const baselineRecords = ['余白', 'こなれ', '透明感'].map((word, index) => ({
+    id: `guidance-baseline-${index}`,
+    word,
+    title: word,
+    publishedAt: `2026-07-${String(1 + index).padStart(2, '0')}T09:00:00+08:00`,
+    latestMetrics: {
+      impressions: 5000,
+      views: 1000,
+      coverClickRate: 0.2,
+      likes: 50,
+      comments: 3,
+      favorites: 20,
+      follows: 2,
+      shares: 5,
+      avgWatchSeconds: 10
+    }
+  }));
+  const oneStrongTopic = {
+    id: 'guidance-strong-one',
+    word: '抜け感',
+    title: '抜け感',
+    publishedAt: '2026-07-16T09:00:00+08:00',
+    latestMetrics: {
+      impressions: 5000,
+      views: 1000,
+      coverClickRate: 0.05,
+      likes: 20,
+      comments: 10,
+      favorites: 80,
+      follows: 10,
+      shares: 20,
+      avgWatchSeconds: 5
+    }
+  };
+  const singlePost = buildPublishedLearningSummary(
+    [oneStrongTopic, ...baselineRecords],
+    NOW,
+    { targetDateKey: '2026-08-10' }
+  );
+  assert.equal(singlePost.guidanceEnabled, true);
+  assert.equal(singlePost.guidance.topic.destination, 'topic_selection_only');
+  assert.equal(singlePost.guidance.cover.destination, 'visual_brief_only');
+  assert.equal(singlePost.guidance.content.destination, 'card_structure_only');
+  assert.equal(singlePost.guidance.topic.strongSignals.length, 1);
+  assert.equal(singlePost.guidance.topic.state, 'neutral');
+  assert.equal(singlePost.guidance.topic.actionable, false);
+  assert.match(singlePost.guidance.cover.weakSignalBoundary, /不得据此降低词本身/);
+  assert.match(singlePost.guidance.content.weakSignalBoundary, /不得据此降低词本身/);
+
+  const twoStrongTopics = buildPublishedLearningSummary(
+    [
+      oneStrongTopic,
+      {
+        ...oneStrongTopic,
+        id: 'guidance-strong-two',
+        word: '余韻',
+        title: '余韻',
+        publishedAt: '2026-07-17T09:00:00+08:00'
+      },
+      {
+        ...oneStrongTopic,
+        id: 'guidance-collecting',
+        word: '高鳴る',
+        title: '高鳴る',
+        publishedAt: '2026-07-19T09:00:00+08:00'
+      },
+      ...baselineRecords
+    ],
+    NOW,
+    { targetDateKey: '2026-08-10' }
+  );
+  assert.equal(twoStrongTopics.guidance.topic.state, 'early');
+  assert.equal(twoStrongTopics.guidance.topic.actionable, true);
+  assert.ok(twoStrongTopics.guidance.topic.strongSignals.every(item => item.guidanceWeight === 0.5));
+  assert.ok(!twoStrongTopics.guidance.topic.strongSignals.some(item => item.word === '高鳴る'));
+  assert.match(twoStrongTopics.guidance.topic.instruction, /半权重定性提示/);
+
+  const beforeCutoff = buildPublishedLearningSummary(
+    [oneStrongTopic, ...baselineRecords],
+    NOW,
+    { targetDateKey: '2026-08-09' }
+  );
+  assert.equal(beforeCutoff.guidanceEnabled, false);
+  assert.equal(beforeCutoff.guidance.topic.state, 'disabled');
+  assert.ok(Array.isArray(beforeCutoff.strongTopics));
+});
+
 test('已发布封面首次同步到本站后永久复用，不再重新下载或覆盖', async () => {
   const stored = new Map();
   const imageKv = {

@@ -17,6 +17,8 @@
 
 1. 周一 13:20 已发布数据同步完成后，Codex 为下周 7 天逐日请求 `/codex-daily?date=<目标日期>&view=context`，取得账号定位、收藏/反馈、候选池、已发布表现和近 30 天快照。
 2. Codex 先生成 70 词周计划，完成跨日去重与语义簇审计，再按日期连续生成每天 10 个词的完整词卡，并用 image generation 为每个词准备一张参考图。
+   - 目标日期从 `2026-08-10` 起，context 中的发布表现按 topic / cover / content 三路分流：分别只服务选词、视觉 Brief 和词卡结构；不做数值排名加权，不改变 `aiCard` 结构。
+   - `collecting` 与 `insufficient` 保持中性，`early` 仅作半权重定性提示，`final` 才作完整定性 guidance；至少需要 2 篇同方向成熟信号，封面或内容偏弱不得惩罚词本身。
 3. 图片通过 `PUT /codex-image` 写入独立的 `REFERENCE_IMAGES_KV`；返回的同源 URL 保存到 `aiCard.referenceImage`。若未来开通 R2，接口仍可优先使用 `REFERENCE_IMAGES` R2 binding。
 4. `npm run codex:daily -- validate` 在本地执行同一套质量门。
 5. Codex 使用独立的 `CODEX_AUTOMATION_SECRET` 提交草稿。该凭证不能发布草稿，不能调用 `/favorites`、`/daily-refresh` 或 `/ai-cards`。

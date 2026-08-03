@@ -244,7 +244,9 @@ export function buildCodexDailyContext(workflowInput = {}, targetDateKey = '') {
     favorites: workflow.words,
     feedback: workflow.feedback,
     publishedWords: workflow.publishedRecords.map(record => record.word).filter(Boolean),
-    publishedLearning: buildPublishedLearningSummary(workflow.publishedRecords),
+    publishedLearning: buildPublishedLearningSummary(workflow.publishedRecords, new Date(), {
+      targetDateKey: target
+    }),
     recentSnapshots: recentSnapshots.slice(0, 30),
     candidatePool: Object.values(workflow.candidatePool || {}).map(entry => ({
       kanji: entry.kanji,

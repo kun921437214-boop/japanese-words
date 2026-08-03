@@ -158,6 +158,9 @@ Without a ready card, show only basic information and a "generate DeepSeek word 
 - Topic assessment prioritizes favorites, shares, follows, and comments. Cover assessment prioritizes cover click-through and view rate. Content assessment prioritizes average watch, likes, comments, and shares.
 - A dimension assessment requires enough mature comparison posts. When the sample is insufficient, keep it neutral instead of manufacturing a positive or negative conclusion.
 - Daily recommendation learning may consume only mature topic assessment. Cover and content assessments are used to improve packaging and writing guidance.
+- For Codex target dates on or after `2026-08-10`, published learning is routed by dimension: topic to topic selection only, cover to visual Brief only, and content to card structure only. The routes are guidance, not numeric ranking adjustments.
+- `collecting` and `insufficient` signals stay neutral. `early` signals have half guidance weight, `final` signals have full guidance weight, and fewer than two same-direction mature posts must not create a new conclusion.
+- Weak cover or content performance must never penalize the word itself. Published learning must preserve the existing compatibility summary fields and the `aiCard` structure.
 - `latestStats` is only a derived compatibility mirror for existing ranking code. It is not the Published page source of truth.
 - Legacy 1h / 2h / 4h / 24h / 72h snapshots, manual ratings, performance reasons, and auto-refresh fields are not part of the new Published product model.
 
