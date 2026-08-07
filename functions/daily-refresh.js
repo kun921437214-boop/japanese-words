@@ -27,10 +27,10 @@ import {
 import { mergeAutomatedWorkflowUpdate } from '../shared/workflow-mutation.mjs';
 import { commitWorkflowMutation } from '../shared/workflow-coordinator.mjs';
 const PROMPT_VERSION_BY_ACTION = {
-  stable_today: 'candidate-v3',
-  wild_ideas: 'candidate-v3',
-  generate_candidates: 'candidate-v3',
-  extract_from_materials: 'candidate-v3',
+  stable_today: 'candidate-v4-content-mix',
+  wild_ideas: 'candidate-v4-content-mix',
+  generate_candidates: 'candidate-v4-content-mix',
+  extract_from_materials: 'candidate-v4-content-mix',
   enrich_words: 'card-v2',
   generate_word_card: 'card-v2',
   rerank_candidates: 'rerank-v1',
@@ -161,7 +161,7 @@ function createRequestId() {
 }
 
 function getPromptVersion(action) {
-  return PROMPT_VERSION_BY_ACTION[action] || 'candidate-v3';
+  return PROMPT_VERSION_BY_ACTION[action] || 'candidate-v4-content-mix';
 }
 
 function stableStringify(value) {

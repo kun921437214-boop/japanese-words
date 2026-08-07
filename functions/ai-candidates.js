@@ -26,10 +26,10 @@ const LIBRARY_AUDIT_BUCKETS = ['today', 'meme_fast', 'long_term', 'seasonal', 'r
 const MAX_SINGLE_DEEPSEEK_COUNT = 10;
 const BATCH_DEEPSEEK_COUNT = 10;
 const PROMPT_VERSION_BY_ACTION = {
-  stable_today: 'candidate-v3',
-  wild_ideas: 'candidate-v3',
-  generate_candidates: 'candidate-v3',
-  extract_from_materials: 'candidate-v3',
+  stable_today: 'candidate-v4-content-mix',
+  wild_ideas: 'candidate-v4-content-mix',
+  generate_candidates: 'candidate-v4-content-mix',
+  extract_from_materials: 'candidate-v4-content-mix',
   enrich_words: 'card-v2',
   generate_word_card: 'card-v2',
   rerank_candidates: 'rerank-v1',
@@ -38,10 +38,10 @@ const PROMPT_VERSION_BY_ACTION = {
 };
 const BATCH_FOCUS_AREAS = [
   '情绪状态、人际关系、社交语感、中文不好直译的日语表达',
-  '生活场景、学习工作状态、消费状态、可收藏的稳定表达',
-  '大众可理解的追星兴趣和圈层兴趣，但必须能转译成情绪或生活场景',
-  '低风险网络口语、评论区语感、吐槽但不冒犯的表达词',
-  '审美、美妆、穿搭只生成具体表达词，不要泛分类词'
+  '已证实常用的日常缩略语，说明完整形式；不确定缩写不要冒充常用语',
+  '有时间证据的低风险流行表达；没有 trend_claim 证据就不要包装成流行词',
+  '具体、可视化、能讲语感差异的美妆或穿搭表达；不要泛分类词',
+  '生活状态或大众可理解圈层兴趣，作为结构补位但不要挤占账号主轴'
 ];
 const WORD_NORMALIZATION_MAP = {
   'オーバサイズ': 'オーバーサイズ'
@@ -357,7 +357,7 @@ function getAccountLearningBonus(entry = {}) {
 }
 
 function getPromptVersion(action) {
-  return PROMPT_VERSION_BY_ACTION[action] || 'candidate-v3';
+  return PROMPT_VERSION_BY_ACTION[action] || 'candidate-v4-content-mix';
 }
 
 function stableStringify(value) {
@@ -447,7 +447,7 @@ function buildSystemPrompt() {
     'expressionValueScore 高分特征：中文不好直译、有情绪共鸣、人际语感、生活场景、自然例句、适合封面大字、用户会收藏；低分特征：普通名词、话题标签、行业分类、教材词、不好解释、不好配图。',
     '每个候选词只给 1 条 examples，suggestedTitles 最多 2 条，coverSuggestion 保持简短。',
     '如果你不确定某个词是否真实流行，不要包装成热门，必须标记 confidenceLevel=review。',
-    '如果某个词是缩写、来源不明词、自创词、疑似编词，必须标记 confidenceLevel=review。',
+    '成熟且有 common_usage、user_material 或 trend_claim 证据的日常缩略语可以标记 confidenceLevel=high 或 medium，并在 meaning/reason 说明完整形式；只有来源不明、自创、疑似编造或用法不稳定的缩写才必须标记 confidenceLevel=review。',
     '低风险且常见用法的新梗、网络口语、圈层词可以标记 confidenceLevel=high 或 medium，并放入 displayBucket=meme_fast。',
     '如果某个词涉及角色名、品牌名、IP、明星、隐私、窥私、评价他人外貌，必须标记 confidenceLevel=review。',
     '如果只是普通词，不要写成“今日热门”，可以标记为稳定候选或长期候选。',
@@ -457,6 +457,9 @@ function buildSystemPrompt() {
     '只有不确定、疑似错误、高风险或需人工核验的词进入 displayBucket=review。',
     '梗化词必须在 reviewReason 或 riskWarning 里说明过期风险。',
     '不允许编造来源，不允许写“近期流行”但 evidenceType 却是 unknown。',
+    '流行表达要进入 displayBucket=meme_fast，必须 evidenceType=trend_claim 且 confidenceLevel=high 或 medium；没有时间证据时改为稳定候选或放 review。',
+    '当任务要求 10 个候选时，内容结构按 4 个情绪/人际核心表达、2 个成熟日常缩略语、1 个有时间证据的流行表达、2 个具体美妆/穿搭表达、1 个灵活补位生成。',
+    '每 10 个候选最多 2 个完整词组，其中长句式或惯用语最多 1 个；其余使用单词、缩略语或短复合词。',
     '适配分不能普遍偏高，只有真正适合小红书且解释可靠的词才可以超过85分。',
     'displayBucket=today 只给表达价值高、场景清楚、风险低、适合标题封面且不是最近重复的词；泛话题词、纯分类词、需要包装的词放 long_term。',
     '基础网络词、吐槽词、追星圈层词优先放 displayBucket=meme_fast；普通长期可做词和泛话题观察词放 long_term；节日季节词放 seasonal。',
@@ -520,8 +523,12 @@ function buildUserPrompt(payload) {
     },
     accountLearningRule: {
       coreQuestion: '这个词是否值得做成小红书日语内容，而不只是热门话题？',
-      priorityMix: '情绪状态/人际语感约40%，生活/学习/状态场景约25%，大众可理解圈层兴趣约15%，审美美妆穿搭约10%，季节文化其他约10%。',
-      genericTopicRule: 'ネイル、ベースメイク、副業、転職、祭り、お弁当、資格勉強、自己投資 这类泛话题词默认不要放 today，应放 long_term 或 review，除非有具体强场景和封面标题。'
+      priorityMix: '每 10 个候选固定为：情绪状态/人际语感 4，成熟日常缩略语 2，有时间证据的流行表达 1，具体美妆/穿搭表达 2，灵活补位 1。',
+      expressionFormRule: '每 10 个候选至少 8 个单词、成熟缩略语或短复合词；完整词组最多 2 个，长句式或惯用语最多 1 个。',
+      trendRule: '流行词配额必须 evidenceType=trend_claim、displayBucket=meme_fast 且 confidenceLevel=high/medium；不能只凭“近期流行”描述。',
+      abbreviationRule: '成熟日常缩略语要写出完整形式并提供 common_usage、user_material 或 trend_claim 证据；来源不明、自造或用法不稳的缩写进入 review。',
+      genericTopicRule: 'ネイル、ベースメイク、副業、転職、祭り、お弁当、資格勉強、自己投資 这类泛话题词默认不要放 today；美妆/穿搭名额只给具体、可视化、能讲清语感差异的表达。',
+      publishedReviewRule: '已发布复盘中，泛“流行词”标题没有稳定显示更高收藏价值，因此不做自动加权；继续以收藏率、分享、关注和评论判断选题，只把成熟 topic 信号用于选词。'
     },
     completeJsonExample: {
       items: [

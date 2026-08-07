@@ -16,8 +16,11 @@ import {
   isCurrentGeneratorSnapshot
 } from '../shared/today-snapshot.mjs';
 import {
+  DAILY_CONTENT_MIX_TARGETS,
   buildDailyQualityContext,
   buildDailyQualitySummary,
+  getDailyContentMixLane,
+  getDailyExpressionForm,
   getDailyQualityCategory,
   getDailyQualityScoreDelta
 } from '../shared/today-quality.mjs';
@@ -588,25 +591,29 @@ test('daily quality audit flags 2026-06-29 basic greeting heavy set', () => {
   assert.ok(summary.warnings.some(text => text.includes('cute_slang')));
 });
 
-test('daily snapshot selection limits basic, beauty, fandom and keeps account-fit categories', () => {
-  const emotionWords = ['ぐっと', 'しんみり', 'ほのぼの', 'わくわく', 'お疲れ気味'];
-  const socialWords = ['かぶる', '気が合う', '気が置けない', '気を遣う'];
-  const lifeWords = ['だらける', '追い込み', '積みゲー', '気分転換', '気が散る'];
+test('daily snapshot selection enforces the published-review content mix and phrase limits', () => {
+  const emotionWords = ['ぐっと', 'しんみり'];
+  const socialWords = ['かぶる', '気を遣う'];
+  const abbreviationWords = ['タイパ', 'コスパ'];
+  const trendWords = ['メロい'];
+  const beautyExpressionWords = ['オーロラ肌', 'シアーレイヤード'];
+  const flexibleWords = ['追い込み'];
   const basicWords = ['ありがとうございます', 'おはようございます', 'こんにちは', 'こんばんは'];
   const politeWords = ['お願いします', 'よろしくお願いします'];
   const beautyWords = ['アイシャドウベース', 'グロスリップ', 'マスカラ'];
   const fandomWords = ['推し増し', '尊み', '沼落ち', '解釈一致'];
-  const neutralWords = ['落ち合う', 'やりくり', '煮詰まる', 'そわそわ', 'ドキドキ'];
   const candidatePool = {};
   [
     ...emotionWords.map(kanji => makeQualityCandidate(kanji, { candidateType: '网络口语词', reason: '情绪状态，中文不好直译，有收藏价值。' })),
     ...socialWords.map(kanji => makeQualityCandidate(kanji, { candidateType: '稳定候选', reason: '人际关系和社交语感表达。' })),
-    ...lifeWords.map(kanji => makeQualityCandidate(kanji, { candidateType: '生活方式词', reason: '生活学习状态场景。' })),
+    ...abbreviationWords.map(kanji => makeQualityCandidate(kanji, { candidateType: '网络口语词', reason: '成熟日常缩略语，说明完整形式和常用场景。' })),
+    ...trendWords.map(kanji => makeQualityCandidate(kanji, { candidateType: '新鲜梗词', displayBucket: 'meme_fast', evidenceType: 'trend_claim', freshness: '短期', reason: '有时间证据的低风险流行表达。' })),
+    ...beautyExpressionWords.map(kanji => makeQualityCandidate(kanji, { candidateType: '美妆穿搭词', reason: '具体美妆穿搭表达，可视化且能讲语感差异。' })),
+    ...flexibleWords.map(kanji => makeQualityCandidate(kanji, { candidateType: '生活方式词', reason: '生活学习状态场景。' })),
     ...basicWords.map(kanji => makeQualityCandidate(kanji, { xhsFitScore: 95, candidateType: '稳定候选', reason: '基础问候。' })),
     ...politeWords.map(kanji => makeQualityCandidate(kanji, { xhsFitScore: 94, candidateType: '稳定候选', reason: '教材礼貌表达。' })),
     ...beautyWords.map(kanji => makeQualityCandidate(kanji, { xhsFitScore: 93, candidateType: '美妆穿搭词', reason: '美妆品类名。' })),
-    ...fandomWords.map(kanji => makeQualityCandidate(kanji, { xhsFitScore: 92, candidateType: '追星兴趣词', reason: '追星圈层表达。' })),
-    ...neutralWords.map(kanji => makeQualityCandidate(kanji))
+    ...fandomWords.map(kanji => makeQualityCandidate(kanji, { xhsFitScore: 92, candidateType: '追星兴趣词', reason: '追星圈层表达。' }))
   ].forEach(entry => {
     candidatePool[entry.kanji] = entry;
   });
@@ -617,14 +624,48 @@ test('daily snapshot selection limits basic, beauty, fandom and keeps account-fi
   const words = result.todaySnapshot.words;
   const categories = words.map(word => getDailyQualityCategory(candidatePool[word]));
   const countCategory = category => categories.filter(item => item === category).length;
+  const laneCounts = words.reduce((result, word) => {
+    const lane = getDailyContentMixLane(candidatePool[word]);
+    result[lane] = (result[lane] || 0) + 1;
+    return result;
+  }, {});
+  const forms = words.map(word => getDailyExpressionForm(candidatePool[word]));
   assert.equal(words.length, DAILY_WORD_COUNT);
   assert.ok(countCategory('basic_greeting') + countCategory('textbook_polite') <= 1);
   assert.ok(countCategory('beauty_product') <= 1);
   assert.ok(countCategory('fandom_circle') <= 2);
   assert.ok(countCategory('emotion_state') >= 2);
   assert.ok(countCategory('social_nuance') >= 2);
-  assert.ok(countCategory('life_state') >= 2);
+  assert.deepEqual(laneCounts, DAILY_CONTENT_MIX_TARGETS);
+  assert.deepEqual(result.todaySnapshot.recommendationAudit.qualitySummary.contentMixLaneCounts, DAILY_CONTENT_MIX_TARGETS);
+  assert.equal(result.todaySnapshot.recommendationAudit.items.every(item => item.contentMixLane && item.expressionForm), true);
+  assert.ok(forms.filter(form => form !== 'short_expression').length <= 2);
+  assert.ok(forms.filter(form => form === 'long_idiom').length <= 1);
   assert.equal(result.recommendationAudit.qualitySummary.relaxed, false);
+});
+
+test('content mix distinguishes specific beauty expressions and established abbreviations from generic labels', () => {
+  assert.equal(getDailyContentMixLane(makeQualityCandidate('タイパ', {
+    candidateType: '网络口语词',
+    reason: '成熟日常缩略语，完整形式与使用场景明确。'
+  })), 'daily_abbreviation');
+  assert.equal(getDailyContentMixLane(makeQualityCandidate('謎略語', {
+    candidateType: '网络口语词',
+    confidenceLevel: 'review',
+    evidenceType: 'unknown',
+    reason: '来源不明缩写。'
+  })), 'flexible');
+  assert.equal(getDailyContentMixLane(makeQualityCandidate('オーロラ肌', {
+    candidateType: '美妆穿搭词',
+    reason: '具体美妆表达，可视化且能讲语感差异。'
+  })), 'beauty_fashion_expression');
+  assert.equal(getDailyContentMixLane(makeQualityCandidate('ネイル', {
+    candidateType: '美妆穿搭词',
+    reason: '泛美妆标签。'
+  })), 'flexible');
+  assert.equal(getDailyExpressionForm(makeQualityCandidate('ときめく')), 'short_expression');
+  assert.equal(getDailyExpressionForm(makeQualityCandidate('コスパがいい')), 'full_phrase');
+  assert.equal(getDailyExpressionForm(makeQualityCandidate('一石二鳥', { reason: '固定惯用语，适合解释。' })), 'long_idiom');
 });
 
 test('daily quality scoring penalizes recent semantic cluster repeats', () => {

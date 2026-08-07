@@ -24,8 +24,28 @@ export const DAILY_QUALITY_MAXIMA = {
 
 export const DAILY_QUALITY_MINIMA = {
   emotion_state: 2,
-  social_nuance: 2,
-  life_state: 2
+  social_nuance: 2
+};
+
+export const DAILY_CONTENT_MIX_LANES = [
+  'core_emotion_social',
+  'daily_abbreviation',
+  'verified_trend',
+  'beauty_fashion_expression',
+  'flexible'
+];
+
+export const DAILY_CONTENT_MIX_TARGETS = {
+  core_emotion_social: 4,
+  daily_abbreviation: 2,
+  verified_trend: 1,
+  beauty_fashion_expression: 2,
+  flexible: 1
+};
+
+export const DAILY_EXPRESSION_FORM_MAXIMA = {
+  full_phrase: 2,
+  long_idiom: 1
 };
 
 const BASIC_GREETING_WORDS = new Set([
@@ -143,6 +163,52 @@ const BEAUTY_PRODUCT_WORDS = new Set([
   'ノーファンデ'
 ]);
 
+const GENERIC_BEAUTY_FASHION_WORDS = new Set([
+  ...BEAUTY_PRODUCT_WORDS,
+  'コスメ',
+  'メイク',
+  'スキンケア',
+  'ファッション',
+  'コーデ',
+  'デニム',
+  'ワンピース',
+  'スニーカー'
+]);
+
+const BEAUTY_FASHION_EXPRESSION_WORDS = new Set([
+  'オーロラ肌',
+  '粘膜カラー',
+  '束感まつ毛',
+  'ジュレ質感',
+  'バレエコア',
+  'ウェッジソール',
+  'シアーレイヤード',
+  'ボーホーシック',
+  '抜け感',
+  '透け感',
+  'こなれ感',
+  'ツヤ感',
+  '血色感',
+  '透明感'
+]);
+
+const DAILY_ABBREVIATION_WORDS = new Set([
+  'コスパ',
+  'タイパ',
+  'サブスク',
+  'リプ',
+  'ファボ',
+  'ファボる',
+  '垢',
+  '推し活',
+  'ソロ活',
+  '朝活',
+  'ポイ活',
+  'ヌン活',
+  '宅飲み',
+  'リモ飲み'
+]);
+
 const CUTE_SLANG_WORDS = new Set([
   'ぴえん',
   'きゅん',
@@ -169,6 +235,11 @@ const GENERIC_BASIC_WORDS = new Set([
 ]);
 
 const BEAUTY_PRODUCT_RE = /リップ|チーク|ファンデ|マスカラ|アイシャドウ|ネイル|ベースメイク|涙袋メイク|シェーディング|ノーファンデ|ツヤ肌|メイク用品|化粧品|美妆品类|美妝品類/;
+const BEAUTY_FASHION_EXPRESSION_RE = /オーロラ肌|粘膜カラー|束感まつ毛|ジュレ質感|バレエコア|ウェッジソール|シアーレイヤード|ボーホーシック|抜け感|透け感|こなれ感|ツヤ感|血色感|透明感|具体(?:的)?(?:美妆|美妝|穿搭|时尚|時尚)(?:表达|表達)|可视化(?:美妆|美妝|穿搭)|审美表达|審美表達/;
+const ABBREVIATION_CONTEXT_RE = /日常(?:缩略语|縮略語|缩写|縮寫|略语|略語)|常用(?:缩略语|縮略語|缩写|縮寫|略称)|固定略称|成熟缩略语|成熟縮略語|abbreviation/i;
+const FULL_PHRASE_RE = /[\u30a0-\u30ff\u3400-\u9fff々ヶー]+(?:が|を|に|へ|と|で|は|も|から|まで)[\u3040-\u30ff\u3400-\u9fff々ヶー]+/;
+const FULL_PHRASE_CONTEXT_RE = /完整词组|完整詞組|固定词组|固定詞組|短语|短語|句式|惯用语|慣用語|ことわざ|諺/;
+const LONG_IDIOM_CONTEXT_RE = /长句式|長句式|惯用语|慣用語|ことわざ|諺/;
 const FANDOM_RE = /推し|尊|神回|布教|沼落ち|解釈一致|現場|参戦|同担|オタ|痛バ|追星|圈层|圈層/;
 const EMOTION_RE = /しんみり|ほのぼの|わくわく|モヤ|もにょ|だるい|しょんぼり|ときめ|胸きゅん|ドキドキ|そわそわ|ぽかぽか|気持ち|心情|情绪|情緒|状态|狀態/;
 const SOCIAL_RE = /気が合う|気が置けない|気を遣う|気遣い|気配り|距離感|空気|察する|きまづい|気が利く|人际|人際|社交|语感|語感|关系|關係/;
@@ -223,6 +294,59 @@ export function getDailyQualityCategory(entry = {}) {
   if (FANDOM_WORDS.has(word) || FANDOM_RE.test(text)) return 'fandom_circle';
   if (TEXTBOOK_CONTEXT_RE.test(text)) return 'generic_basic';
   return 'unknown';
+}
+
+function isSpecificBeautyFashionExpression(entry = {}) {
+  const word = getWord(entry);
+  const text = `${word} ${getContextText(entry)}`;
+  if (!word || GENERIC_BEAUTY_FASHION_WORDS.has(word)) return false;
+  if (BEAUTY_FASHION_EXPRESSION_WORDS.has(word) || BEAUTY_FASHION_EXPRESSION_RE.test(text)) return true;
+  return ['美妆穿搭词', '审美氛围词'].includes(entry?.candidateType)
+    && !BEAUTY_PRODUCT_RE.test(word)
+    && !LOW_TITLE_VALUE_RE.test(text);
+}
+
+function isEstablishedDailyAbbreviation(entry = {}) {
+  const word = getWord(entry);
+  const text = `${word} ${getContextText(entry)}`;
+  if (!word) return false;
+  if (!DAILY_ABBREVIATION_WORDS.has(word) && !ABBREVIATION_CONTEXT_RE.test(text)) return false;
+  const evidenceType = cleanText(entry?.evidenceType, 40) || 'common_usage';
+  const confidenceLevel = cleanText(entry?.confidenceLevel, 40) || 'medium';
+  return ['common_usage', 'user_material', 'trend_claim'].includes(evidenceType)
+    && ['high', 'medium'].includes(confidenceLevel);
+}
+
+function isVerifiedTrendExpression(entry = {}) {
+  const confidenceLevel = cleanText(entry?.confidenceLevel, 40) || 'medium';
+  return cleanText(entry?.evidenceType, 40) === 'trend_claim'
+    && ['high', 'medium'].includes(confidenceLevel)
+    && cleanText(entry?.riskLevel, 40) !== 'high'
+    && cleanText(entry?.displayBucket, 40) === 'meme_fast';
+}
+
+export function getDailyContentMixLane(entry = {}) {
+  if (isSpecificBeautyFashionExpression(entry)) return 'beauty_fashion_expression';
+  if (isEstablishedDailyAbbreviation(entry)) return 'daily_abbreviation';
+  if (isVerifiedTrendExpression(entry)) return 'verified_trend';
+  const category = getDailyQualityCategory(entry);
+  if (['emotion_state', 'social_nuance'].includes(category)) return 'core_emotion_social';
+  return 'flexible';
+}
+
+export function getDailyExpressionForm(entry = {}) {
+  const word = getWord(entry);
+  if (!word) return 'short_expression';
+  const text = `${word} ${getContextText(entry)}`;
+  const characterCount = [...word.replace(/[\s、。！？!?]/g, '')].length;
+  const particleCount = (word.match(/(?:が|を|に|へ|と|で|は|も|から|まで)/g) || []).length;
+  const fullPhrase = BASIC_GREETING_WORDS.has(word)
+    || TEXTBOOK_POLITE_WORDS.has(word)
+    || /[\s、。！？!?]/.test(word)
+    || FULL_PHRASE_RE.test(word)
+    || FULL_PHRASE_CONTEXT_RE.test(text);
+  if (LONG_IDIOM_CONTEXT_RE.test(text) || (fullPhrase && (characterCount >= 7 || particleCount >= 2))) return 'long_idiom';
+  return fullPhrase ? 'full_phrase' : 'short_expression';
 }
 
 export function getDailySemanticCluster(entry = {}) {
@@ -303,6 +427,7 @@ export function buildDailyQualityContext(workflow = {}, options = {}) {
 
 export function getDailyQualityScoreDelta(entry = {}, context = {}) {
   const category = getDailyQualityCategory(entry);
+  const contentMixLane = getDailyContentMixLane(entry);
   const cluster = getDailySemanticCluster(entry);
   const text = `${getWord(entry)} ${getContextText(entry)}`;
   const categoryDelta = {
@@ -323,23 +448,38 @@ export function getDailyQualityScoreDelta(entry = {}, context = {}) {
     : context.recent30Clusters?.has(cluster)
       ? -10
       : 0;
-  return clamp(categoryDelta + titleDelta + recentClusterDelta, -60, 36);
+  const mixDelta = {
+    daily_abbreviation: 8,
+    verified_trend: 6,
+    beauty_fashion_expression: 10,
+    core_emotion_social: 4,
+    flexible: 0
+  }[contentMixLane] || 0;
+  return clamp(categoryDelta + titleDelta + recentClusterDelta + mixDelta, -60, 42);
 }
 
 export function hasStrongXhsExpressionValue(entry = {}) {
   const category = getDailyQualityCategory(entry);
+  const contentMixLane = getDailyContentMixLane(entry);
   const text = `${getWord(entry)} ${getContextText(entry)}`;
+  if (['daily_abbreviation', 'verified_trend', 'beauty_fashion_expression'].includes(contentMixLane)) return true;
   if (['emotion_state', 'social_nuance', 'life_state', 'cute_slang', 'fandom_circle'].includes(category)) return true;
   return TITLE_VALUE_RE.test(text) && !LOW_TITLE_VALUE_RE.test(text);
 }
 
 export function buildDailyQualitySummary(entries = [], options = {}) {
   const categoryCounts = QUALITY_CATEGORIES.reduce((result, category) => ({ ...result, [category]: 0 }), {});
+  const contentMixLaneCounts = DAILY_CONTENT_MIX_LANES.reduce((result, lane) => ({ ...result, [lane]: 0 }), {});
+  const expressionFormCounts = { short_expression: 0, full_phrase: 0, long_idiom: 0 };
   const clusterCounts = {};
   entries.forEach(entry => {
     const category = getDailyQualityCategory(entry);
+    const contentMixLane = getDailyContentMixLane(entry);
+    const expressionForm = getDailyExpressionForm(entry);
     const cluster = getDailySemanticCluster(entry);
     categoryCounts[category] = (categoryCounts[category] || 0) + 1;
+    contentMixLaneCounts[contentMixLane] = (contentMixLaneCounts[contentMixLane] || 0) + 1;
+    expressionFormCounts[expressionForm] = (expressionFormCounts[expressionForm] || 0) + 1;
     clusterCounts[cluster] = (clusterCounts[cluster] || 0) + 1;
   });
   const warnings = [];
@@ -368,6 +508,30 @@ export function buildDailyQualitySummary(entries = [], options = {}) {
       relaxedReasons.push(`${category}_below_target`);
     }
   });
+  const contentMixWarnings = [];
+  Object.entries(DAILY_CONTENT_MIX_TARGETS).forEach(([lane, target]) => {
+    const count = contentMixLaneCounts[lane] || 0;
+    if (count !== target) {
+      const warning = `${lane} mix target missed: ${count}/${target}`;
+      warnings.push(warning);
+      contentMixWarnings.push(warning);
+      relaxedReasons.push(`${lane}_mix_target_missed`);
+    }
+  });
+  const fullPhraseCount = (expressionFormCounts.full_phrase || 0) + (expressionFormCounts.long_idiom || 0);
+  const longIdiomCount = expressionFormCounts.long_idiom || 0;
+  if (fullPhraseCount > DAILY_EXPRESSION_FORM_MAXIMA.full_phrase) {
+    const warning = `full_phrase quota exceeded: ${fullPhraseCount}/${DAILY_EXPRESSION_FORM_MAXIMA.full_phrase}`;
+    warnings.push(warning);
+    contentMixWarnings.push(warning);
+    relaxedReasons.push('full_phrase_quota_exceeded');
+  }
+  if (longIdiomCount > DAILY_EXPRESSION_FORM_MAXIMA.long_idiom) {
+    const warning = `long_idiom quota exceeded: ${longIdiomCount}/${DAILY_EXPRESSION_FORM_MAXIMA.long_idiom}`;
+    warnings.push(warning);
+    contentMixWarnings.push(warning);
+    relaxedReasons.push('long_idiom_quota_exceeded');
+  }
   Object.entries(clusterCounts).forEach(([cluster, count]) => {
     const limit = getDailyClusterLimit(cluster);
     if (count > limit) {
@@ -385,29 +549,41 @@ export function buildDailyQualitySummary(entries = [], options = {}) {
   const beautyCategoryCount = categoryCounts.beauty_product || 0;
   const basicPoliteCount = basicTextbookCount;
   const genericBasicCount = categoryCounts.generic_basic || 0;
-  const penalty = relaxedReasons.length * 8
+  const mixDeviation = Object.entries(DAILY_CONTENT_MIX_TARGETS)
+    .reduce((sum, [lane, target]) => sum + Math.abs((contentMixLaneCounts[lane] || 0) - target), 0);
+  const penalty = relaxedReasons.length * 4
+    + mixDeviation * 3
     + Math.max(0, basicTextbookCount - DAILY_QUALITY_MAXIMA.basicTextbook) * 12
     + Math.max(0, (categoryCounts.beauty_product || 0) - DAILY_QUALITY_MAXIMA.beauty_product) * 8
     + Math.max(0, (categoryCounts.fandom_circle || 0) - DAILY_QUALITY_MAXIMA.fandom_circle) * 6;
   const positiveCoverage = Math.min(categoryCounts.emotion_state || 0, DAILY_QUALITY_MINIMA.emotion_state)
-    + Math.min(categoryCounts.social_nuance || 0, DAILY_QUALITY_MINIMA.social_nuance)
-    + Math.min(categoryCounts.life_state || 0, DAILY_QUALITY_MINIMA.life_state);
+    + Math.min(categoryCounts.social_nuance || 0, DAILY_QUALITY_MINIMA.social_nuance);
   const score = clamp(62 + positiveCoverage * 3 - penalty, 0, 100);
   const estimatedPenalty = Math.min(18,
     duplicateClusterCount * 6
       + Math.max(0, beautyCategoryCount - 1) * 5
       + basicPoliteCount * 6
       + genericBasicCount * 3
+      + Math.max(0, fullPhraseCount - DAILY_EXPRESSION_FORM_MAXIMA.full_phrase) * 4
+      + Math.max(0, longIdiomCount - DAILY_EXPRESSION_FORM_MAXIMA.long_idiom) * 4
+      + mixDeviation * 2
   );
   const estimatedHumanQualityScore = clamp(100 - estimatedPenalty, 0, 100);
   if (duplicateClusterCount > 0) healthWarnings.push(`存在 ${duplicateClusterCount} 组同日语义重复`);
   if (beautyCategoryCount > 1) healthWarnings.push(`美妆品类同日集中：${beautyCategoryCount}/1`);
   if (basicPoliteCount > 0) healthWarnings.push(`基础寒暄或教材礼貌词：${basicPoliteCount}`);
   if (genericBasicCount > 0) healthWarnings.push(`泛基础词：${genericBasicCount}`);
+  healthWarnings.push(...contentMixWarnings);
   const relaxed = Boolean(options.relaxed || relaxedReasons.length);
   return {
     score,
     categoryCounts,
+    contentMixLaneCounts,
+    contentMixTargets: { ...DAILY_CONTENT_MIX_TARGETS },
+    expressionFormCounts,
+    fullPhraseCount,
+    longIdiomCount,
+    contentMixWarnings: contentMixWarnings.slice(0, 12),
     clusterCounts,
     duplicateClusterCount,
     duplicateClusters,

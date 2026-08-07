@@ -137,10 +137,10 @@ const SUGGESTED_ACTION_OPTIONS = ['优先收藏观察', '可以收藏观察', '�
 const RISK_LEVEL_OPTIONS = ['low', 'medium', 'high'];
 const AI_ACTION_OPTIONS = ['stable_today', 'wild_ideas', 'generate_candidates', 'extract_from_materials', 'enrich_words', 'generate_word_card', 'rerank_candidates', 'audit_library_for_delete', 'audit_missing_library_words'];
 const PROMPT_VERSION_BY_ACTION = {
-  stable_today: 'candidate-v3',
-  wild_ideas: 'candidate-v3',
-  generate_candidates: 'candidate-v3',
-  extract_from_materials: 'candidate-v3',
+  stable_today: 'candidate-v4-content-mix',
+  wild_ideas: 'candidate-v4-content-mix',
+  generate_candidates: 'candidate-v4-content-mix',
+  extract_from_materials: 'candidate-v4-content-mix',
   enrich_words: 'card-v2',
   generate_word_card: 'card-v2',
   rerank_candidates: 'rerank-v1',
@@ -159,7 +159,7 @@ function cleanText(value, maxLength = 240) {
 }
 
 function getPromptVersion(action) {
-  return PROMPT_VERSION_BY_ACTION[action] || 'candidate-v3';
+  return PROMPT_VERSION_BY_ACTION[action] || 'candidate-v4-content-mix';
 }
 
 function cleanTraceText(value, maxLength = 8000) {
