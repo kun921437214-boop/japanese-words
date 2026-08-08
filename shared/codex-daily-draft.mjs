@@ -4,6 +4,10 @@ import { addDays, cleanDateKey, dateKey } from './rankings.mjs';
 import { buildPublishedLearningSummary } from './published-import.mjs';
 import { buildTodayRecommendationAudit } from './today-snapshot.mjs';
 import {
+  DAILY_CONTENT_MIX_TARGETS,
+  DAILY_EXPRESSION_FORM_MAXIMA
+} from './today-quality.mjs';
+import {
   archiveTodaySnapshotIntoHistory,
   archiveTodaySnapshotIntoSnapshotHistory,
   cleanAiCard,
@@ -61,7 +65,7 @@ function cleanDraftItem(item = {}, index = 0) {
     aiCard,
     sourceType: 'codex_generated',
     sourcePromptVersion: cleanText(item?.sourcePromptVersion || CODEX_DAILY_GENERATOR_VERSION, 80),
-    displayBucket: 'today',
+    displayBucket: item?.displayBucket || 'today',
     riskLevel: item?.riskLevel || 'low',
     confidenceLevel: item?.confidenceLevel || 'high',
     evidenceType: item?.evidenceType || 'common_usage',
@@ -193,10 +197,20 @@ export function validateCodexDailyDraft(input = {}, options = {}) {
   if (qualitySummary.duplicateClusterCount > 0) {
     errors.push(`存在 ${qualitySummary.duplicateClusterCount} 组同日语义重复`);
   }
-  if (qualitySummary.beautyCategoryCount > 1) errors.push('美妆品类同日最多 1 个');
+  if (qualitySummary.beautyCategoryCount > 1) errors.push('泛美妆品类词同日最多 1 个');
   if (qualitySummary.basicPoliteCount > 1) errors.push('基础寒暄或教材礼貌词同日最多 1 个');
   const missingCoverage = safeArray(qualitySummary.relaxedReasons).filter(reason => reason.endsWith('_below_target'));
   if (missingCoverage.length) errors.push(`账号核心方向覆盖不足：${missingCoverage.join('、')}`);
+  const contentMixMismatches = Object.entries(DAILY_CONTENT_MIX_TARGETS)
+    .filter(([lane, target]) => (qualitySummary.contentMixLaneCounts?.[lane] || 0) !== target)
+    .map(([lane, target]) => `${lane}=${qualitySummary.contentMixLaneCounts?.[lane] || 0}/${target}`);
+  if (contentMixMismatches.length) errors.push(`每日内容结构不符合目标：${contentMixMismatches.join('、')}`);
+  if ((qualitySummary.fullPhraseCount || 0) > DAILY_EXPRESSION_FORM_MAXIMA.full_phrase) {
+    errors.push(`完整词组同日最多 ${DAILY_EXPRESSION_FORM_MAXIMA.full_phrase} 个`);
+  }
+  if ((qualitySummary.longIdiomCount || 0) > DAILY_EXPRESSION_FORM_MAXIMA.long_idiom) {
+    errors.push(`长句式/惯用语同日最多 ${DAILY_EXPRESSION_FORM_MAXIMA.long_idiom} 个`);
+  }
   if (qualitySummary.sLevelCount > MAX_DAILY_S_LEVEL_COUNT) {
     errors.push(`S 级数量过多：${qualitySummary.sLevelCount}/${MAX_DAILY_S_LEVEL_COUNT}`);
   }
@@ -244,7 +258,9 @@ export function buildCodexDailyContext(workflowInput = {}, targetDateKey = '') {
     favorites: workflow.words,
     feedback: workflow.feedback,
     publishedWords: workflow.publishedRecords.map(record => record.word).filter(Boolean),
-    publishedLearning: buildPublishedLearningSummary(workflow.publishedRecords),
+    publishedLearning: buildPublishedLearningSummary(workflow.publishedRecords, new Date(), {
+      targetDateKey: target
+    }),
     recentSnapshots: recentSnapshots.slice(0, 30),
     candidatePool: Object.values(workflow.candidatePool || {}).map(entry => ({
       kanji: entry.kanji,
@@ -264,10 +280,20 @@ export function buildCodexDailyContext(workflowInput = {}, targetDateKey = '') {
       exactWords: CODEX_DAILY_WORD_COUNT,
       recentDedupDays: 30,
       maxSLevel: MAX_DAILY_S_LEVEL_COUNT,
+      contentMixTargets: { ...DAILY_CONTENT_MIX_TARGETS },
+      expressionFormMaxima: { ...DAILY_EXPRESSION_FORM_MAXIMA },
       maxBeautyCategory: 1,
+      maxGenericBeautyCategory: 1,
       maxBasicPolite: 1,
       imagesRequiredForPublish: false,
-      cardsRequiredForPublish: true
+      cardsRequiredForPublish: true,
+      publishedReviewRationale: [
+        '保留情绪状态与人际语感主轴；收藏率和互动率优先于单纯浏览量。',
+        '泛“流行词”标题不自动加权，只有带时间证据的稳定流行表达进入流行词配额。',
+        '成熟日常缩略语补足表达密度；来源不明或疑似自造缩写仍进入复核。',
+        '泛美妆/时尚标签继续受限，具体、可视化、能讲清语感的专有表达进入正向配额。',
+        'publishedLearning.topic 只影响选词；cover 与 content 分别只影响图片和词卡。'
+      ]
     }
   };
 }

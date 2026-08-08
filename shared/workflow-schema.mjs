@@ -79,10 +79,10 @@ const SOURCE_PROMPT_OPTIONS = ['stable_today', 'wild_ideas', 'generate_candidate
 const RECOMMENDATION_ORIGIN_TYPES = ['codex_generated', 'deepseek_new', 'candidate_pool', 'history_fallback', 'local_word_bank', 'manual_added', 'today_backfill', 'dedup_relaxed', 'unknown'];
 const RECOMMENDATION_LEVEL_OPTIONS = ['S', 'A', 'B', 'C', ''];
 const PROMPT_VERSION_BY_ACTION = {
-  stable_today: 'candidate-v3',
-  wild_ideas: 'candidate-v3',
-  generate_candidates: 'candidate-v3',
-  extract_from_materials: 'candidate-v3',
+  stable_today: 'candidate-v4-content-mix',
+  wild_ideas: 'candidate-v4-content-mix',
+  generate_candidates: 'candidate-v4-content-mix',
+  extract_from_materials: 'candidate-v4-content-mix',
   enrich_words: 'card-v2',
   generate_word_card: 'card-v2',
   rerank_candidates: 'rerank-v1',
@@ -156,7 +156,7 @@ function newerByDate(left = {}, right = {}, field = 'updatedAt') {
 }
 
 function getPromptVersion(action) {
-  return PROMPT_VERSION_BY_ACTION[action] || 'candidate-v3';
+  return PROMPT_VERSION_BY_ACTION[action] || 'candidate-v4-content-mix';
 }
 
 function cleanTraceText(value, maxLength = 8000) {
@@ -555,6 +555,8 @@ function cleanRecommendationAuditItem(item = {}) {
     genericTopicPenalty: clamp(toInt(item?.genericTopicPenalty, 0), 0, 100),
     semanticClusterKey: cleanText(item?.semanticClusterKey, 120),
     qualityCategory: cleanText(item?.qualityCategory, 80),
+    contentMixLane: cleanText(item?.contentMixLane, 80),
+    expressionForm: cleanText(item?.expressionForm, 80),
     isDuplicateCluster: Boolean(item?.isDuplicateCluster),
     sLevelEligible: Boolean(item?.sLevelEligible),
     selectedReason: cleanText(item?.selectedReason, 1000),
@@ -611,6 +613,8 @@ function cleanRecommendationAuditSummary(audit = {}) {
     'beautyCategoryCount',
     'basicPoliteCount',
     'genericBasicCount',
+    'fullPhraseCount',
+    'longIdiomCount',
     'estimatedHumanQualityScore'
   ];
   const qualitySummary = audit?.qualitySummary || {};
@@ -622,8 +626,12 @@ function cleanRecommendationAuditSummary(audit = {}) {
     qualitySummary: {
       ...cleanNumberSummary(qualitySummary, qualitySummaryKeys, 0, 1000),
       categoryCounts: cleanCountMap(qualitySummary?.categoryCounts, 20),
+      contentMixLaneCounts: cleanCountMap(qualitySummary?.contentMixLaneCounts, 10),
+      contentMixTargets: cleanCountMap(qualitySummary?.contentMixTargets, 10),
+      expressionFormCounts: cleanCountMap(qualitySummary?.expressionFormCounts, 10),
       clusterCounts: cleanCountMap(qualitySummary?.clusterCounts, 50),
       warnings: uniqueStrings(qualitySummary?.warnings, 240, 12),
+      contentMixWarnings: uniqueStrings(qualitySummary?.contentMixWarnings, 240, 12),
       duplicateClusters: safeArray(qualitySummary?.duplicateClusters).map(item => ({
         cluster: cleanText(item?.cluster, 120),
         count: clamp(toInt(item?.count, 0), 0, 20),

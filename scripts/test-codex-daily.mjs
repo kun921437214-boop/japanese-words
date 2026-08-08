@@ -31,8 +31,8 @@ import {
 } from '../worker/favorites-worker.js';
 
 const CURATED_WORDS = [
-  'モヤる', 'しんみり', 'かぶる', '気を遣う', 'だらける',
-  '追い込み', '余裕', 'アンニュイ', '見切り', 'おけまる',
+  'モヤる', 'しんみり', 'かぶる', '気を遣う', 'タイパ',
+  'サブスク', 'メロい', 'オーロラ肌', 'シアーレイヤード', '余裕',
   '甘えん坊', '心地よい', 'ツンデレ', '仕切り直し', 'リフレッシュ',
   'ほのぼの', 'わくわく', 'やりくり', '煮詰まる', 'そわそわ'
 ];
@@ -84,19 +84,49 @@ function makeDraft(words = DAILY_CURATED_WORDS, options = {}) {
     threadId: '019f5c0e-3d15-75b2-92b1-5f6cb05610aa',
     generatorVersion: 'codex-daily-v1',
     items: words.map((kanji, index) => ({
+      ...(() => {
+        const emotionWords = new Set(['モヤる', 'しんみり']);
+        const socialWords = new Set(['かぶる', '気を遣う']);
+        const abbreviationWords = new Set(['タイパ', 'サブスク']);
+        const beautyWords = new Set(['オーロラ肌', 'シアーレイヤード']);
+        if (emotionWords.has(kanji)) return {
+          category: '情绪状态',
+          candidateType: '网络口语词',
+          reason: '情绪状态表达，中文不好直译，有收藏价值。'
+        };
+        if (socialWords.has(kanji)) return {
+          category: '人际语感',
+          candidateType: '稳定候选',
+          reason: '人际关系和社交语感表达，适合中文用户收藏。'
+        };
+        if (abbreviationWords.has(kanji)) return {
+          category: '日常缩略语',
+          candidateType: '网络口语词',
+          reason: '成熟日常缩略语，说明完整形式与稳定用法。'
+        };
+        if (kanji === 'メロい') return {
+          category: '流行表达',
+          candidateType: '新鲜梗词',
+          freshness: '短期',
+          evidenceType: 'trend_claim',
+          displayBucket: 'meme_fast',
+          reason: '有时间证据的低风险流行表达。'
+        };
+        if (beautyWords.has(kanji)) return {
+          category: '美妆穿搭表达',
+          candidateType: '美妆穿搭词',
+          reason: '具体美妆穿搭表达，可视化且能讲语感差异。'
+        };
+        return {
+          category: '生活状态',
+          candidateType: '生活方式词',
+          reason: '有生活状态场景和收藏价值，作为灵活补位。'
+        };
+      })(),
       kanji,
       kana: kanji,
       romaji: `word-${index + 1}`,
       meaning: `${kanji} 的中文含义说明`,
-      category: index < 2 ? '情绪状态' : index < 4 ? '人际语感' : index < 6 ? '生活状态' : '自然日语表达',
-      candidateType: index < 2 ? '网络口语词' : index < 4 ? '稳定候选' : index < 6 ? '生活方式词' : '稳定候选',
-      reason: index < 6
-        ? '有情绪状态、真实场景和收藏价值，适合标题与封面。'
-        : index < 10
-          ? '有人际关系与社交语感，适合中文用户收藏和做标题。'
-          : index < 16
-            ? '有生活场景和状态画面，适合中文用户收藏和做标题。'
-            : '有自然语感和真实场景，适合中文用户收藏和做标题。',
       xhsFitScore: index < 6 ? 92 : 84,
       riskLevel: 'low',
       confidenceLevel: 'high',
@@ -156,6 +186,21 @@ test('a complete 10-word Codex draft passes while missing images remain non-bloc
   assert.equal(draft.cardReadyCount, CODEX_DAILY_WORD_COUNT);
   assert.equal(draft.imageReadyCount, 0);
   assert.ok(draft.validation.warnings.some(message => message.includes('参考图片未全部就绪')));
+});
+
+test('Codex draft rejects a broken content mix and too many phrase-shaped abbreviations', () => {
+  const mixedWords = [...DAILY_CURATED_WORDS];
+  mixedWords[4] = '見切り';
+  const mixedDraft = validateCodexDailyDraft(makeDraft(mixedWords), { workflow: {}, expectedDateKey: '2026-07-14' });
+  assert.equal(mixedDraft.validation.valid, false);
+  assert.ok(mixedDraft.validation.errors.some(message => message.includes('每日内容结构不符合目标')));
+
+  const phraseWords = [...DAILY_CURATED_WORDS];
+  phraseWords[4] = 'コスパがいい';
+  phraseWords[5] = 'サブスクを使う';
+  const phraseDraft = validateCodexDailyDraft(makeDraft(phraseWords), { workflow: {}, expectedDateKey: '2026-07-14' });
+  assert.equal(phraseDraft.validation.valid, false);
+  assert.ok(phraseDraft.validation.errors.some(message => message.includes('完整词组同日最多')));
 });
 
 test('Codex batch image helpers skip ready cards and preserve local generation metadata', () => {
@@ -313,6 +358,32 @@ test('Codex daily context receives separated published learning signals', () => 
   }, '2026-07-22');
   assert.ok(context.publishedLearning);
   assert.match(context.publishedLearning.rule, /选题表现只用于学习词/);
+  assert.equal(context.publishedLearning.guidanceEnabled, false);
+
+  const futureContext = buildCodexDailyContext({
+    publishedRecords: [{
+      id: 'target',
+      word: '抜け感',
+      title: '抜け感',
+      publishedAt: '2026-07-10T09:00:00+08:00',
+      latestMetrics: { impressions: 5000, views: 1000, coverClickRate: 0.05, likes: 20, comments: 10, favorites: 80, follows: 10, shares: 20, avgWatchSeconds: 5 }
+    }, ...baselineRecords]
+  }, '2026-08-10');
+  assert.equal(futureContext.publishedLearning.guidanceEnabled, true);
+  assert.equal(futureContext.publishedLearning.guidanceTargetDateKey, '2026-08-10');
+  assert.equal(futureContext.publishedLearning.guidance.topic.destination, 'topic_selection_only');
+  assert.equal(futureContext.publishedLearning.guidance.cover.destination, 'visual_brief_only');
+  assert.equal(futureContext.publishedLearning.guidance.content.destination, 'card_structure_only');
+  assert.ok(!('rankAdjustment' in futureContext.publishedLearning.guidance.topic));
+  assert.deepEqual(futureContext.qualityRules.contentMixTargets, {
+    core_emotion_social: 4,
+    daily_abbreviation: 2,
+    verified_trend: 1,
+    beauty_fashion_expression: 2,
+    flexible: 1
+  });
+  assert.deepEqual(futureContext.qualityRules.expressionFormMaxima, { full_phrase: 2, long_idiom: 1 });
+  assert.match(futureContext.qualityRules.publishedReviewRationale.join(' '), /收藏率和互动率优先/);
 });
 
 test('Codex token can submit drafts but cannot publish or write favorites', async () => {

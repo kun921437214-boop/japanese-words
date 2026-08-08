@@ -1,4 +1,4 @@
-export const ACCOUNT_LEARNING_VERSION = 'xhs-account-learning-v1';
+export const ACCOUNT_LEARNING_VERSION = 'xhs-account-learning-v2-content-mix';
 
 const ACCOUNT_LEARNING_SUMMARY = Object.freeze({
   version: ACCOUNT_LEARNING_VERSION,
@@ -8,6 +8,9 @@ const ACCOUNT_LEARNING_SUMMARY = Object.freeze({
     '情绪状态',
     '人际关系',
     '社交语感',
+    '成熟日常缩略语',
+    '有时间证据的低风险流行表达',
+    '具体且可视化的美妆穿搭表达',
     '生活场景',
     '学习状态',
     '大众可理解的圈层兴趣'
@@ -20,6 +23,9 @@ const ACCOUNT_LEARNING_SUMMARY = Object.freeze({
     '不好配图',
     '浏览高但收藏弱',
     '词义不稳定',
+    '没有时间证据却包装成流行词',
+    '泛美妆或泛时尚标签',
+    '同日完整词组过多',
     '高风险或需复核'
   ],
   scoringRules: {
@@ -52,7 +58,11 @@ const ACCOUNT_LEARNING_SUMMARY = Object.freeze({
     '浏览高但收藏低不要强加权',
     '如果表现差来自标题、封面、发布时间或曝光不足，不要过度惩罚词本身',
     '如果表现差来自词本身不适合账号，降低类似词权重',
-    '圈层词必须能翻译成大众可理解的情绪或生活场景'
+    '圈层词必须能翻译成大众可理解的情绪或生活场景',
+    '每 10 词按 4 个情绪/人际核心、2 个成熟日常缩略语、1 个已验证流行表达、2 个具体美妆/穿搭表达、1 个灵活补位组织',
+    '完整词组同日最多 2 个，长句式或惯用语最多 1 个',
+    '成熟缩略语要说明完整形式；来源不明或疑似自造缩写进入复核',
+    '泛“流行词”标题不自动加权，仍以成熟选题表现为准'
   ],
   wordCardRules: [
     '不要像词典',

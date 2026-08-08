@@ -8,11 +8,15 @@ import {
   TODAY_SNAPSHOT_GENERATOR_VERSION
 } from './workflow-schema.mjs';
 import {
+  DAILY_CONTENT_MIX_TARGETS,
+  DAILY_EXPRESSION_FORM_MAXIMA,
   DAILY_QUALITY_MAXIMA,
   DAILY_QUALITY_MINIMA,
   buildDailyQualityContext,
   buildDailyQualitySummary,
   getDailyClusterLimit,
+  getDailyContentMixLane,
+  getDailyExpressionForm,
   getDailyQualityCategory,
   getDailyQualityScoreDelta,
   getDailySemanticCluster,
@@ -31,10 +35,10 @@ const TODAY_SNAPSHOT_VERSION = 1;
 export const TODAY_HISTORY_DEDUP_DAYS = 30;
 const TODAY_HISTORY_DEDUP_RELAX_STEPS = [TODAY_HISTORY_DEDUP_DAYS];
 const PROMPT_VERSION_BY_ACTION = {
-  stable_today: 'candidate-v3',
-  wild_ideas: 'candidate-v3',
-  generate_candidates: 'candidate-v3',
-  extract_from_materials: 'candidate-v3',
+  stable_today: 'candidate-v4-content-mix',
+  wild_ideas: 'candidate-v4-content-mix',
+  generate_candidates: 'candidate-v4-content-mix',
+  extract_from_materials: 'candidate-v4-content-mix',
   enrich_words: 'card-v2',
   generate_word_card: 'card-v2',
   rerank_candidates: 'rerank-v1',
@@ -350,6 +354,8 @@ export function buildTodayRecommendationAudit(todayEntries = [], context = {}) {
     const candidate = entry.candidateMeta || entry;
     const item = buildAuditItem(candidate, context);
     const qualityCategory = getDailyQualityCategory(candidate);
+    const contentMixLane = getDailyContentMixLane(candidate);
+    const expressionForm = getDailyExpressionForm(candidate);
     const semanticClusterKey = getDailySemanticCluster(candidate);
     const occurrence = (clusterOccurrences.get(semanticClusterKey) || 0) + 1;
     clusterOccurrences.set(semanticClusterKey, occurrence);
@@ -365,6 +371,8 @@ export function buildTodayRecommendationAudit(todayEntries = [], context = {}) {
       recommendationLevel: item.recommendationLevel === 'S' && !sLevelEligible ? 'A' : item.recommendationLevel,
       semanticClusterKey,
       qualityCategory,
+      contentMixLane,
+      expressionForm,
       isDuplicateCluster,
       sLevelEligible,
       diagnosis: [
@@ -447,7 +455,7 @@ export function buildTodayRecommendationAudit(todayEntries = [], context = {}) {
 }
 
 function getPromptVersion(action) {
-  return PROMPT_VERSION_BY_ACTION[action] || 'candidate-v3';
+  return PROMPT_VERSION_BY_ACTION[action] || 'candidate-v4-content-mix';
 }
 
 function cleanTraceText(value, maxLength = 8000) {
@@ -874,6 +882,8 @@ function selectBalancedCandidates(candidates) {
   const learningToneCounts = {};
   const groupCounts = {};
   const dailyCategoryCounts = {};
+  const contentMixLaneCounts = {};
+  const expressionFormCounts = {};
   const dailyClusterCounts = {};
   let laughCount = 0;
   const addWord = (entry, options = {}) => {
@@ -882,8 +892,11 @@ function selectBalancedCandidates(candidates) {
     const learningTone = getAccountLearningTone(entry);
     const group = getSemanticGroup(entry);
     const dailyCategory = getDailyQualityCategory(entry);
+    const contentMixLane = getDailyContentMixLane(entry);
+    const expressionForm = getDailyExpressionForm(entry);
     const dailyCluster = getDailySemanticCluster(entry);
     const basicTextbookCount = (dailyCategoryCounts.basic_greeting || 0) + (dailyCategoryCounts.textbook_polite || 0);
+    const fullPhraseCount = (expressionFormCounts.full_phrase || 0) + (expressionFormCounts.long_idiom || 0);
     if (tone === 'negative' && (toneCounts.negative || 0) >= 2) return false;
     if (isLaughWord(entry) && laughCount >= 2) return false;
     if (!options.relaxed) {
@@ -891,6 +904,9 @@ function selectBalancedCandidates(candidates) {
       if (dailyCategory === 'beauty_product' && (dailyCategoryCounts.beauty_product || 0) >= DAILY_QUALITY_MAXIMA.beauty_product) return false;
       if (dailyCategory === 'cute_slang' && (dailyCategoryCounts.cute_slang || 0) >= DAILY_QUALITY_MAXIMA.cute_slang) return false;
       if (dailyCategory === 'fandom_circle' && (dailyCategoryCounts.fandom_circle || 0) >= DAILY_QUALITY_MAXIMA.fandom_circle) return false;
+      if ((contentMixLaneCounts[contentMixLane] || 0) >= DAILY_CONTENT_MIX_TARGETS[contentMixLane]) return false;
+      if (expressionForm !== 'short_expression' && fullPhraseCount >= DAILY_EXPRESSION_FORM_MAXIMA.full_phrase) return false;
+      if (expressionForm === 'long_idiom' && (expressionFormCounts.long_idiom || 0) >= DAILY_EXPRESSION_FORM_MAXIMA.long_idiom) return false;
       if ((dailyClusterCounts[dailyCluster] || 0) >= getDailyClusterLimit(dailyCluster)) return false;
       if (learningTone === 'aesthetic' && (learningToneCounts.aesthetic || 0) >= 3) return false;
       if (learningTone === 'seasonal_culture' && (learningToneCounts.seasonal_culture || 0) >= 3) return false;
@@ -904,6 +920,8 @@ function selectBalancedCandidates(candidates) {
     learningToneCounts[learningTone] = (learningToneCounts[learningTone] || 0) + 1;
     groupCounts[group] = (groupCounts[group] || 0) + 1;
     dailyCategoryCounts[dailyCategory] = (dailyCategoryCounts[dailyCategory] || 0) + 1;
+    contentMixLaneCounts[contentMixLane] = (contentMixLaneCounts[contentMixLane] || 0) + 1;
+    expressionFormCounts[expressionForm] = (expressionFormCounts[expressionForm] || 0) + 1;
     dailyClusterCounts[dailyCluster] = (dailyClusterCounts[dailyCluster] || 0) + 1;
     if (isLaughWord(entry)) laughCount += 1;
     return true;
@@ -916,7 +934,9 @@ function selectBalancedCandidates(candidates) {
   };
   addMinimum(entry => getDailyQualityCategory(entry) === 'emotion_state', DAILY_QUALITY_MINIMA.emotion_state);
   addMinimum(entry => getDailyQualityCategory(entry) === 'social_nuance', DAILY_QUALITY_MINIMA.social_nuance);
-  addMinimum(entry => getDailyQualityCategory(entry) === 'life_state', DAILY_QUALITY_MINIMA.life_state);
+  Object.entries(DAILY_CONTENT_MIX_TARGETS).forEach(([lane, target]) => {
+    addMinimum(entry => getDailyContentMixLane(entry) === lane, target);
+  });
   candidates.forEach(addWord);
   if (selected.length < WORDS_PER_DAY) candidates.forEach(entry => addWord(entry, { relaxed: true }));
   return selected.slice(0, WORDS_PER_DAY);
@@ -939,6 +959,8 @@ function buildCandidatesForDedupDays(poolEntries, workflow, excluded, now, dedup
       accountLearningTone: getAccountLearningTone(entry),
       accountLearningBonus: getAccountLearningBonus(entry),
       dailyQualityCategory: getDailyQualityCategory(entry),
+      contentMixLane: getDailyContentMixLane(entry),
+      expressionForm: getDailyExpressionForm(entry),
       dailySemanticCluster: getDailySemanticCluster(entry),
       dailyQualityScoreDelta: getDailyQualityScoreDelta(entry, qualityContext),
       finalScore: scoreCandidate(entry, workflow, qualityContext)
@@ -984,6 +1006,8 @@ export function generateTodaySnapshot(workflowInput = {}, options = {}) {
     .map(entry => ({
       ...entry,
       dailyQualityCategory: getDailyQualityCategory(entry),
+      contentMixLane: getDailyContentMixLane(entry),
+      expressionForm: getDailyExpressionForm(entry),
       dailySemanticCluster: getDailySemanticCluster(entry),
       dailyQualityScoreDelta: getDailyQualityScoreDelta(entry, qualityContext),
       finalScore: scoreCandidate(entry, workflow, qualityContext)
@@ -1039,6 +1063,8 @@ export function generateTodaySnapshot(workflowInput = {}, options = {}) {
       accountLearningTone: entry.accountLearningTone,
       accountLearningBonus: entry.accountLearningBonus,
       dailyQualityCategory: entry.dailyQualityCategory,
+      contentMixLane: entry.contentMixLane,
+      expressionForm: entry.expressionForm,
       dailySemanticCluster: entry.dailySemanticCluster,
       dailyQualityScoreDelta: entry.dailyQualityScoreDelta,
       recommendationAudit: entry.recommendationAudit,
@@ -1101,6 +1127,8 @@ export function generateTodaySnapshot(workflowInput = {}, options = {}) {
         accountLearningTone: entry.accountLearningTone,
         accountLearningBonus: entry.accountLearningBonus,
         dailyQualityCategory: entry.dailyQualityCategory,
+        contentMixLane: entry.contentMixLane,
+        expressionForm: entry.expressionForm,
         dailySemanticCluster: entry.dailySemanticCluster,
         dailyQualityScoreDelta: entry.dailyQualityScoreDelta,
         finalScore: entry.finalScore,

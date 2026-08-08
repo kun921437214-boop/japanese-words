@@ -6,6 +6,8 @@ import {
 export const PUBLISHED_METRIC_UPDATE_DAYS = 15;
 export const PUBLISHED_METRIC_SNAPSHOT_LIMIT = 16;
 export const PUBLISHED_EXPORT_WINDOW_DAYS = 180;
+export const PUBLISHED_LEARNING_GUIDANCE_VERSION = 'published-learning-guidance-v1';
+export const PUBLISHED_LEARNING_GUIDANCE_EFFECTIVE_FROM = '2026-08-10';
 
 const APP_TIME_ZONE = 'Asia/Shanghai';
 const SELECTION_SOURCE_TYPES = [
@@ -385,7 +387,84 @@ export function buildPublishedPerformanceAssessment(record = {}, records = [], n
   };
 }
 
-export function buildPublishedLearningSummary(records = [], now = new Date()) {
+const PUBLISHED_LEARNING_ROUTE_CONFIG = Object.freeze({
+  topic: {
+    destination: 'topic_selection_only',
+    purpose: '只用于下一轮选词方向；不直接改数值排名，也不接收封面或内容维度的好坏信号。',
+    weakSignalBoundary: '只降低相似选题方向的优先级；封面或内容偏弱不得惩罚词本身。'
+  },
+  cover: {
+    destination: 'visual_brief_only',
+    purpose: '只用于参考图与封面视觉 Brief；不得改变选词分数或 aiCard 内容。',
+    weakSignalBoundary: '只调整相似封面包装；不得据此降低词本身的优先级。'
+  },
+  content: {
+    destination: 'card_structure_only',
+    purpose: '只用于词卡讲解结构、开场与例句组织；不得改变选词分数或 aiCard 字段结构。',
+    weakSignalBoundary: '只调整相似内容承接方式；不得据此降低词本身的优先级。'
+  }
+});
+
+function guidanceWeight(stage = '') {
+  if (stage === 'final') return 1;
+  if (stage === 'early') return 0.5;
+  return 0;
+}
+
+function buildPublishedLearningRoute(assessed = [], dimension = 'topic', enabled = false) {
+  const config = PUBLISHED_LEARNING_ROUTE_CONFIG[dimension];
+  const signals = safeArray(assessed)
+    .filter(item => ['early', 'final'].includes(item?.assessment?.stage))
+    .filter(item => ['strong', 'weak'].includes(item?.assessment?.[dimension]?.level))
+    .map(item => ({
+      word: item.word,
+      title: item.title,
+      level: item.assessment[dimension].level,
+      score: item.assessment[dimension].score,
+      stage: item.assessment.stage,
+      guidanceWeight: guidanceWeight(item.assessment.stage)
+    }))
+    .sort((left, right) => (
+      right.guidanceWeight - left.guidanceWeight
+      || right.score - left.score
+      || left.word.localeCompare(right.word, 'ja')
+    ));
+  const strongSignals = signals.filter(item => item.level === 'strong').slice(0, 8);
+  const weakSignals = signals.filter(item => item.level === 'weak').slice(0, 8);
+  const repeatedStrongPattern = strongSignals.length >= 2;
+  const repeatedWeakPattern = weakSignals.length >= 2;
+  const actionableSignals = [
+    ...(repeatedStrongPattern ? strongSignals : []),
+    ...(repeatedWeakPattern ? weakSignals : [])
+  ];
+  const state = !enabled
+    ? 'disabled'
+    : !actionableSignals.length
+      ? 'neutral'
+      : actionableSignals.some(item => item.stage === 'early')
+        ? 'early'
+        : 'final';
+  const instruction = state === 'disabled'
+    ? '目标日期尚未启用发布表现 guidance，沿用既有账号定位与质量门。'
+    : state === 'neutral'
+      ? '尚无至少 2 篇同方向成熟信号，不形成新结论，保持中性。'
+      : state === 'early'
+        ? '仅把重复出现的 72 小时初评作为半权重定性提示，并继续用账号定位、近30天去重和内容适配复核。'
+        : '可把重复出现的 15 天定评作为完整定性 guidance，但仍不得转成数值排名加权或照搬单篇结论。';
+  return {
+    destination: config.destination,
+    purpose: config.purpose,
+    weakSignalBoundary: config.weakSignalBoundary,
+    state,
+    actionable: enabled && actionableSignals.length > 0,
+    minimumDistinctPosts: 2,
+    strongSignals,
+    weakSignals,
+    instruction
+  };
+}
+
+export function buildPublishedLearningSummary(records = [], now = new Date(), options = {}) {
   const assessed = safeArray(records)
     .filter(record => record?.word && record?.sourceStatus !== 'placeholder')
     .map(record => ({
@@ -399,6 +478,12 @@ export function buildPublishedLearningSummary(records = [], now = new Date()) {
     .sort((left, right) => right.assessment[dimension].score - left.assessment[dimension].score)
     .slice(0, 8)
     .map(item => ({ word: item.word, title: item.title, score: item.assessment[dimension].score }));
+  const targetDateKey = /^\d{4}-\d{2}-\d{2}$/.test(cleanText(options?.targetDateKey, 20))
+    ? cleanText(options.targetDateKey, 20)
+    : '';
+  const guidanceEnabled = Boolean(
+    targetDateKey && targetDateKey >= PUBLISHED_LEARNING_GUIDANCE_EFFECTIVE_FROM
+  );
   return {
     sampleSize: assessed.length,
     strongTopics: pick('topic', 'strong'),
@@ -407,7 +492,24 @@ export function buildPublishedLearningSummary(records = [], now = new Date()) {
     weakCovers: pick('cover', 'weak'),
     strongContent: pick('content', 'strong'),
     weakContent: pick('content', 'weak'),
-    rule: '选题表现只用于学习词和内容方向；封面表现只用于学习包装；内容表现只用于学习讲解与结构。'
+    rule: '选题表现只用于学习词和内容方向；封面表现只用于学习包装；内容表现只用于学习讲解与结构。',
+    guidanceVersion: PUBLISHED_LEARNING_GUIDANCE_VERSION,
+    guidanceEffectiveFrom: PUBLISHED_LEARNING_GUIDANCE_EFFECTIVE_FROM,
+    guidanceTargetDateKey: targetDateKey,
+    guidanceEnabled,
+    guidance: {
+      topic: buildPublishedLearningRoute(assessed, 'topic', guidanceEnabled),
+      cover: buildPublishedLearningRoute(assessed, 'cover', guidanceEnabled),
+      content: buildPublishedLearningRoute(assessed, 'content', guidanceEnabled)
+    },
+    safeguards: [
+      'collecting 与 insufficient 信号保持中性',
+      'early 信号仅作半权重定性提示，final 才作完整定性 guidance',
+      '少于 2 篇同方向成熟信号不得形成新结论',
+      'topic 只服务选词，cover 只服务视觉 Brief，content 只服务词卡结构',
+      '封面或内容偏弱不得惩罚词本身',
+      '当前不做真实数值排名加权，也不改变 aiCard 字段结构'
+    ]
   };
 }
 

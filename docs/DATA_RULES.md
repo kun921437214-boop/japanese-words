@@ -158,6 +158,14 @@ Without a ready card, show only basic information and a "generate DeepSeek word 
 - Topic assessment prioritizes favorites, shares, follows, and comments. Cover assessment prioritizes cover click-through and view rate. Content assessment prioritizes average watch, likes, comments, and shares.
 - A dimension assessment requires enough mature comparison posts. When the sample is insufficient, keep it neutral instead of manufacturing a positive or negative conclusion.
 - Daily recommendation learning may consume only mature topic assessment. Cover and content assessments are used to improve packaging and writing guidance.
+- For Codex target dates on or after `2026-08-10`, published learning is routed by dimension: topic to topic selection only, cover to visual Brief only, and content to card structure only. The routes are guidance, not numeric ranking adjustments.
+- `collecting` and `insufficient` signals stay neutral. `early` signals have half guidance weight, `final` signals have full guidance weight, and fewer than two same-direction mature posts must not create a new conclusion.
+- Weak cover or content performance must never penalize the word itself. Published learning must preserve the existing compatibility summary fields and the `aiCard` structure.
+- Each 10-word Daily batch must target 4 emotion/social expressions, 2 established daily abbreviations, 1 time-evidenced low-risk trend expression, 2 concrete beauty/fashion expressions, and 1 flexible slot.
+- Established abbreviations must state or clearly imply their full form and use `common_usage`, `user_material`, or `trend_claim` evidence with high/medium confidence. Unknown, invented, or unstable abbreviations stay in review.
+- A trend slot requires `trend_claim`, `meme_fast`, and high/medium confidence. A word must not gain priority merely because its title says “流行词”.
+- Generic beauty/fashion labels remain low-value topic categories. The positive beauty/fashion quota is only for concrete, visual, explainable expressions.
+- A 10-word batch may contain at most 2 full phrases, including at most 1 long sentence-like idiom; the rest must be words, established abbreviations, or short compounds.
 - `latestStats` is only a derived compatibility mirror for existing ranking code. It is not the Published page source of truth.
 - Legacy 1h / 2h / 4h / 24h / 72h snapshots, manual ratings, performance reasons, and auto-refresh fields are not part of the new Published product model.
 
