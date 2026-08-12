@@ -62,6 +62,13 @@ Do not show old labels such as local word, original word, or original library in
 - `generationFeedback.card`, `generationFeedback.cover`
 - `publicationSnapshot`
 
+## Z 世代来源规则
+
+- Z 世代趋势网站和榜单只作为补充发现来源，不是最终选词池。每次周计划开始前都要检查，但通过质量门的采用数量允许为 0。
+- 新发现词必须先经过现有硬排除、近 30 天与本周计划去重、词义与真实用例、时间证据、风险、稳定度、账号适配和可视化检查；不得因来源热门而跳过复核。
+- 最终采用的词在 `sourceTags` 中保留精确标签 `z世代`。该标签只记录来源，不改变 `sourceType`，不修改 `aiCard` 结构，也不直接提供排名加分。
+- 未通过质量门的词不进入每日推荐；不要为了让 Z 世代来源“有产出”而放宽每日内容结构、证据、置信度或风险限制。
+
 ## Feedback Rules
 
 Keep the three feedback objects separate:

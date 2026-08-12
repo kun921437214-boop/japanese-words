@@ -16,15 +16,18 @@
 ## 数据流
 
 1. 周一 13:20 已发布数据同步完成后，Codex 为下周 7 天逐日请求 `/codex-daily?date=<目标日期>&view=context`，取得账号定位、收藏/反馈、候选池、已发布表现和近 30 天快照。
-2. Codex 先生成 70 词周计划，完成跨日去重与语义簇审计，再按日期连续生成每天 10 个词的完整词卡，并用 image generation 为每个词准备一张参考图。
+2. Codex 在生成周计划前必须检查当期公开的 Z 世代流行语或趋势榜单，将它作为补充发现来源；采用数量允许为 0，不是每日或每周硬配额，也不能为凑数量降低现有质量门。
+   - 新发现词先进入可复核候选，继续执行收藏/待发布/已发布排除、近 30 天与本周计划去重、词义与真实用例核验、时间证据、风险、稳定度、账号适配和可视化检查。
+   - 只有最终采用的词才在候选词和草稿的 `sourceTags` 中保留精确标签 `z世代`。该标签只记录来源，不提供排名加分，不改变 `sourceType` 或 `aiCard` 结构。
+3. Codex 再生成 70 词周计划，完成跨日去重与语义簇审计，并按日期连续生成每天 10 个词的完整词卡，用 image generation 为每个词准备一张参考图。
    - 目标日期从 `2026-08-10` 起，context 中的发布表现按 topic / cover / content 三路分流：分别只服务选词、视觉 Brief 和词卡结构；不做数值排名加权，不改变 `aiCard` 结构。
    - `collecting` 与 `insufficient` 保持中性，`early` 仅作半权重定性提示，`final` 才作完整定性 guidance；至少需要 2 篇同方向成熟信号，封面或内容偏弱不得惩罚词本身。
-3. 图片通过 `PUT /codex-image` 写入独立的 `REFERENCE_IMAGES_KV`；返回的同源 URL 保存到 `aiCard.referenceImage`。若未来开通 R2，接口仍可优先使用 `REFERENCE_IMAGES` R2 binding。
-4. `npm run codex:daily -- validate` 在本地执行同一套质量门。
-5. Codex 使用独立的 `CODEX_AUTOMATION_SECRET` 提交草稿。该凭证不能发布草稿，不能调用 `/favorites`、`/daily-refresh` 或 `/ai-cards`。
-6. 北京时间 00:00，腾讯云内部调度器使用现有 `AUTO_REFRESH_SECRET` 调用 `POST /codex-daily` 的 `promote` 动作。
-7. 只有有效草稿会晋升；否则腾讯云运行时继续调用现有 `/daily-refresh`。后续 aiCard 定时任务仅在仍有缺卡时调用 DeepSeek。
-8. 周二 14:40 起，验收任务逐日检查下周 7 天是否全部达到 10 词、10 张 ready 词卡、10 张 Production ready 图片、`validation.valid=true`、零 error、零 warning。未通过时只修复缺失项；整周通过后本周停止 Production 检查。
+4. 图片通过 `PUT /codex-image` 写入独立的 `REFERENCE_IMAGES_KV`；返回的同源 URL 保存到 `aiCard.referenceImage`。若未来开通 R2，接口仍可优先使用 `REFERENCE_IMAGES` R2 binding。
+5. `npm run codex:daily -- validate` 在本地执行同一套质量门。
+6. Codex 使用独立的 `CODEX_AUTOMATION_SECRET` 提交草稿。该凭证不能发布草稿，不能调用 `/favorites`、`/daily-refresh` 或 `/ai-cards`。
+7. 北京时间 00:00，腾讯云内部调度器使用现有 `AUTO_REFRESH_SECRET` 调用 `POST /codex-daily` 的 `promote` 动作。
+8. 只有有效草稿会晋升；否则腾讯云运行时继续调用现有 `/daily-refresh`。后续 aiCard 定时任务仅在仍有缺卡时调用 DeepSeek。
+9. 周二 14:40 起，验收任务逐日检查下周 7 天是否全部达到 10 词、10 张 ready 词卡、10 张 Production ready 图片、`validation.valid=true`、零 error、零 warning。未通过时只修复缺失项；整周通过后本周停止 Production 检查。
 
 ## 发布门
 
@@ -40,6 +43,7 @@
 - 泛美妆品类词最多 1 个；具体美妆/穿搭表达不得用 `ネイル`、`メイク`、`ファッション` 等泛标签凑数。
 - 完整词组最多 2 个，其中长句式或惯用语最多 1 个；其余至少 8 个为单词、成熟缩略语或短复合词。
 - 流行表达必须为 `trend_claim` + `meme_fast` + high/medium confidence；成熟缩略语必须有可靠证据并能说明完整形式。
+- Z 世代来源采用数可以为 0；`z世代` 标签只说明发现来源，不能替代流行证据、账号适配或其他发布门。
 - 基础寒暄/教材礼貌词最多 1 个。
 - S 级最多 6 个，人工质量估分至少 75。
 - 高风险、低置信或待复核词不能自动发布。
@@ -116,7 +120,7 @@ Cloudflare Pages、Worker、KV 和协调器只作为回滚资源保留；其 Wor
 
 每天 13:20 当日快照监控：只读检查 `/healthz` 与 `/favorites`，确认 00:00 晋升后的日期和 10 词，不生成或修复内容。
 
-周一 14:30 主任务：读取下周 7 天上下文，统一规划 70 词并按日期连续完成 10 词、10 卡、10 图、上传、验证和草稿提交；不发布、不调用 DeepSeek、不部署。
+周一 14:30 主任务：读取下周 7 天上下文，先检查当期 Z 世代趋势来源并允许零采用，再统一规划 70 词，按日期连续完成 10 词、10 卡、10 图、上传、验证和草稿提交；不发布、不调用 DeepSeek、不部署。
 
 周二至周日 14:40 验收与修复：检查下周整周 7 天是否全部为 10/10/10、valid、零 error、零 warning。发现问题时从同一周进度修复；整周通过后写 `verification.json`，本周后续触发不再访问 Production。
 

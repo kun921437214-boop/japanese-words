@@ -21,6 +21,23 @@ export const CODEX_DAILY_DRAFT_VERSION = 1;
 export const CODEX_DAILY_GENERATOR_VERSION = 'codex-daily-v1';
 export const CODEX_DAILY_WORD_COUNT = DAILY_WORD_COUNT;
 export const CODEX_DAILY_DRAFT_TTL_SECONDS = 8 * 24 * 60 * 60;
+export const CODEX_Z_GENERATION_DISCOVERY_SOURCE = Object.freeze({
+  id: 'z_generation',
+  label: 'Z 世代趋势来源',
+  sourceTag: 'z世代',
+  requiredCheck: true,
+  hardQuota: false,
+  minimumAccepted: 0,
+  checkInstruction: '每次周计划开始前检索并查看当期公开的 Z 世代流行语或趋势榜单；没有通过质量门的词时允许采用 0 个。',
+  sourceExamples: ['Simeji 排名', 'Z 总研 / alpha 世代研究', 'JC・JK 流行语大赏', 'Trepo', 'SHIBUYA109 lab.'],
+  qualityGates: [
+    '先进入可复核候选，不因来源直接进入每日推荐或正式发布。',
+    '排除已收藏、待发布、已发布、近 30 天出现及本周计划重复词。',
+    '核实词义、真实用例、时间证据、风险、稳定度和账号收藏价值。',
+    '不为凑数量降低现有内容结构、证据、置信度、风险或可视化质量门。',
+    '最终采用的词在 sourceTags 中保留精确标签 z世代；标签本身不提供排名加分。'
+  ]
+});
 
 function safeArray(value) {
   return Array.isArray(value) ? value : [];
@@ -274,8 +291,18 @@ export function buildCodexDailyContext(workflowInput = {}, targetDateKey = '') {
       ignoredCount: entry.ignoredCount,
       recommendationCount: entry.recommendationCount,
       riskLevel: entry.riskLevel,
-      displayBucket: entry.displayBucket
+      displayBucket: entry.displayBucket,
+      sourceTags: safeArray(entry.sourceTags).slice(0, 12),
+      discoverySource: entry.discoverySource,
+      discoveryContext: entry.discoveryContext
     })),
+    discoverySources: {
+      zGeneration: {
+        ...CODEX_Z_GENERATION_DISCOVERY_SOURCE,
+        sourceExamples: [...CODEX_Z_GENERATION_DISCOVERY_SOURCE.sourceExamples],
+        qualityGates: [...CODEX_Z_GENERATION_DISCOVERY_SOURCE.qualityGates]
+      }
+    },
     qualityRules: {
       exactWords: CODEX_DAILY_WORD_COUNT,
       recentDedupDays: 30,

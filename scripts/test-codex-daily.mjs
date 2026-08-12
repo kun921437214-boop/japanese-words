@@ -9,6 +9,7 @@ import {
 import { onRequest as handleFavorites } from '../functions/favorites.js';
 import {
   CODEX_DAILY_WORD_COUNT,
+  CODEX_Z_GENERATION_DISCOVERY_SOURCE,
   buildCodexDailyContext,
   getCodexDraftStorageKey,
   promoteCodexDailyDraft,
@@ -328,7 +329,11 @@ test('promotion preserves team-owned fields and publishes Codex cards', () => {
     statuses: { '余裕': 'pending' },
     publishedRecords: [{ id: 'record-1', word: '心地よい', title: '人工标题' }]
   };
-  const result = promoteCodexDailyDraft(workflow, makeDraft(), { expectedDateKey: '2026-07-14' });
+  const draft = makeDraft();
+  draft.items[0].sourceTags = ['z世代'];
+  draft.items[0].discoverySource = 'Simeji 排名';
+  draft.items[0].discoveryContext = 'Z 世代趋势来源复核后采用。';
+  const result = promoteCodexDailyDraft(workflow, draft, { expectedDateKey: '2026-07-14' });
   assert.equal(result.ok, true);
   assert.deepEqual(result.workflow.words, ['余裕']);
   assert.equal(result.workflow.statuses['余裕'], 'pending');
@@ -337,6 +342,8 @@ test('promotion preserves team-owned fields and publishes Codex cards', () => {
   assert.equal(result.workflow.todaySnapshot.createdBy, 'codex');
   assert.equal(result.workflow.todaySnapshot.words.length, CODEX_DAILY_WORD_COUNT);
   assert.equal(result.workflow.candidatePool['モヤる'].aiCard.cardStatus, 'ready');
+  assert.ok(result.workflow.candidatePool['モヤる'].sourceTags.includes('z世代'));
+  assert.equal(result.workflow.candidatePool['モヤる'].discoverySource, 'Simeji 排名');
 });
 
 test('Codex daily context receives separated published learning signals', () => {
@@ -361,6 +368,15 @@ test('Codex daily context receives separated published learning signals', () => 
   assert.equal(context.publishedLearning.guidanceEnabled, false);
 
   const futureContext = buildCodexDailyContext({
+    candidatePool: {
+      'ガチャ活': {
+        kanji: 'ガチャ活',
+        sourceType: 'codex_generated',
+        sourceTags: ['z世代'],
+        discoverySource: 'Z 世代趋势榜单',
+        discoveryContext: '经现有质量门复核后保留。'
+      }
+    },
     publishedRecords: [{
       id: 'target',
       word: '抜け感',
@@ -384,6 +400,15 @@ test('Codex daily context receives separated published learning signals', () => 
   });
   assert.deepEqual(futureContext.qualityRules.expressionFormMaxima, { full_phrase: 2, long_idiom: 1 });
   assert.match(futureContext.qualityRules.publishedReviewRationale.join(' '), /收藏率和互动率优先/);
+  assert.equal(CODEX_Z_GENERATION_DISCOVERY_SOURCE.minimumAccepted, 0);
+  assert.equal(futureContext.discoverySources.zGeneration.requiredCheck, true);
+  assert.equal(futureContext.discoverySources.zGeneration.hardQuota, false);
+  assert.equal(futureContext.discoverySources.zGeneration.minimumAccepted, 0);
+  assert.equal(futureContext.discoverySources.zGeneration.sourceTag, 'z世代');
+  assert.match(futureContext.discoverySources.zGeneration.checkInstruction, /允许采用 0 个/);
+  assert.ok(futureContext.discoverySources.zGeneration.qualityGates.some(rule => rule.includes('不提供排名加分')));
+  assert.deepEqual(futureContext.candidatePool[0].sourceTags, ['z世代']);
+  assert.equal(futureContext.candidatePool[0].discoverySource, 'Z 世代趋势榜单');
 });
 
 test('Codex token can submit drafts but cannot publish or write favorites', async () => {
