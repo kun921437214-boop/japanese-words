@@ -776,14 +776,14 @@ test('mergeWorkflow 保留较新的负反馈撤销，不被云端旧计数恢复
   assert.equal(merged.feedback['こなれ'].lastUndoneAtByReason.uninterested, '2026-07-22T04:05:00.000Z');
 });
 
-test('cleanStoredWorkflow 不删除手动添加来源元数据', () => {
+test('cleanStoredWorkflow 不删除手动添加来源元数据和 z世代 标签', () => {
   const cleaned = cleanStoredWorkflow({
     candidatePool: {
       'エモい': {
         kanji: 'エモい',
         sourceType: 'manual_keep',
         meaning: '很有情绪氛围',
-        sourceTags: ['手动添加'],
+        sourceTags: ['手动添加', 'z世代'],
         discoverySource: '小红书',
         discoveryContext: '在穿搭内容里看到，适合做标题。'
       }
@@ -792,6 +792,7 @@ test('cleanStoredWorkflow 不删除手动添加来源元数据', () => {
   assert.equal(cleaned.candidatePool['エモい'].discoverySource, '小红书');
   assert.equal(cleaned.candidatePool['エモい'].discoveryContext, '在穿搭内容里看到，适合做标题。');
   assert.ok(cleaned.candidatePool['エモい'].sourceTags.includes('手动添加'));
+  assert.ok(cleaned.candidatePool['エモい'].sourceTags.includes('z世代'));
 });
 
 test('mergeWorkflowForFullSave 保存手动添加词时同时保留收藏和候选库', () => {

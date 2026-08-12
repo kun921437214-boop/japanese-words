@@ -551,7 +551,7 @@ const CANDIDATE_SOURCE_FILTER_LABELS = {
   deepseek_reviewed: 'DeepSeek 审核词',
   manual_keep: '手动保留词'
 };
-const MANUAL_DISCOVERY_SOURCE_OPTIONS = ['小红书', '日剧 / 动漫', 'YouTube', 'Instagram', 'X / Twitter', '朋友聊天', '日语资料', '其他'];
+const MANUAL_DISCOVERY_SOURCE_OPTIONS = ['小红书', 'z世代', '日剧 / 动漫', 'YouTube', 'Instagram', 'X / Twitter', '朋友聊天', '日语资料', '其他'];
 function getAccountLearningSummary() {
   return {
     version: 'xhs-account-learning-v1',
@@ -5585,8 +5585,11 @@ function buildTodayRecommendations() {
 function isManualAddedEntry(entry = {}) {
   const tags = safeArray(entry?.sourceTags).map(item => String(item || '').trim());
   return entry?.sourceType === 'manual'
-    || tags.includes('手动添加')
-    || Boolean(entry?.discoverySource || entry?.discoveryContext);
+    || tags.includes('手动添加');
+}
+
+function hasZGenerationSourceTag(entry = {}) {
+  return safeArray(entry?.sourceTags).some(item => String(item || '').trim() === 'z世代');
 }
 
 function getFavoriteSourceLabel(wordOrEntry = {}) {
@@ -5609,6 +5612,7 @@ function renderSourceInfoSection(entry = {}) {
   const discoveryContext = cleanShortText(entry.discoveryContext, 1200);
   const importedAt = entry.importedAt ? String(entry.importedAt).slice(0, 16).replace('T', ' ') : '';
   const rows = [`<div class="modal-meta-item">来源：${escapeHTML(sourceLabel)}</div>`];
+  if (hasZGenerationSourceTag(entry)) rows.push('<div class="modal-meta-item">来源标签：z世代</div>');
   if (sourceLabel === '手动添加') {
     if (discoverySource) rows.push(`<div class="modal-meta-item">发现渠道：${escapeHTML(discoverySource)}</div>`);
     if (discoveryContext) rows.push(`<div class="modal-meta-item source-context">补充语境：${escapeHTML(discoveryContext)}</div>`);
@@ -6606,7 +6610,12 @@ function ensureManualWordCandidate(kanji, options = {}) {
   const word = getDisplayWordByKanji(cleanKanji) || getWordByKanji(cleanKanji) || {};
   const discoverySource = cleanShortText(options.discoverySource || existing.discoverySource, 80);
   const discoveryContext = cleanShortText(options.discoveryContext || existing.discoveryContext, 1200);
-  const sourceTags = getUniqueWords(['手动添加', '受保护', ...(existing.sourceTags || [])]).slice(0, 12);
+  const sourceTags = getUniqueWords([
+    '手动添加',
+    '受保护',
+    discoverySource === 'z世代' ? 'z世代' : '',
+    ...(existing.sourceTags || [])
+  ]).slice(0, 12);
   candidatePool[cleanKanji] = cleanCandidatePoolEntry(cleanKanji, {
     ...existing,
     kanji: cleanKanji,
@@ -7114,6 +7123,7 @@ function getDailyHotDirectionTags(word = {}) {
     const cleanLabel = cleanShortText(label, 16);
     if (cleanLabel && !tags.includes(cleanLabel)) tags.push(cleanLabel);
   };
+  if (hasZGenerationSourceTag(entry)) addTag('z世代');
   const tone = entry.emotionTone || getTodayEmotionTone(word);
   if (tone === 'aesthetic') addTag('审美氛围');
   if (tone === 'lifestyle') addTag('生活方式');
@@ -7382,6 +7392,9 @@ function renderCodexDraftPreviewCard(item, index) {
   const favoriteButton = getFavoriteButtonState(item.kanji, isFav);
   const riskStateLabel = getRiskStateLabel({ ...item, candidateMeta: item });
   const riskStateKey = getRiskStateKey(riskStateLabel);
+  const zGenerationTag = hasZGenerationSourceTag(item)
+    ? '<span class="daily-hot-tag">z世代</span>'
+    : '';
   const safeKanjiAction = escapeHTML(item.kanji);
   const fallbackSvg = `data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 900 1200%22><rect fill=%22%23fffdf9%22 width=%22900%22 height=%221200%22/><text x=%22450%22 y=%22220%22 text-anchor=%22middle%22 font-size=%22110%22 font-weight=%22700%22 fill=%22%23222222%22>${encodeURIComponent(item.kanji)}</text></svg>`;
   return `
@@ -7407,6 +7420,7 @@ function renderCodexDraftPreviewCard(item, index) {
         <div class="card-meaning">${escapeHTML(item.meaning || '—')}</div>
         <div class="daily-hot-reason line-2">${escapeHTML(wordCardView.summary || wordCardView.explanation || wordCardView.statusLabel)}</div>
         <div class="daily-hot-tags">
+          ${zGenerationTag}
           <span class="daily-hot-tag">${escapeHTML(categoryLabel)}</span>
           <span class="daily-hot-tag state-tag-${escapeHTML(teamState.key)}">${escapeHTML(teamState.note)}</span>
           <span class="daily-hot-tag risk-state-chip risk-${escapeHTML(riskStateKey)}">${escapeHTML(riskStateLabel)}</span>
@@ -7440,6 +7454,9 @@ function openCodexDraftPreview(index) {
   const favoriteButton = getFavoriteButtonState(item.kanji, isFav);
   const riskStateLabel = getRiskStateLabel({ ...item, candidateMeta: item });
   const riskStateKey = getRiskStateKey(riskStateLabel);
+  const zGenerationTag = hasZGenerationSourceTag(item)
+    ? '<span class="daily-hot-tag">z世代</span>'
+    : '';
   const safeKanjiAction = escapeHTML(item.kanji);
   document.getElementById('modalContainer').innerHTML = `
     <div class="modal-shell record-shell codex-preview-modal-shell">
@@ -7457,6 +7474,7 @@ function openCodexDraftPreview(index) {
             <button type="button" class="codex-preview-modal-close" data-modal-action="close" aria-label="关闭">×</button>
           </div>
           <div class="daily-hot-tags codex-preview-modal-tags">
+            ${zGenerationTag}
             <span class="daily-hot-tag recommendation-grade-chip grade-${escapeHTML(recommendationGrade.toLowerCase())}">推荐等级 ${escapeHTML(recommendationGrade)}</span>
             <span class="daily-hot-tag">${escapeHTML(categoryLabel)}</span>
             <span class="daily-hot-tag state-tag-${escapeHTML(teamState.key)}">${escapeHTML(teamState.note)}</span>
@@ -7522,6 +7540,9 @@ function renderFavoriteCard(word) {
   const aiCardText = wordCardView.hasFormalCard
     ? (word.suggestedTitle || wordCardView.listTitle)
     : wordCardView.statusLabel;
+  const zGenerationTag = hasZGenerationSourceTag(entry)
+    ? '<span class="daily-hot-tag">z世代</span>'
+    : '';
   return `
     <div class="word-card workflow-card" data-favorites-action="open-detail" data-word-id="${escapeHTML(word.id || word.kanji)}">
       <div class="card-image-wrapper">
@@ -7547,6 +7568,7 @@ function renderFavoriteCard(word) {
         </div>
         <div class="card-meta workflow-meta">
           ${renderFavoriteSourceChip(entry)}
+          ${zGenerationTag}
           ${renderStatusControl(word.kanji, { context: 'favorites' })}
         </div>
       </div>
