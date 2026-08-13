@@ -5,7 +5,8 @@ import { buildPublishedLearningSummary } from './published-import.mjs';
 import { buildTodayRecommendationAudit } from './today-snapshot.mjs';
 import {
   DAILY_CONTENT_MIX_TARGETS,
-  DAILY_EXPRESSION_FORM_MAXIMA
+  DAILY_EXPRESSION_FORM_MAXIMA,
+  getDailyContentMixLane
 } from './today-quality.mjs';
 import {
   archiveTodaySnapshotIntoHistory,
@@ -21,6 +22,9 @@ export const CODEX_DAILY_DRAFT_VERSION = 1;
 export const CODEX_DAILY_GENERATOR_VERSION = 'codex-daily-v1';
 export const CODEX_DAILY_WORD_COUNT = DAILY_WORD_COUNT;
 export const CODEX_DAILY_DRAFT_TTL_SECONDS = 8 * 24 * 60 * 60;
+export const CODEX_DAILY_MAX_BACKFILL_COUNT = 2;
+export const CODEX_DAILY_BACKFILL_RECHECK_DAYS = 180;
+export const CODEX_DAILY_STRICT_QUALITY_GATE_START_DATE = '2026-08-17';
 export const CODEX_Z_GENERATION_DISCOVERY_SOURCE = Object.freeze({
   id: 'z_generation',
   label: 'Z 世代趋势来源',
@@ -143,7 +147,46 @@ export function cleanCodexDailyDraft(input = {}) {
   };
 }
 
-function isCompleteCard(card = {}) {
+function collectCardQualityIssues(card = {}) {
+  const cleanCard = cleanAiCard(card);
+  const issues = [];
+  if (cleanCard.cardStatus !== 'ready') issues.push('cardStatus 不是 ready');
+  if (!cleanCard.summary) issues.push('缺少 summary');
+  if (!cleanCard.explanation) issues.push('缺少 explanation');
+  if (!cleanCard.usageScenes.length) issues.push('缺少 usageScenes');
+  if (cleanCard.examples.length < 2 || cleanCard.examples.length > 4) {
+    issues.push(`例句数量应为 2-4 条，当前 ${cleanCard.examples.length}`);
+  }
+  cleanCard.examples.forEach((example, index) => {
+    const missing = ['jp', 'kana', 'romaji', 'cn'].filter(field => !cleanText(example?.[field], 500));
+    if (!cleanText(example?.note || example?.source, 500)) missing.push('note/source');
+    if (missing.length) issues.push(`例句 ${index + 1} 缺少 ${missing.join('/')}`);
+  });
+  if (cleanCard.suggestedTitles.length < 3 || cleanCard.suggestedTitles.length > 6) {
+    issues.push(`推荐标题应为 3-6 条，当前 ${cleanCard.suggestedTitles.length}`);
+  }
+  if (!cleanCard.coverSuggestion.coverText) issues.push('缺少 coverSuggestion.coverText');
+  if (!cleanCard.coverSuggestion.mainVisual) issues.push('缺少 coverSuggestion.mainVisual');
+  if (!cleanCard.coverSuggestion.style) issues.push('缺少 coverSuggestion.style');
+  if (!cleanCard.coverSuggestion.avoid) issues.push('缺少 coverSuggestion.avoid');
+  if (cleanCard.contentAngles.length < 3 || cleanCard.contentAngles.length > 6) {
+    issues.push(`内容角度应为 3-6 条，当前 ${cleanCard.contentAngles.length}`);
+  }
+  if (!cleanCard.targetAudience) issues.push('缺少 targetAudience');
+  if (!cleanCard.referenceDirection) issues.push('缺少 referenceDirection');
+  if (!cleanCard.riskWarning) issues.push('缺少 riskWarning');
+  if (!cleanCard.wrongUsage) issues.push('缺少 wrongUsage');
+  if (!cleanCard.similarWords.length) issues.push('缺少 similarWords');
+  cleanCard.similarWords.forEach((similar, index) => {
+    if (!similar.word || !similar.difference) issues.push(`相近词 ${index + 1} 缺少词或语感差异`);
+  });
+  if (cleanCard.interactionPrompts.length < 2 || cleanCard.interactionPrompts.length > 4) {
+    issues.push(`互动引导应为 2-4 条，当前 ${cleanCard.interactionPrompts.length}`);
+  }
+  return [...new Set(issues)];
+}
+
+function hasLegacyCompleteCard(card = {}) {
   const cleanCard = cleanAiCard(card);
   return cleanCard.cardStatus === 'ready'
     && Boolean(cleanCard.summary)
@@ -172,9 +215,189 @@ function collectRecentWords(workflowInput = {}, targetDateKey = '') {
   return records;
 }
 
+function countByLane(entries = []) {
+  return entries.reduce((result, entry) => {
+    const lane = getDailyContentMixLane(entry);
+    result[lane] = (result[lane] || 0) + 1;
+    return result;
+  }, Object.keys(DAILY_CONTENT_MIX_TARGETS).reduce((result, lane) => ({ ...result, [lane]: 0 }), {}));
+}
+
+function isPrimaryDailyCandidate(entry = {}) {
+  const lane = getDailyContentMixLane(entry);
+  return entry.displayBucket === 'today'
+    || (lane === 'verified_trend' && entry.displayBucket === 'meme_fast');
+}
+
+export function buildCodexCandidateSupplySummary(workflowInput = {}, targetDateKey = '') {
+  const workflow = cleanStoredWorkflow(workflowInput);
+  const target = cleanDateKey(targetDateKey);
+  const strictQualityGateEnabled = target >= CODEX_DAILY_STRICT_QUALITY_GATE_START_DATE;
+  const recentWords = collectRecentWords(workflow, targetDateKey);
+  const favoriteWords = new Set(workflow.words);
+  const publishedWords = new Set(workflow.publishedRecords.map(record => record.word).filter(Boolean));
+  const exclusionCounts = {
+    favorited: 0,
+    pending_or_published: 0,
+    published_record: 0,
+    recent_30_days: 0,
+    risk_or_review: 0,
+    unknown_evidence: 0,
+    incomplete: 0
+  };
+  const eligible = [];
+  Object.values(workflow.candidatePool).forEach(entry => {
+    let reason = '';
+    const lane = getDailyContentMixLane(entry);
+    if (favoriteWords.has(entry.kanji)) reason = 'favorited';
+    else if (['pending', 'published'].includes(workflow.statuses[entry.kanji])) reason = 'pending_or_published';
+    else if (publishedWords.has(entry.kanji)) reason = 'published_record';
+    else if (recentWords.has(entry.kanji)) reason = 'recent_30_days';
+    else if (
+      entry.riskLevel === 'high'
+      || ['low', 'review'].includes(entry.confidenceLevel)
+      || ['review', 'blocked'].includes(entry.displayBucket)
+      || ['watch', 'review', 'rejected'].includes(entry.qualityGateStatus)
+      || entry.stabilityLevel === 'review'
+    ) reason = 'risk_or_review';
+    else if (entry.evidenceType === 'unknown') reason = 'unknown_evidence';
+    else if (!entry.kanji || !entry.kana || !entry.meaning) reason = 'incomplete';
+    else if (strictQualityGateEnabled && collectItemConsistencyIssues(entry, lane).length) reason = 'incomplete';
+    else if (strictQualityGateEnabled && lane === 'verified_trend' && collectTrendProofIssues(entry, target).length) {
+      reason = 'incomplete';
+    } else if (
+      strictQualityGateEnabled
+      && !isPrimaryDailyCandidate(entry)
+      && collectEvidenceProofIssues(entry, target, {
+        subject: '补位词',
+        requireHistoricalBackfill: false,
+        requireTrendPeriod: lane === 'verified_trend'
+      }).length
+    ) reason = 'incomplete';
+    if (reason) {
+      exclusionCounts[reason] += 1;
+      return;
+    }
+    eligible.push(entry);
+  });
+  const primaryEligible = eligible.filter(isPrimaryDailyCandidate);
+  const secondaryEligible = eligible.filter(entry => !isPrimaryDailyCandidate(entry));
+  const primaryLaneCounts = countByLane(primaryEligible);
+  const eligibleLaneCounts = countByLane(eligible);
+  const primaryShortfalls = Object.entries(DAILY_CONTENT_MIX_TARGETS).reduce((result, [lane, target]) => {
+    result[lane] = Math.max(0, target - (primaryLaneCounts[lane] || 0));
+    return result;
+  }, {});
+  const discoveryShortfalls = Object.entries(DAILY_CONTENT_MIX_TARGETS).reduce((result, [lane, target]) => {
+    result[lane] = Math.max(0, target - (eligibleLaneCounts[lane] || 0));
+    return result;
+  }, {});
+  return {
+    totalCandidateCount: Object.keys(workflow.candidatePool).length,
+    eligibleCount: eligible.length,
+    primaryEligibleCount: primaryEligible.length,
+    secondaryEligibleCount: secondaryEligible.length,
+    exclusionCounts,
+    primaryLaneCounts,
+    eligibleLaneCounts,
+    contentMixTargets: { ...DAILY_CONTENT_MIX_TARGETS },
+    primaryShortfalls,
+    discoveryShortfalls,
+    needsPrimaryExpansion: Object.values(primaryShortfalls).some(Boolean),
+    needsNewDiscovery: Object.values(discoveryShortfalls).some(Boolean)
+  };
+}
+
+function daysSinceEvidenceCheck(targetDateKey = '', evidenceCheckedAt = '') {
+  const target = cleanDateKey(targetDateKey);
+  if (!target || !isIsoLike(evidenceCheckedAt)) return Infinity;
+  const checked = new Date(evidenceCheckedAt);
+  if (Number.isNaN(checked.getTime())) return Infinity;
+  return Math.floor((Date.parse(`${target}T23:59:59.999Z`) - checked.getTime()) / 86400000);
+}
+
+function hasAbbreviationFullForm(item = {}) {
+  const text = [
+    item.meaning,
+    item.reason,
+    item.aiCard?.summary,
+    item.aiCard?.explanation,
+    ...safeArray(item.aiCard?.usageScenes)
+  ].map(value => cleanText(value, 2000)).join(' ');
+  const hasAbbreviationMarker = /缩略|縮略|缩写|縮寫|略称|略語|完整形式|完整说法|完整說法/i.test(text);
+  const hasNamedFullForm = /「[^」]{3,}」|『[^』]{3,}』|“[^”]{3,}”|"[^"]{3,}"|（[^）]{3,}）|\([^)]{3,}\)|[ァ-ヶー]{6,}/.test(text);
+  return hasAbbreviationMarker && hasNamedFullForm;
+}
+
+function collectItemConsistencyIssues(item = {}, derivedLane = '') {
+  const issues = [];
+  if (item.freshness === '需要尽快判断') issues.push('freshness 仍为“需要尽快判断”');
+  if (item.stabilityLevel === 'review') issues.push('stabilityLevel 仍为 review');
+  if (['watch', 'review', 'rejected'].includes(item.qualityGateStatus)) {
+    issues.push(`qualityGateStatus=${item.qualityGateStatus}`);
+  }
+  if (item.displayBucket === 'meme_fast' && item.evidenceType !== 'trend_claim') {
+    issues.push(`meme_fast 必须使用 trend_claim 证据，当前为 ${item.evidenceType || '空'}`);
+  }
+  if (item.candidateType === '稳定候选' && item.freshness === '需要尽快判断') {
+    issues.push('“稳定候选”与“需要尽快判断”互相矛盾');
+  }
+  if (item.stabilityLevel === 'stable' && ['短期', '需要尽快判断'].includes(item.freshness)) {
+    issues.push(`stabilityLevel=stable 与 freshness=${item.freshness} 不一致`);
+  }
+  if (item.stabilityLevel === 'short_term' && item.freshness === '长期') {
+    issues.push('stabilityLevel=short_term 与 freshness=长期 不一致');
+  }
+  if (item.contentMixLane && item.contentMixLane !== derivedLane) {
+    issues.push(`声明分桶 ${item.contentMixLane} 与系统推断 ${derivedLane} 不一致`);
+  }
+  if (derivedLane === 'daily_abbreviation' && !hasAbbreviationFullForm(item)) {
+    issues.push('成熟缩略语未明确说明完整形式');
+  }
+  return issues;
+}
+
+function collectEvidenceProofIssues(item = {}, targetDateKey = '', options = {}) {
+  const subject = options.subject || '候选词';
+  const issues = [];
+  if (options.requireHistoricalBackfill && !item.historicalBackfill) {
+    issues.push(`${subject}缺少 historicalBackfill=true 标记`);
+  }
+  if (item.qualityGateStatus !== 'ready') issues.push(`${subject}缺少 qualityGateStatus=ready 的复核结论`);
+  const evidenceAgeDays = daysSinceEvidenceCheck(targetDateKey, item.evidenceCheckedAt);
+  if (!Number.isFinite(evidenceAgeDays)) issues.push(`${subject}缺少 evidenceCheckedAt`);
+  else if (evidenceAgeDays < 0) issues.push('evidenceCheckedAt 晚于目标日期');
+  else if (evidenceAgeDays > CODEX_DAILY_BACKFILL_RECHECK_DAYS) {
+    issues.push(`${subject}证据已超过 ${CODEX_DAILY_BACKFILL_RECHECK_DAYS} 天未复核`);
+  }
+  if (!safeArray(item.evidenceSources).length) issues.push(`${subject}缺少 evidenceSources`);
+  if (safeArray(item.realUsageExamples).length < 2) issues.push(`${subject}至少需要 2 条真实用例`);
+  if (!item.usageScope) issues.push(`${subject}缺少 usageScope`);
+  if (!item.stabilityLevel) issues.push(`${subject}缺少 stabilityLevel`);
+  if (options.requireTrendPeriod && !item.trendPeriod) issues.push(`${subject}缺少 trendPeriod`);
+  return issues;
+}
+
+function collectBackfillProofIssues(item = {}, targetDateKey = '', derivedLane = '') {
+  return collectEvidenceProofIssues(item, targetDateKey, {
+    subject: '补位词',
+    requireHistoricalBackfill: true,
+    requireTrendPeriod: derivedLane === 'verified_trend'
+  });
+}
+
+function collectTrendProofIssues(item = {}, targetDateKey = '') {
+  return collectEvidenceProofIssues(item, targetDateKey, {
+    subject: '流行词',
+    requireHistoricalBackfill: false,
+    requireTrendPeriod: true
+  });
+}
+
 export function validateCodexDailyDraft(input = {}, options = {}) {
   const draft = cleanCodexDailyDraft(input);
   const expectedDateKey = cleanDateKey(options.expectedDateKey);
+  const strictQualityGateEnabled = draft.targetDateKey >= CODEX_DAILY_STRICT_QUALITY_GATE_START_DATE;
   const errors = [];
   const warnings = [];
   if (!draft.targetDateKey) errors.push('targetDateKey 必须是有效的 YYYY-MM-DD 日期');
@@ -190,13 +413,49 @@ export function validateCodexDailyDraft(input = {}, options = {}) {
     .map(item => item.kanji || '(空词)');
   if (incompleteWords.length) errors.push(`词条基础字段不完整：${incompleteWords.join('、')}`);
 
-  const incompleteCardWords = draft.items.filter(item => !isCompleteCard(item.aiCard)).map(item => item.kanji);
+  const cardQualityIssues = draft.items.map(item => ({
+    kanji: item.kanji,
+    issues: collectCardQualityIssues(item.aiCard)
+  })).filter(item => item.issues.length);
+  const incompleteCardWords = strictQualityGateEnabled
+    ? cardQualityIssues.map(item => item.kanji)
+    : draft.items.filter(item => !hasLegacyCompleteCard(item.aiCard)).map(item => item.kanji);
   if (incompleteCardWords.length) errors.push(`词卡字段不完整：${incompleteCardWords.join('、')}`);
+  if (strictQualityGateEnabled) {
+    cardQualityIssues.forEach(item => errors.push(`词卡质量门未通过 ${item.kanji}：${item.issues.join('；')}`));
+  }
 
   const unsafeWords = draft.items
-    .filter(item => item.riskLevel === 'high' || item.confidenceLevel === 'review' || item.lastReviewState === 'review')
+    .filter(item => strictQualityGateEnabled
+      ? (
+          item.riskLevel === 'high'
+          || ['low', 'review'].includes(item.confidenceLevel)
+          || item.lastReviewState === 'review'
+          || ['review', 'blocked'].includes(item.displayBucket)
+          || item.evidenceType === 'unknown'
+        )
+      : item.riskLevel === 'high' || item.confidenceLevel === 'review' || item.lastReviewState === 'review')
     .map(item => item.kanji);
   if (unsafeWords.length) errors.push(`高风险或待复核词不能自动发布：${unsafeWords.join('、')}`);
+
+  const derivedLaneByWord = new Map(draft.items.map(item => [item.kanji, getDailyContentMixLane(item)]));
+  const metadataConflicts = draft.items.map(item => ({
+    kanji: item.kanji,
+    issues: collectItemConsistencyIssues(item, derivedLaneByWord.get(item.kanji))
+  })).filter(item => item.issues.length);
+  if (strictQualityGateEnabled) {
+    metadataConflicts.forEach(item => errors.push(`候选元数据冲突 ${item.kanji}：${item.issues.join('；')}`));
+  }
+  const trendProofIssues = draft.items
+    .filter(item => derivedLaneByWord.get(item.kanji) === 'verified_trend')
+    .map(item => ({
+      kanji: item.kanji,
+      issues: collectTrendProofIssues(item, draft.targetDateKey)
+    }))
+    .filter(item => item.issues.length);
+  if (strictQualityGateEnabled) {
+    trendProofIssues.forEach(item => errors.push(`流行词证据未通过 ${item.kanji}：${item.issues.join('；')}`));
+  }
 
   const recentWords = collectRecentWords(options.workflow || {}, draft.targetDateKey);
   const repeated30Words = draft.items.filter(item => recentWords.has(item.kanji)).map(item => item.kanji);
@@ -211,6 +470,30 @@ export function validateCodexDailyDraft(input = {}, options = {}) {
     relaxedDedup: false
   });
   const qualitySummary = recommendationAudit.qualitySummary || {};
+  const auditItemsByWord = new Map(recommendationAudit.items.map(item => [item.kanji, item]));
+  const backfillItems = draft.items
+    .filter(item => item.historicalBackfill || !isPrimaryDailyCandidate(item))
+    .map(item => auditItemsByWord.get(item.kanji) || { kanji: item.kanji });
+  qualitySummary.backfillCount = backfillItems.length;
+  qualitySummary.metadataConflictCount = metadataConflicts.length;
+  qualitySummary.cardQualityIssueCount = cardQualityIssues.length;
+  qualitySummary.trendProofIssueCount = trendProofIssues.length;
+  const draftItemsByWord = new Map(draft.items.map(item => [item.kanji, item]));
+  const backfillProofIssues = backfillItems.map(auditItem => {
+    const item = draftItemsByWord.get(auditItem.kanji) || {};
+    return {
+      kanji: auditItem.kanji,
+      issues: collectBackfillProofIssues(item, draft.targetDateKey, derivedLaneByWord.get(auditItem.kanji))
+    };
+  }).filter(item => item.issues.length);
+  if (strictQualityGateEnabled) {
+    if (backfillItems.length > CODEX_DAILY_MAX_BACKFILL_COUNT) {
+      errors.push(`补位词过多：${backfillItems.length}/${CODEX_DAILY_MAX_BACKFILL_COUNT}，必须继续扩充和筛选候选，不能硬凑 10 个`);
+    } else if (backfillItems.length === CODEX_DAILY_MAX_BACKFILL_COUNT) {
+      warnings.push(`补位词达到人工复核阈值：${backfillItems.length}/${CODEX_DAILY_MAX_BACKFILL_COUNT}`);
+    }
+    backfillProofIssues.forEach(item => errors.push(`补位词复核未通过 ${item.kanji}：${item.issues.join('；')}`));
+  }
   if (qualitySummary.duplicateClusterCount > 0) {
     errors.push(`存在 ${qualitySummary.duplicateClusterCount} 组同日语义重复`);
   }
@@ -247,9 +530,16 @@ export function validateCodexDailyDraft(input = {}, options = {}) {
       valid,
       errors,
       warnings: [...new Set(warnings)].slice(0, 30),
+      strictQualityGateEnabled,
+      strictQualityGateStartDate: CODEX_DAILY_STRICT_QUALITY_GATE_START_DATE,
       qualitySummary,
       recommendationAudit,
-      repeated30Words
+      repeated30Words,
+      candidateSupply: buildCodexCandidateSupplySummary(options.workflow || {}, draft.targetDateKey),
+      backfillWords: backfillItems.map(item => item.kanji),
+      metadataConflicts,
+      trendProofIssues,
+      cardQualityIssues
     }
   };
 }
@@ -294,8 +584,16 @@ export function buildCodexDailyContext(workflowInput = {}, targetDateKey = '') {
       displayBucket: entry.displayBucket,
       sourceTags: safeArray(entry.sourceTags).slice(0, 12),
       discoverySource: entry.discoverySource,
-      discoveryContext: entry.discoveryContext
+      discoveryContext: entry.discoveryContext,
+      evidenceCheckedAt: entry.evidenceCheckedAt,
+      evidenceSources: safeArray(entry.evidenceSources).slice(0, 8),
+      realUsageExamples: safeArray(entry.realUsageExamples).slice(0, 8),
+      usageScope: entry.usageScope,
+      stabilityLevel: entry.stabilityLevel,
+      trendPeriod: entry.trendPeriod,
+      qualityGateStatus: entry.qualityGateStatus
     })),
+    candidateSupply: buildCodexCandidateSupplySummary(workflow, target),
     discoverySources: {
       zGeneration: {
         ...CODEX_Z_GENERATION_DISCOVERY_SOURCE,
@@ -312,6 +610,11 @@ export function buildCodexDailyContext(workflowInput = {}, targetDateKey = '') {
       maxBeautyCategory: 1,
       maxGenericBeautyCategory: 1,
       maxBasicPolite: 1,
+      maxBackfillCount: CODEX_DAILY_MAX_BACKFILL_COUNT,
+      backfillRecheckDays: CODEX_DAILY_BACKFILL_RECHECK_DAYS,
+      strictQualityGateStartDate: CODEX_DAILY_STRICT_QUALITY_GATE_START_DATE,
+      backfillRequiresQualityGateReady: true,
+      backfillRequiresTwoRealUsageExamples: true,
       imagesRequiredForPublish: false,
       cardsRequiredForPublish: true,
       publishedReviewRationale: [

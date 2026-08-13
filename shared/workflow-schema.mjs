@@ -73,6 +73,8 @@ const CONFIDENCE_LEVEL_OPTIONS = ['high', 'medium', 'low', 'review'];
 const EVIDENCE_TYPE_OPTIONS = ['common_usage', 'ai_inferred', 'user_material', 'trend_claim', 'unknown'];
 const DISPLAY_BUCKET_OPTIONS = ['today', 'meme_fast', 'long_term', 'seasonal', 'review', 'blocked'];
 const EMOTION_TONE_OPTIONS = ['positive', 'neutral', 'negative', 'aesthetic', 'lifestyle', 'fandom'];
+const QUALITY_GATE_STATUS_OPTIONS = ['ready', 'watch', 'review', 'rejected'];
+const STABILITY_LEVEL_OPTIONS = ['stable', 'declining', 'short_term', 'review'];
 const REVIEW_REASON_TYPE_OPTIONS = ['uncertain_usage', 'too_niche', 'possible_wrong_meaning', 'ip_brand_role', 'privacy_sensitive', 'offensive', 'too_basic'];
 const SOURCE_TYPE_OPTIONS = ['codex_generated', 'deepseek_generated', 'deepseek_reviewed', 'manual_keep', 'audit_missing'];
 const SOURCE_PROMPT_OPTIONS = ['stable_today', 'wild_ideas', 'generate_candidates', 'extract_from_materials', 'enrich_words', 'generate_word_card', 'rerank_candidates', 'audit_library_for_delete', 'audit_missing_library_words'];
@@ -167,6 +169,20 @@ function cleanTraceText(value, maxLength = 8000) {
   } catch (error) {
     return '';
   }
+}
+
+function cleanEvidenceSources(sources = []) {
+  return safeArray(sources).map(source => {
+    if (typeof source === 'string') {
+      const label = cleanText(source, 500);
+      return label ? { label, url: '', publishedAt: '' } : null;
+    }
+    const label = cleanText(source?.label || source?.name || source?.title, 200);
+    const url = cleanText(source?.url, 1000);
+    const publishedAt = isIsoLike(source?.publishedAt) ? source.publishedAt : cleanText(source?.publishedAt, 40);
+    if (!label && !url) return null;
+    return { label, url, publishedAt };
+  }).filter(Boolean).slice(0, 8);
 }
 
 export function cleanWords(words) {
@@ -615,7 +631,11 @@ function cleanRecommendationAuditSummary(audit = {}) {
     'genericBasicCount',
     'fullPhraseCount',
     'longIdiomCount',
-    'estimatedHumanQualityScore'
+    'estimatedHumanQualityScore',
+    'backfillCount',
+    'metadataConflictCount',
+    'cardQualityIssueCount',
+    'trendProofIssueCount'
   ];
   const qualitySummary = audit?.qualitySummary || {};
   return {
@@ -710,6 +730,13 @@ export function cleanCandidatePoolEntry(kanji, entry = {}) {
     sourceTags: uniqueStrings(entry?.sourceTags, 80, 12),
     discoverySource: cleanText(entry?.discoverySource, 80),
     discoveryContext: cleanText(entry?.discoveryContext, 1200),
+    evidenceCheckedAt: isIsoLike(entry?.evidenceCheckedAt) ? entry.evidenceCheckedAt : '',
+    evidenceSources: cleanEvidenceSources(entry?.evidenceSources),
+    realUsageExamples: uniqueStrings(entry?.realUsageExamples, 500, 8),
+    usageScope: cleanText(entry?.usageScope, 120),
+    stabilityLevel: cleanEnum(entry?.stabilityLevel, STABILITY_LEVEL_OPTIONS, ''),
+    trendPeriod: cleanText(entry?.trendPeriod, 120),
+    qualityGateStatus: cleanEnum(entry?.qualityGateStatus, QUALITY_GATE_STATUS_OPTIONS, ''),
     aiBatchId: cleanText(entry?.aiBatchId, 120),
     importedAt: isIsoLike(entry?.importedAt) ? entry.importedAt : null,
     extensionFrom: uniqueStrings(entry?.extensionFrom, 80, 12),
@@ -1354,6 +1381,17 @@ function mergeCandidateEntry(localEntry = {}, remoteEntry = {}) {
     sourceTags: uniqueStrings([...(local.sourceTags || []), ...(remote.sourceTags || [])], 80, 12),
     discoverySource: nonEmptyText(newer.discoverySource, older.discoverySource, 80),
     discoveryContext: nonEmptyText(newer.discoveryContext, older.discoveryContext, 1200),
+    evidenceCheckedAt: latestString(local.evidenceCheckedAt, remote.evidenceCheckedAt) || '',
+    evidenceSources: cleanEvidenceSources([...(local.evidenceSources || []), ...(remote.evidenceSources || [])])
+      .filter((source, index, sources) => sources.findIndex(candidate => (
+        candidate.url === source.url && candidate.label === source.label
+      )) === index)
+      .slice(0, 8),
+    realUsageExamples: uniqueStrings([...(local.realUsageExamples || []), ...(remote.realUsageExamples || [])], 500, 8),
+    usageScope: nonEmptyText(newer.usageScope, older.usageScope, 120),
+    stabilityLevel: newer.stabilityLevel || older.stabilityLevel,
+    trendPeriod: nonEmptyText(newer.trendPeriod, older.trendPeriod, 120),
+    qualityGateStatus: newer.qualityGateStatus || older.qualityGateStatus,
     extensionFrom: uniqueStrings([...(local.extensionFrom || []), ...(remote.extensionFrom || [])], 80, 12),
     importedAt: earliestString(local.importedAt, remote.importedAt),
     firstSeenAt: earliestString(local.firstSeenAt, remote.firstSeenAt),

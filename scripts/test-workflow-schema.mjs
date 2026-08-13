@@ -785,7 +785,18 @@ test('cleanStoredWorkflow 不删除手动添加来源元数据和 z世代 标签
         meaning: '很有情绪氛围',
         sourceTags: ['手动添加', 'z世代'],
         discoverySource: '小红书',
-        discoveryContext: '在穿搭内容里看到，适合做标题。'
+        discoveryContext: '在穿搭内容里看到，适合做标题。',
+        evidenceCheckedAt: '2026-08-12T06:00:00.000Z',
+        evidenceSources: [{
+          label: '公开趋势榜单',
+          url: 'https://example.com/trend',
+          publishedAt: '2026-08-10'
+        }],
+        realUsageExamples: ['この写真、エモい。', '放課後の空気がエモい。'],
+        usageScope: '年轻人日常、社交媒体',
+        stabilityLevel: 'stable',
+        trendPeriod: '2026-08',
+        qualityGateStatus: 'ready'
       }
     }
   });
@@ -793,6 +804,17 @@ test('cleanStoredWorkflow 不删除手动添加来源元数据和 z世代 标签
   assert.equal(cleaned.candidatePool['エモい'].discoveryContext, '在穿搭内容里看到，适合做标题。');
   assert.ok(cleaned.candidatePool['エモい'].sourceTags.includes('手动添加'));
   assert.ok(cleaned.candidatePool['エモい'].sourceTags.includes('z世代'));
+  assert.equal(cleaned.candidatePool['エモい'].evidenceCheckedAt, '2026-08-12T06:00:00.000Z');
+  assert.deepEqual(cleaned.candidatePool['エモい'].evidenceSources, [{
+    label: '公开趋势榜单',
+    url: 'https://example.com/trend',
+    publishedAt: '2026-08-10'
+  }]);
+  assert.deepEqual(cleaned.candidatePool['エモい'].realUsageExamples, ['この写真、エモい。', '放課後の空気がエモい。']);
+  assert.equal(cleaned.candidatePool['エモい'].usageScope, '年轻人日常、社交媒体');
+  assert.equal(cleaned.candidatePool['エモい'].stabilityLevel, 'stable');
+  assert.equal(cleaned.candidatePool['エモい'].trendPeriod, '2026-08');
+  assert.equal(cleaned.candidatePool['エモい'].qualityGateStatus, 'ready');
 });
 
 test('mergeWorkflowForFullSave 保存手动添加词时同时保留收藏和候选库', () => {
@@ -920,6 +942,13 @@ test('mergeWorkflow 合并 candidatePool 时保留手动添加来源元数据', 
         sourceTags: ['手动添加'],
         discoverySource: 'YouTube',
         discoveryContext: '视频标题里看到。',
+        evidenceCheckedAt: '2026-05-30T00:30:00.000Z',
+        evidenceSources: ['视频标题和评论区'],
+        realUsageExamples: ['この曲、エモい。', '夕焼けがエモすぎる。'],
+        usageScope: '社交媒体口语',
+        stabilityLevel: 'stable',
+        trendPeriod: '长期使用',
+        qualityGateStatus: 'ready',
         updatedAt: '2026-05-30T01:00:00.000Z'
       }
     }
@@ -938,6 +967,13 @@ test('mergeWorkflow 合并 candidatePool 时保留手动添加来源元数据', 
   assert.equal(entry.discoverySource, 'YouTube');
   assert.equal(entry.discoveryContext, '视频标题里看到。');
   assert.ok(entry.sourceTags.includes('手动添加'));
+  assert.equal(entry.evidenceCheckedAt, '2026-05-30T00:30:00.000Z');
+  assert.deepEqual(entry.evidenceSources, [{ label: '视频标题和评论区', url: '', publishedAt: '' }]);
+  assert.deepEqual(entry.realUsageExamples, ['この曲、エモい。', '夕焼けがエモすぎる。']);
+  assert.equal(entry.usageScope, '社交媒体口语');
+  assert.equal(entry.stabilityLevel, 'stable');
+  assert.equal(entry.trendPeriod, '长期使用');
+  assert.equal(entry.qualityGateStatus, 'ready');
 });
 
 test('mergeWorkflow 合并 publishedRecords 时更新指标但不覆盖已锁定内容', () => {

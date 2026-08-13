@@ -8,8 +8,11 @@ import {
 } from '../functions/codex-image.js';
 import { onRequest as handleFavorites } from '../functions/favorites.js';
 import {
+  CODEX_DAILY_MAX_BACKFILL_COUNT,
+  CODEX_DAILY_STRICT_QUALITY_GATE_START_DATE,
   CODEX_DAILY_WORD_COUNT,
   CODEX_Z_GENERATION_DISCOVERY_SOURCE,
+  buildCodexCandidateSupplySummary,
   buildCodexDailyContext,
   getCodexDraftStorageKey,
   promoteCodexDailyDraft,
@@ -56,18 +59,18 @@ function makeCard(word, imageReady = false) {
     explanation: `先从真实生活场景理解 ${word}，再说明语感边界，不写成教材释义。`,
     usageScenes: ['朋友聊天', '记录生活状态'],
     examples: [
-      { jp: `${word}って感じ。`, kana: `${word}ってかんじ。`, cn: '就是这种感觉。' },
-      { jp: `今日は${word}。`, kana: `きょうは${word}。`, cn: '今天很有这种状态。' }
+      { jp: `${word}って感じ。`, kana: `${word}ってかんじ。`, romaji: `${word} tte kanji.`, cn: '就是这种感觉。', note: '朋友聊天时的自然说法。' },
+      { jp: `今日は${word}。`, kana: `きょうは${word}。`, romaji: `kyou wa ${word}.`, cn: '今天很有这种状态。', note: '记录当天状态。' }
     ],
-    suggestedTitles: [`日本人说「${word}」，其实是这种感觉`, `「${word}」不是直译那么简单`],
+    suggestedTitles: [`日本人说「${word}」，其实是这种感觉`, `「${word}」不是直译那么简单`, `这个日语词，太适合形容我的状态了`],
     coverSuggestion: { coverText: word, mainVisual: '真实生活场景，主体明确', style: '自然', avoid: '教材课件' },
-    contentAngles: ['语感差异', '生活场景'],
+    contentAngles: ['语感差异', '生活场景', '容易误用的边界'],
     targetAudience: '想积累自然日语表达的中文用户',
     referenceDirection: '使用无文字、无品牌标识的生活场景图',
-    riskWarning: '',
+    riskWarning: '低风险口语表达，正式场合仍需结合语境。',
     wrongUsage: '不要脱离语境机械套用。',
-    similarWords: [],
-    interactionPrompts: ['你会在什么场景用它？'],
+    similarWords: [{ word: '似た表現', romaji: 'nita hyougen', meaning: '相近表达', difference: '语气和使用场景不同。' }],
+    interactionPrompts: ['你会在什么场景用它？', '你还见过哪些相近表达？'],
     referenceImage: {
       status: imageReady ? 'ready' : 'missing',
       url: imageReady ? `/codex-image?key=codex-daily/2026-07-14/${encodeURIComponent(word)}.webp` : '',
@@ -103,6 +106,9 @@ function makeDraft(words = DAILY_CURATED_WORDS, options = {}) {
         if (abbreviationWords.has(kanji)) return {
           category: '日常缩略语',
           candidateType: '网络口语词',
+          meaning: kanji === 'タイパ'
+            ? '时间性价比；「タイムパフォーマンス」的缩略语'
+            : '订阅制；「サブスクリプション」的缩略语',
           reason: '成熟日常缩略语，说明完整形式与稳定用法。'
         };
         if (kanji === 'メロい') return {
@@ -111,7 +117,14 @@ function makeDraft(words = DAILY_CURATED_WORDS, options = {}) {
           freshness: '短期',
           evidenceType: 'trend_claim',
           displayBucket: 'meme_fast',
-          reason: '有时间证据的低风险流行表达。'
+          reason: '有时间证据的低风险流行表达。',
+          evidenceCheckedAt: '2026-07-10T06:00:00.000Z',
+          evidenceSources: [{ label: '公开青年趋势调查', url: 'https://example.invalid/trend' }],
+          realUsageExamples: ['メロい表情で話題になった。', 'この仕草が本当にメロい。'],
+          usageScope: '年轻人社交媒体口语',
+          stabilityLevel: 'short_term',
+          trendPeriod: '2026年7月',
+          qualityGateStatus: 'ready'
         };
         if (beautyWords.has(kanji)) return {
           category: '美妆穿搭表达',
@@ -127,13 +140,28 @@ function makeDraft(words = DAILY_CURATED_WORDS, options = {}) {
       kanji,
       kana: kanji,
       romaji: `word-${index + 1}`,
-      meaning: `${kanji} 的中文含义说明`,
+      meaning: kanji === 'タイパ'
+        ? '时间性价比；「タイムパフォーマンス」的缩略语'
+        : kanji === 'サブスク'
+          ? '订阅制；「サブスクリプション」的缩略语'
+          : `${kanji} 的中文含义说明`,
       xhsFitScore: index < 6 ? 92 : 84,
       riskLevel: 'low',
       confidenceLevel: 'high',
       aiCard: makeCard(kanji, Boolean(options.imageReady))
     }))
   };
+}
+
+function addBackfillProof(item, options = {}) {
+  item.historicalBackfill = true;
+  item.qualityGateStatus = 'ready';
+  item.evidenceCheckedAt = options.evidenceCheckedAt || '2026-07-10T06:00:00.000Z';
+  item.evidenceSources = [{ label: '公开用例核验', url: 'https://example.invalid/usage' }];
+  item.realUsageExamples = [`${item.kanji} の実例一。`, `${item.kanji} の実例二。`];
+  item.usageScope = options.usageScope || '日常口语';
+  item.stabilityLevel = options.stabilityLevel || 'stable';
+  return item;
 }
 
 function makeKv(initial = {}) {
@@ -187,6 +215,120 @@ test('a complete 10-word Codex draft passes while missing images remain non-bloc
   assert.equal(draft.cardReadyCount, CODEX_DAILY_WORD_COUNT);
   assert.equal(draft.imageReadyCount, 0);
   assert.ok(draft.validation.warnings.some(message => message.includes('参考图片未全部就绪')));
+});
+
+test('strict quality gates start after the already approved 2026-08-10 week', () => {
+  const approvedWeekInput = makeDraft(DAILY_CURATED_WORDS, { targetDateKey: '2026-08-16' });
+  approvedWeekInput.items[0].aiCard.examples[0].romaji = '';
+  approvedWeekInput.items[0].aiCard.interactionPrompts = ['旧草稿只有一条互动引导'];
+  const approvedWeek = validateCodexDailyDraft(approvedWeekInput, {
+    workflow: {},
+    expectedDateKey: '2026-08-16'
+  });
+  assert.equal(approvedWeek.validation.strictQualityGateEnabled, false);
+  assert.equal(approvedWeek.validation.valid, true);
+
+  approvedWeekInput.targetDateKey = CODEX_DAILY_STRICT_QUALITY_GATE_START_DATE;
+  const strictWeek = validateCodexDailyDraft(approvedWeekInput, {
+    workflow: {},
+    expectedDateKey: CODEX_DAILY_STRICT_QUALITY_GATE_START_DATE
+  });
+  assert.equal(strictWeek.validation.strictQualityGateEnabled, true);
+  assert.equal(strictWeek.validation.valid, false);
+  assert.ok(strictWeek.validation.errors.some(message => message.includes('例句 1 缺少 romaji')));
+});
+
+test('Codex draft blocks incomplete examples and card sections', () => {
+  const input = makeDraft(DAILY_CURATED_WORDS, { targetDateKey: '2026-08-18' });
+  input.items[0].aiCard.examples[0].romaji = '';
+  input.items[0].aiCard.interactionPrompts = ['只有一条'];
+  const draft = validateCodexDailyDraft(input, { workflow: {}, expectedDateKey: '2026-08-18' });
+  assert.equal(draft.validation.valid, false);
+  assert.ok(draft.validation.errors.some(message => message.includes('例句 1 缺少 romaji')));
+  assert.ok(draft.validation.errors.some(message => message.includes('互动引导应为 2-4 条')));
+});
+
+test('Codex draft blocks contradictory freshness and trend metadata', () => {
+  const input = makeDraft(DAILY_CURATED_WORDS, { targetDateKey: '2026-08-18' });
+  Object.assign(input.items[0], {
+    candidateType: '稳定候选',
+    freshness: '需要尽快判断',
+    displayBucket: 'meme_fast',
+    evidenceType: 'common_usage'
+  });
+  const draft = validateCodexDailyDraft(input, { workflow: {}, expectedDateKey: '2026-08-18' });
+  assert.equal(draft.validation.valid, false);
+  assert.ok(draft.validation.errors.some(message => message.includes('需要尽快判断')));
+  assert.ok(draft.validation.errors.some(message => message.includes('meme_fast 必须使用 trend_claim')));
+  assert.equal(draft.validation.metadataConflicts[0].kanji, input.items[0].kanji);
+
+  const trendInput = makeDraft(DAILY_CURATED_WORDS, { targetDateKey: '2026-08-18' });
+  trendInput.items[6].trendPeriod = '';
+  const trendDraft = validateCodexDailyDraft(trendInput, { workflow: {}, expectedDateKey: '2026-08-18' });
+  assert.equal(trendDraft.validation.valid, false);
+  assert.ok(trendDraft.validation.errors.some(message => message.includes('流行词证据未通过 メロい')));
+});
+
+test('Codex draft requires fresh evidence for every backfill and blocks more than two', () => {
+  const missingProofInput = makeDraft(DAILY_CURATED_WORDS, { targetDateKey: '2026-08-18' });
+  missingProofInput.items[0].displayBucket = 'long_term';
+  const missingProof = validateCodexDailyDraft(missingProofInput, { workflow: {}, expectedDateKey: '2026-08-18' });
+  assert.equal(missingProof.validation.valid, false);
+  assert.ok(missingProof.validation.errors.some(message => message.includes('补位词复核未通过')));
+
+  const twoBackfillsInput = makeDraft(DAILY_CURATED_WORDS, { targetDateKey: '2026-08-18' });
+  [0, 1].forEach(index => {
+    twoBackfillsInput.items[index].displayBucket = 'long_term';
+    addBackfillProof(twoBackfillsInput.items[index]);
+  });
+  const twoBackfills = validateCodexDailyDraft(twoBackfillsInput, { workflow: {}, expectedDateKey: '2026-08-18' });
+  assert.equal(twoBackfills.validation.valid, true);
+  assert.equal(twoBackfills.validation.backfillWords.length, CODEX_DAILY_MAX_BACKFILL_COUNT);
+  assert.ok(twoBackfills.validation.warnings.some(message => message.includes('人工复核阈值')));
+
+  const excessiveInput = makeDraft(DAILY_CURATED_WORDS, { targetDateKey: '2026-08-18' });
+  [0, 1, 2].forEach(index => {
+    excessiveInput.items[index].displayBucket = 'long_term';
+    addBackfillProof(excessiveInput.items[index]);
+  });
+  const excessive = validateCodexDailyDraft(excessiveInput, { workflow: {}, expectedDateKey: '2026-08-18' });
+  assert.equal(excessive.validation.valid, false);
+  assert.ok(excessive.validation.errors.some(message => message.includes('补位词过多')));
+});
+
+test('candidate supply summary distinguishes primary shortage from true discovery shortage', () => {
+  const entries = makeDraft().items;
+  const candidatePool = Object.fromEntries(entries.map(item => [item.kanji, {
+    ...item,
+    displayBucket: item.displayBucket || 'today'
+  }]));
+  candidatePool['モヤる'].displayBucket = 'long_term';
+  candidatePool['观察词'] = {
+    kanji: '观察词',
+    kana: 'かんさつご',
+    meaning: '待复核词',
+    riskLevel: 'low',
+    confidenceLevel: 'review',
+    evidenceType: 'unknown',
+    displayBucket: 'review'
+  };
+  addBackfillProof(candidatePool['モヤる']);
+  const summary = buildCodexCandidateSupplySummary({ candidatePool }, '2026-08-18');
+  assert.equal(summary.totalCandidateCount, CODEX_DAILY_WORD_COUNT + 1);
+  assert.equal(summary.eligibleCount, CODEX_DAILY_WORD_COUNT);
+  assert.equal(summary.primaryEligibleCount, CODEX_DAILY_WORD_COUNT - 1);
+  assert.equal(summary.secondaryEligibleCount, 1);
+  assert.equal(summary.primaryLaneCounts.verified_trend, 1);
+  assert.equal(summary.primaryShortfalls.core_emotion_social, 1);
+  assert.equal(summary.exclusionCounts.risk_or_review, 1);
+  assert.equal(summary.needsPrimaryExpansion, true);
+  assert.equal(summary.needsNewDiscovery, false);
+
+  candidatePool['モヤる'].evidenceSources = [];
+  const evidenceShortage = buildCodexCandidateSupplySummary({ candidatePool }, '2026-08-18');
+  assert.equal(evidenceShortage.eligibleCount, CODEX_DAILY_WORD_COUNT - 1);
+  assert.equal(evidenceShortage.exclusionCounts.incomplete, 1);
+  assert.equal(evidenceShortage.needsNewDiscovery, true);
 });
 
 test('Codex draft rejects a broken content mix and too many phrase-shaped abbreviations', () => {

@@ -55,6 +55,8 @@ Do not show old labels such as local word, original word, or original library in
 - `riskLevel`, `riskWarning`, `confidenceLevel`, `evidenceType`
 - `reviewReason`, `reviewReasonType`, `suggestedAction`
 - `emotionTone`, `sourceTags`, `aiBatchId`
+- `evidenceCheckedAt`, `evidenceSources`, `realUsageExamples`, `usageScope`
+- `stabilityLevel`, `trendPeriod`, `qualityGateStatus`
 - `manualReviewState`, `manualReviewNote`
 - `lastScore`, `lastScoredAt`, `lastRecommendedAt`
 - `recommendationCount`, `ignoredCount`
@@ -108,6 +110,19 @@ Only mature topic-performance signals may change word ranking. Cover and content
 
 Daily Hot should recommend expressions worth making into Xiaohongshu content, not generic topic tags.
 
+Candidate sufficiency must be diagnosed before filling a daily batch:
+
+- The strengthened publication gates below apply to target dates on or after `2026-08-17`. Candidate-supply diagnostics may be shown earlier, but the completed and approved `2026-08-10` through `2026-08-16` drafts must not be invalidated retroactively.
+- Count the primary pool (`displayBucket = today`, plus a verified-trend candidate in its required `meme_fast` lane) separately from all eligible candidates. A primary-pool lane shortage means expand or rebalance the primary pool; it does not necessarily mean discovery found no usable words.
+- Count exclusions by one primary reason: favorited, pending/published, published record, recent duplicate, risk/review, unknown evidence, or incomplete metadata.
+- If the full eligible pool cannot satisfy the 4/2/1/2/1 content mix, stop and discover or review more candidates. Do not bypass the quality gate merely to reach 10 words.
+- A historical backfill must set `historicalBackfill = true` and retain a recent evidence check, at least one evidence source, at least two real usage examples, usage scope, stability, and `qualityGateStatus = ready`.
+- A daily batch may contain at most 2 historical backfills. Exactly 2 requires manual attention and produces a warning; more than 2 is invalid.
+- Backfill evidence must be no older than 180 days. Stable long-term words are still rechecked; short-term trends also require an explicit `trendPeriod`.
+- The required verified-trend slot uses the same evidence bundle even though it is not counted as a historical backfill: recent check time, source, two real usage examples, usage scope, stability, trend period, and `qualityGateStatus = ready`.
+- Contradictory metadata is blocking: examples include a stable candidate marked “needs immediate judgment”, a fast meme without trend evidence, or a declared content lane that disagrees with the derived lane.
+- Established abbreviations must name the full form in the meaning, reason, usage scene, or card explanation. A label alone is not proof that the abbreviation is mature.
+
 ## Manual Add Rules
 
 Manual words should:
@@ -137,6 +152,8 @@ candidatePool[kanji].aiCard.cardStatus === "ready"
 ```
 
 Without a ready card, show only basic information and a "generate DeepSeek word card" action.
+
+For Codex daily drafts, `cardStatus = ready` is necessary but not sufficient. The publication gate also verifies every required section, its allowed item count, all five example fields (`jp`, `kana`, `romaji`, `cn`, and context note/source), cover fields, at least one explained similar word, and 2-4 interaction prompts.
 
 ## Import / Export Rules
 
