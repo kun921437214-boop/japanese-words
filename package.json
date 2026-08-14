@@ -29,6 +29,7 @@
     "start:tencent": "node server/tencent-runtime.mjs",
     "import:tencent": "node server/import-cloudflare-backup.mjs",
     "backup:tencent": "node server/tencent-backup.mjs",
+    "activate:weekly-check": "bash server/activate-weekly-content-check.sh",
     "deploy:tencent": "bash server/deploy-production.sh",
     "deploy:coordinator": "node scripts/deploy-coordinator.mjs",
     "deploy": "npm run build && node scripts/deploy-pages.mjs",

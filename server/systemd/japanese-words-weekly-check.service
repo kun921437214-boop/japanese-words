@@ -1,0 +1,23 @@
+[Unit]
+Description=Verify next-week Japanese Words Production content
+After=network-online.target japanese-words.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=japanese-words
+Group=japanese-words
+WorkingDirectory=/opt/japanese-words/app
+EnvironmentFile=/etc/japanese-words.env
+RuntimeDirectory=japanese-words-weekly-check
+ExecStart=/opt/japanese-words/app/server/run-weekly-content-check.sh
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/japanese-words
+MemoryMax=384M
+CPUQuota=25%
+Nice=10
+TimeoutStartSec=10min
+UMask=0077
