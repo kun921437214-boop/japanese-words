@@ -337,6 +337,7 @@ export function cleanPublishedRecord(record = {}, index = 0) {
     link: normalizeXiaohongshuUrl(record?.link, noteId),
     title: cleanText(record?.title, 200),
     description: cleanText(record?.description, 12000),
+    contentSummary: cleanText(record?.contentSummary, 240),
     coverUrl: cleanText(record?.coverUrl, 1000),
     coverStorageKey: /^published-covers\/v1\/[a-f0-9]{32}$/.test(String(record?.coverStorageKey || '').trim())
       ? String(record.coverStorageKey).trim()

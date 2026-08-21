@@ -169,7 +169,8 @@ test('app 工作流只返回页面所需候选且不改变云端完整候选池'
       id: 'published-test',
       word: '发布词',
       title: '已发布测试',
-      description: '只应在详情接口返回的完整正文',
+      description: '🍞发布词\n(はっぴょうし) ⓪\n列表可安全使用的已发布释义\n🍞这是例句',
+      contentCategory: 'word_card',
       contentLocked: true,
       metricSnapshots: [{ dateKey: '2026-07-19', views: 100 }]
     }],
@@ -228,10 +229,11 @@ test('app 工作流只返回页面所需候选且不改变云端完整候选池'
   assert.deepEqual(Object.keys(publishedScope.candidatePool), ['发布词']);
   assert.equal(publishedScope.appView.publishedSummary, true);
   assert.equal(publishedScope.publishedRecords[0].description, '');
+  assert.equal(publishedScope.publishedRecords[0].contentSummary, '列表可安全使用的已发布释义');
   assert.deepEqual(publishedScope.publishedRecords[0].metricSnapshots, []);
   const publishedDetail = buildPublishedDetailView(fullWorkflow, 'published-test');
   assert.equal(publishedDetail.ok, true);
-  assert.equal(publishedDetail.record.description, '只应在详情接口返回的完整正文');
+  assert.equal(publishedDetail.record.description, '🍞发布词\n(はっぴょうし) ⓪\n列表可安全使用的已发布释义\n🍞这是例句');
   assert.equal(publishedDetail.record.metricSnapshots.length, 1);
   assert.equal(publishedDetail.candidate.kanji, '发布词');
   assert.equal(buildPublishedDetailView(fullWorkflow, 'missing-record').ok, false);

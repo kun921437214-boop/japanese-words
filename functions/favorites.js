@@ -12,6 +12,7 @@ import {
 } from '../shared/api-security.mjs';
 import { getWorkflowMutationMetadata } from '../shared/workflow-mutation.mjs';
 import { commitWorkflowMutation } from '../shared/workflow-coordinator.mjs';
+import { extractPublishedMeaningFromDescription } from '../shared/published-content.mjs';
 
 function cleanSyncCode(value) {
   return String(value || '').trim().replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 64);
@@ -464,6 +465,9 @@ export function projectCandidateForList(entry = {}) {
 function projectPublishedRecordForList(record = {}) {
   return {
     ...record,
+    contentSummary: String(
+      record?.contentSummary || extractPublishedMeaningFromDescription(record)
+    ).trim().slice(0, 240),
     link: '',
     description: '',
     metricSnapshots: [],
