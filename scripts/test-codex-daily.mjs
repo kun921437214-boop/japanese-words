@@ -8,12 +8,15 @@ import {
 } from '../functions/codex-image.js';
 import { onRequest as handleFavorites } from '../functions/favorites.js';
 import {
+  CODEX_DAILY_DRAFT_TARGET_GRACE_SECONDS,
+  CODEX_DAILY_DRAFT_TTL_SECONDS,
   CODEX_DAILY_MAX_BACKFILL_COUNT,
   CODEX_DAILY_STRICT_QUALITY_GATE_START_DATE,
   CODEX_DAILY_WORD_COUNT,
   CODEX_Z_GENERATION_DISCOVERY_SOURCE,
   buildCodexCandidateSupplySummary,
   buildCodexDailyContext,
+  getCodexDailyDraftTtlSeconds,
   getCodexDraftStorageKey,
   promoteCodexDailyDraft,
   validateCodexDailyDraft
@@ -169,13 +172,15 @@ function makeKv(initial = {}) {
   return {
     values,
     putCalls: 0,
+    putOptions: [],
     async get(key, type) {
       const value = values.get(key);
       if (value === undefined) return null;
       return type === 'json' ? JSON.parse(value) : value;
     },
-    async put(key, value) {
+    async put(key, value, options = {}) {
       this.putCalls += 1;
+      this.putOptions.push({ key, options });
       values.set(key, String(value));
     }
   };
@@ -184,6 +189,44 @@ function makeKv(initial = {}) {
 function apiRequest(path, options = {}) {
   return new Request(`https://jiyimianbao.pages.dev${path}`, options);
 }
+
+test('Codex draft TTL keeps every future target through its publication window', () => {
+  const now = new Date('2026-08-24T06:30:00.000Z');
+  const targetDateKey = '2026-09-06';
+  const targetStart = Date.parse('2026-09-06T00:00:00+08:00');
+  const expected = Math.ceil((targetStart - now.getTime()) / 1000)
+    + CODEX_DAILY_DRAFT_TARGET_GRACE_SECONDS;
+
+  assert.equal(getCodexDailyDraftTtlSeconds(targetDateKey, now), expected);
+  assert.ok(expected > CODEX_DAILY_DRAFT_TTL_SECONDS);
+});
+
+test('Codex draft TTL keeps the eight-day minimum for current, past, or invalid dates', () => {
+  const now = new Date('2026-08-29T12:00:00.000Z');
+  assert.equal(getCodexDailyDraftTtlSeconds('2026-08-29', now), CODEX_DAILY_DRAFT_TTL_SECONDS);
+  assert.equal(getCodexDailyDraftTtlSeconds('2026-08-20', now), CODEX_DAILY_DRAFT_TTL_SECONDS);
+  assert.equal(getCodexDailyDraftTtlSeconds('invalid', now), CODEX_DAILY_DRAFT_TTL_SECONDS);
+  assert.equal(getCodexDailyDraftTtlSeconds('2026-08-30', 'invalid'), CODEX_DAILY_DRAFT_TTL_SECONDS);
+});
+
+test('future Codex draft submissions use the target-aware TTL', async () => {
+  const targetDateKey = addDays(dateKey(), 13);
+  const kv = makeKv({ 'favorites:global': { words: [] } });
+  const env = { FAVORITES: kv, CODEX_AUTOMATION_SECRET: 'codex-secret' };
+  const response = await handleCodexDaily({
+    request: apiRequest(`/codex-daily?date=${targetDateKey}`, {
+      method: 'PUT',
+      headers: { Authorization: 'Bearer codex-secret', 'Content-Type': 'application/json' },
+      body: JSON.stringify(makeDraft(undefined, { targetDateKey, imageReady: true }))
+    }),
+    env
+  });
+
+  assert.equal(response.status, 200);
+  const draftWrite = kv.putOptions.find(call => call.key === getCodexDraftStorageKey(targetDateKey));
+  assert.ok(draftWrite);
+  assert.ok(draftWrite.options.expirationTtl > CODEX_DAILY_DRAFT_TTL_SECONDS);
+});
 
 test('2026-06-30 audit reports the known quality risks and lowers S grades', () => {
   const entries = makeDraft(JUNE_30_WORDS, { targetDateKey: '2026-06-30' }).items.map(item => ({
