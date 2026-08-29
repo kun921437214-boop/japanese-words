@@ -1,7 +1,7 @@
 import {
   buildCodexDailyContext,
-  CODEX_DAILY_DRAFT_TTL_SECONDS,
   cleanCodexDailyDraft,
+  getCodexDailyDraftTtlSeconds,
   getCodexDraftStorageKey,
   promoteCodexDailyDraft,
   validateCodexDailyDraft
@@ -210,7 +210,9 @@ export async function onRequest({ request, env }) {
           status: 'published',
           publishedAt: storedDraft.publishedAt || new Date().toISOString()
         };
-        await env.FAVORITES.put(draftKey, JSON.stringify(publishedDraft), { expirationTtl: CODEX_DAILY_DRAFT_TTL_SECONDS });
+        await env.FAVORITES.put(draftKey, JSON.stringify(publishedDraft), {
+          expirationTtl: getCodexDailyDraftTtlSeconds(expectedDateKey)
+        });
       }
       return respond({ ok: true, published: true, alreadyPublished: true, source: workflow.todaySnapshot.source });
     }
@@ -234,7 +236,9 @@ export async function onRequest({ request, env }) {
       target: expectedDateKey,
       summary: `发布 Codex 周计划草稿 ${promoted.draft.wordCount} 个词`
     }, { strategy: 'automated' });
-    await env.FAVORITES.put(draftKey, JSON.stringify(promoted.draft), { expirationTtl: CODEX_DAILY_DRAFT_TTL_SECONDS });
+    await env.FAVORITES.put(draftKey, JSON.stringify(promoted.draft), {
+      expirationTtl: getCodexDailyDraftTtlSeconds(expectedDateKey)
+    });
     return respond({
       ok: true,
       published: true,
@@ -272,6 +276,8 @@ export async function onRequest({ request, env }) {
     updatedAt: new Date().toISOString()
   }, { workflow, expectedDateKey: targetDateKey });
   const draftKey = getCodexDraftStorageKey(targetDateKey, scope);
-  await env.FAVORITES.put(draftKey, JSON.stringify(draft), { expirationTtl: CODEX_DAILY_DRAFT_TTL_SECONDS });
+  await env.FAVORITES.put(draftKey, JSON.stringify(draft), {
+    expirationTtl: getCodexDailyDraftTtlSeconds(targetDateKey)
+  });
   return respond({ ok: draft.validation.valid, accepted: true, draft: summarizeDraft(draft) }, draft.validation.valid ? 200 : 422);
 }

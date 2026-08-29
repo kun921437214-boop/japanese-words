@@ -22,6 +22,7 @@ export const CODEX_DAILY_DRAFT_VERSION = 1;
 export const CODEX_DAILY_GENERATOR_VERSION = 'codex-daily-v1';
 export const CODEX_DAILY_WORD_COUNT = DAILY_WORD_COUNT;
 export const CODEX_DAILY_DRAFT_TTL_SECONDS = 8 * 24 * 60 * 60;
+export const CODEX_DAILY_DRAFT_TARGET_GRACE_SECONDS = 8 * 24 * 60 * 60;
 export const CODEX_DAILY_MAX_BACKFILL_COUNT = 2;
 export const CODEX_DAILY_BACKFILL_RECHECK_DAYS = 180;
 export const CODEX_DAILY_STRICT_QUALITY_GATE_START_DATE = '2026-08-17';
@@ -70,6 +71,20 @@ export function getCodexDraftStorageKey(targetDateKey, scope = 'global') {
   const cleanTarget = cleanDateKey(targetDateKey);
   const cleanScope = cleanText(scope, 64).replace(/[^a-zA-Z0-9_-]/g, '') || 'global';
   return cleanTarget ? `codex-draft:${cleanScope}:${cleanTarget}` : '';
+}
+
+export function getCodexDailyDraftTtlSeconds(targetDateKey, now = new Date()) {
+  const cleanTarget = cleanDateKey(targetDateKey);
+  const nowTimestamp = now instanceof Date ? now.getTime() : new Date(now).getTime();
+  if (!cleanTarget || !Number.isFinite(nowTimestamp)) return CODEX_DAILY_DRAFT_TTL_SECONDS;
+
+  const targetStartTimestamp = Date.parse(`${cleanTarget}T00:00:00+08:00`);
+  if (!Number.isFinite(targetStartTimestamp)) return CODEX_DAILY_DRAFT_TTL_SECONDS;
+
+  const secondsUntilTargetGraceEnds = Math.ceil(
+    (targetStartTimestamp - nowTimestamp) / 1000
+  ) + CODEX_DAILY_DRAFT_TARGET_GRACE_SECONDS;
+  return Math.max(CODEX_DAILY_DRAFT_TTL_SECONDS, secondsUntilTargetGraceEnds);
 }
 
 function cleanDraftItem(item = {}, index = 0) {
