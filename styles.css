@@ -395,7 +395,7 @@ body::before {
 
 .page.active {
   display:block;
-  animation:pageIn 0.28s ease both;
+  animation:pageIn 0.28s ease backwards;
 }
 
 @keyframes pageIn {
@@ -690,14 +690,8 @@ body::before {
   border:1px solid rgba(242, 216, 202, 0.86);
   box-shadow:var(--shadow-card);
   cursor:pointer;
-  transition:transform var(--transition-mid), box-shadow var(--transition-mid), border-color var(--transition-mid);
-  animation:cardIn 0.38s ease both;
-}
-
-.word-card:hover {
-  transform:translateY(-4px);
-  box-shadow:var(--shadow-strong);
-  border-color:rgba(255, 188, 205, 0.95);
+  transition:box-shadow var(--transition-mid), border-color var(--transition-mid);
+  animation:cardIn 0.38s ease backwards;
 }
 
 @keyframes cardIn {
@@ -727,8 +721,31 @@ body::before {
   transition:transform 0.7s cubic-bezier(0.2, 0.7, 0.1, 1);
 }
 
-.word-card:hover .card-image {
-  transform:scale(1.05);
+@media (hover:hover) and (pointer:fine) {
+  .word-card {
+    transition:transform var(--transition-mid), box-shadow var(--transition-mid), border-color var(--transition-mid);
+  }
+
+  .word-card:hover {
+    transform:translateY(-4px);
+    box-shadow:var(--shadow-strong);
+    border-color:rgba(255, 188, 205, 0.95);
+  }
+
+  .word-card:hover .card-image {
+    transform:scale(1.05);
+  }
+}
+
+@media (hover:none), (pointer:coarse), (max-width:640px) {
+  .page.active,
+  .word-card {
+    animation:none;
+  }
+
+  .card-image {
+    transition:none;
+  }
 }
 
 .card-image-overlay {

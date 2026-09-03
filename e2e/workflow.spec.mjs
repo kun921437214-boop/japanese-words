@@ -401,10 +401,13 @@ test('mobile layout has no page-level horizontal overflow', async ({ page }, tes
   const dimensions = await page.evaluate(() => ({
     viewport: window.innerWidth,
     documentWidth: document.documentElement.scrollWidth,
-    bodyWidth: document.body.scrollWidth
+    bodyWidth: document.body.scrollWidth,
+    animationNames: [...document.querySelectorAll('.page.active, #todayGrid .word-card')]
+      .map(element => window.getComputedStyle(element).animationName)
   }));
   expect(dimensions.documentWidth).toBeLessThanOrEqual(dimensions.viewport + 1);
   expect(dimensions.bodyWidth).toBeLessThanOrEqual(dimensions.viewport + 1);
+  expect(dimensions.animationNames.every(name => name === 'none')).toBe(true);
   expect(controls.pageErrors).toEqual([]);
 });
 
