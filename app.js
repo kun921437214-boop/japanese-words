@@ -3357,7 +3357,7 @@ async function loadCloudWorkflow(options = false) {
   } catch (error) {
     if (loadEpoch !== cloudWorkflowLoadEpoch || error?.code === 'REQUEST_ABORTED') {
       console.info('旧的工作流同步已取消');
-      return false;
+      return null;
     }
     console.warn('工作流同步失败', error);
     cloudWorkflowFailed = true;
@@ -9009,7 +9009,7 @@ function ensureWorkflowScopeLoaded(scope, options = {}) {
     historyDate,
     mergeCandidatePool: true
   }).then(loaded => {
-    if (!loaded && getPreferredWorkflowScope() === cleanScope && !isWorkflowScopeLoaded(cleanScope, historyDate)) {
+    if (loaded === false && getPreferredWorkflowScope() === cleanScope && !isWorkflowScopeLoaded(cleanScope, historyDate)) {
       renderWorkflowScopeState(cleanScope, 'error');
     }
     return loaded;
@@ -9172,11 +9172,19 @@ async function refreshData() {
     loadCloudWorkflow({ mode: 'remote-first', showMessages: false })
   ]);
   if (!synced) generateFallbackRankings();
-  if (!workflowSynced) loadLocalWorkflow();
+  if (workflowSynced === false) loadLocalWorkflow();
   hydrateTodayWordsFromSnapshot();
   updateAllBadges();
   refreshCurrentGrid();
-  showToast(synced && workflowSynced ? '✅ 已同步云端榜单和团队工作流' : '⚠️ 云端同步失败，正在使用本地缓存');
+  if (workflowSynced === null) {
+    showToast('已由更新的同步请求接管，页面将自动更新');
+  } else if (synced && workflowSynced) {
+    showToast('✅ 已同步云端榜单和团队工作流');
+  } else if (workflowSynced) {
+    showToast('✅ 团队工作流已同步，榜单暂使用本地候补');
+  } else {
+    showToast('⚠️ 云端同步失败，正在使用本地缓存');
+  }
 }
 
 async function ensureTodayRecommendationsLoaded() {
@@ -9186,7 +9194,7 @@ async function ensureTodayRecommendationsLoaded() {
     const synced = await loadCloudRankings(false);
     if (!synced) generateFallbackRankings();
     const workflowSynced = await loadCloudWorkflow({ mode: 'remote-first', showMessages: false });
-    if (!workflowSynced) loadLocalWorkflow();
+    if (workflowSynced === false) loadLocalWorkflow();
     hydrateTodayWordsFromSnapshot();
     updateAllBadges();
     if (todayWords.length) refreshCurrentGrid();
@@ -9355,7 +9363,7 @@ async function init() {
     workflowPromise
   ]);
   if (!rankingsLoaded) generateFallbackRankings();
-  if (!cloudLoaded) {
+  if (cloudLoaded === false) {
     if (!hasLocalWorkflow) loadLocalWorkflow();
     loadAiPreviewState({ forceLocal: true });
     updateSyncStatus('云端同步失败，正在使用本地缓存，可能与队友不一致。', '#c0392b');
@@ -9404,6 +9412,13 @@ document.addEventListener('visibilitychange', () => {
   applyPendingFavoriteIntents();
   updateAllBadges();
   refreshCurrentGrid();
+  if (cloudWorkflowFailed) {
+    updateSyncStatus('页面已恢复，正在重新同步云端数据...');
+    void syncRemoteDataInBackground().then(synced => {
+      if (synced) updateSyncStatus('云端数据已重新同步。', '#4caf50');
+    }).finally(() => flushPendingFavoriteIntents());
+    return;
+  }
   void flushPendingFavoriteIntents();
 });
 

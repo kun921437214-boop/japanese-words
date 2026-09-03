@@ -83,11 +83,17 @@ test('前端初始化不会自动触发今日推荐生成', () => {
 test('首次 pageshow 不会取消手机端初始化同步，BFCache 恢复时才重新同步', () => {
   const appSource = fs.readFileSync(new URL('../app.js', import.meta.url), 'utf8');
   const syncSource = fs.readFileSync(new URL('../frontend/workflow-sync.mjs', import.meta.url), 'utf8');
+  const styleSource = fs.readFileSync(new URL('../styles.css', import.meta.url), 'utf8');
   assert.ok(appSource.includes("window.addEventListener('pageshow', event =>"));
   assert.ok(appSource.includes('if (!event.persisted) {'));
   assert.ok(appSource.includes('void flushPendingFavoriteIntents();'));
   assert.ok(syncSource.includes('timeoutMs: config.timeoutMs || 45000'));
+  assert.ok(syncSource.includes("cache: 'no-store'"));
   assert.ok(appSource.includes('void syncRemoteDataInBackground().finally(() => flushPendingFavoriteIntents());'));
+  assert.ok(appSource.includes('if (cloudLoaded === false) {'));
+  assert.ok(appSource.includes('if (cloudWorkflowFailed) {'));
+  assert.ok(styleSource.includes('animation:pageIn 0.28s ease backwards;'));
+  assert.ok(styleSource.includes('@media (hover:none), (pointer:coarse)'));
 });
 
 test('移动端本地缓存超额不会把成功的云端同步误判为失败', () => {

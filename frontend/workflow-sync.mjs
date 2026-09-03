@@ -70,6 +70,7 @@ export function createWorkflowSync(options = {}) {
       }
       try {
         const response = await request(config.endpoint, {
+          cache: 'no-store',
           headers: { Accept: 'application/json', ...(config.headers || {}) }
         }, {
           cancelKey: config.cancelKey || 'workflow-load',

@@ -1018,6 +1018,20 @@ test('workflow reads stop before fetch when a newer scoped load supersedes them'
   assert.equal(requested, false);
 });
 
+test('workflow reads bypass browser caches', async () => {
+  let requestOptions = null;
+  const sync = createWorkflowSync({
+    request: async (_endpoint, options) => {
+      requestOptions = options;
+      return new Response('{}');
+    },
+    createError: createApiError
+  });
+
+  await sync.read({ endpoint: '/favorites?view=app&scope=today' });
+  assert.equal(requestOptions.cache, 'no-store');
+});
+
 test('workflow store rejects stale remote revisions without changing local metadata', () => {
   const store = createWorkflowStore({ cleanWorkflow: cleanTestWorkflow });
   store.replaceMetadata({ revision: 8, auditLog: [{ id: 'local-event' }] });
