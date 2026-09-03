@@ -10,6 +10,7 @@ const moduleDirectories = ['frontend'];
 const sharedModules = [
   'daily-config.mjs',
   'workflow-schema.mjs',
+  'published-content.mjs',
   'published-import.mjs',
   'published-refresh.mjs',
   'xiaohongshu-url.mjs'

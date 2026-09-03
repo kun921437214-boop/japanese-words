@@ -1600,6 +1600,7 @@ test('published page model keeps the initial DOM small and exposes later batches
 test('published card sublabel never exposes internal workflow reasons as word meanings', () => {
   assert.equal(getPublishedContentSubLabel({ word: 'メロい' }, { meaning: 'AI 候选词，等待人工确认' }), '释义待补充');
   assert.equal(getPublishedContentSubLabel({ word: '滅' }, { meaning: '用户已进入工作流，禁止自动删除' }), '释义待补充');
+  assert.equal(getPublishedContentSubLabel({ word: '候选词', contentSummary: 'AI 候选词，等待人工确认' }, { meaning: '' }), '释义待补充');
   assert.equal(getPublishedContentSubLabel({ word: 'グラデリップ' }, { meaning: '渐变唇妆' }), '渐变唇妆');
   assert.equal(getPublishedContentSubLabel({ contentCategory: 'non_word' }), '宣传、活动或其他自选内容');
 });
@@ -1627,6 +1628,16 @@ test('published card sublabel recovers the author-published meaning from locked 
   assert.equal(
     getPublishedContentSubLabel(baseRecord, { meaning: '正式候选释义' }),
     '正式候选释义'
+  );
+  assert.equal(
+    getPublishedContentSubLabel({
+      word: 'バリキャリ女子',
+      contentCategory: 'word_card',
+      contentLocked: true,
+      contentSummary: '事业心强的女生，能力出众的职场女性',
+      description: ''
+    }, { meaning: '' }),
+    '事业心强的女生，能力出众的职场女性'
   );
 });
 

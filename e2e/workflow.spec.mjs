@@ -118,6 +118,7 @@ function createPerformanceWorkflow() {
     word: words[index],
     title: `已发布性能验收 ${index + 1}`,
     description: `🍞${words[index]}\n（けんしょうご）\n性能验收词 ${index + 1}\n这是只读帖子正文。`,
+    contentSummary: `性能验收词 ${index + 1}`,
     contentType: '图文',
     contentCategory: 'word_card',
     contentLocked: true,
@@ -244,11 +245,22 @@ async function installApiFixture(page, options = {}) {
         });
         return;
       }
+      const scope = url.searchParams.get('scope') || 'today';
+      const projectedPublishedRecords = scope === 'all'
+        ? state.publishedRecords
+        : (scope === 'published'
+          ? state.publishedRecords.map(record => ({
+              ...record,
+              description: '',
+              metricSnapshots: []
+            }))
+          : []);
       await route.fulfill({
         status: 200,
         contentType: 'application/json',
         body: JSON.stringify({
           ...state,
+          publishedRecords: projectedPublishedRecords,
           candidatePool: Object.fromEntries(
             Object.entries(state.candidatePool).map(([word, candidateItem]) => [word, {
               ...candidateItem,
@@ -260,8 +272,10 @@ async function installApiFixture(page, options = {}) {
             }])
           ),
           appView: {
-            scope: url.searchParams.get('scope') || 'today',
+            scope,
             partialCandidatePool: true,
+            partialPublishedRecords: scope !== 'all',
+            publishedSummary: scope === 'published',
             candidateProjection: 'list'
           }
         })
@@ -449,6 +463,7 @@ test('favorites and published pages progressively render cards and open responsi
   const publishedCards = page.locator('#publishedGrid .published-card');
   await switchWorkflowTab('published', publishedCards, 10);
   await expect(page.locator('[data-progressive-list="published"]')).toContainText('已显示 10 / 25');
+  await expect(publishedCards.first().locator('.published-sub')).toHaveText('性能验收词 1');
   await page.locator('[data-published-action="load-more"]').evaluate(button => {
     button.click();
   });
