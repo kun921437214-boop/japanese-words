@@ -11,6 +11,8 @@
 - `japanese-words-codex`：每周一 14:30 生成并上传下周整周内容。
 - `japanese-words-production`：周二至周日 14:40 验收下周整周内容；有问题时从断点修复，任意一天全周通过后写 `verification.json`，本周后续触发只读本地标记并退出。
 
+服务器整周验收激活后的职责调整：腾讯云 `japanese-words-weekly-check.timer` 在周二至周日 14:40 执行确定性的整周只读验收，并把结果写入 `operations-health:weekly:*`；一旦整周通过，本周后续运行直接读取成功标记并退出。`japanese-words-production` 不再作为常驻重复验收任务，只在服务器报告异常后由 Codex/人工启动修复。周一生成任务、00:00 晋升以及人工选题边界不变。
+
 周一生成任务和周二起的验收任务必须复用同一组周计划、进度与单日断点，不能按日期创建彼此孤立的任务。
 
 ## 数据流
@@ -32,6 +34,8 @@
 8. 北京时间 00:00，腾讯云内部调度器使用现有 `AUTO_REFRESH_SECRET` 调用 `POST /codex-daily` 的 `promote` 动作。
 9. 只有有效草稿会晋升；否则腾讯云运行时继续调用现有 `/daily-refresh`。后续 aiCard 定时任务仅在仍有缺卡时调用 DeepSeek。
 10. 周二 14:40 起，验收任务逐日检查下周 7 天是否全部达到 10 词、10 张 ready 词卡、10 张 Production ready 图片、`validation.valid=true`、零 error、零 warning。未通过时只修复缺失项；整周通过后本周停止 Production 检查。
+
+服务器验收还必须逐一确认 70 张图片对象仍存在于腾讯云 Production 图片 FileKV，并检查 70 词跨日不重复、语义簇不重复。服务器只写健康状态与可选告警，不生成内容、不调用 DeepSeek、不上传图片、不提交或晋升草稿；异常修复继续由 Codex/人工按同一组周计划和断点完成。
 
 ## 发布门
 
@@ -108,7 +112,8 @@ KV 模式下单张图片不能超过 800 KiB，批量命令会在联网前完成
 2. 确认腾讯云 FileKV 和参考图片目录可写、备份定时器已启用，并保持数据与图片分区存放。
 3. 部署腾讯云运行时后，先用只读 status 和 Production smoke 验证。
 4. 启用周一 14:30 的下周整周生成任务，以及周二至周日 14:40 的整周验收与断点修复任务。
-5. 如有可用的告警接收端，在 `/etc/japanese-words.env` 配置 `OPS_ALERT_WEBHOOK_URL`；不配置时健康结果仍写入 FileKV 和 systemd 日志。
+5. 部署并单独激活腾讯云 `japanese-words-weekly-check.timer` 后，先观察首个 `weeklyOperations.nextWeek` 记录，再停用重复的 Codex 14:40 常驻验收；异常修复改为按告警触发。
+6. 如有可用的告警接收端，在 `/etc/japanese-words.env` 配置 `OPS_ALERT_WEBHOOK_URL`；不配置时健康结果仍写入 FileKV 和 systemd 日志。
 
 Cloudflare Pages、Worker、KV 和协调器只作为回滚资源保留；其 Worker cron 已停用，避免与腾讯云内部调度重复运行。图片只能通过带 Codex 专用凭证的 `/codex-image` 写入正式站存储。
 
@@ -133,7 +138,7 @@ Cloudflare Pages、Worker、KV 和协调器只作为回滚资源保留；其 Wor
 
 周一 14:30 主任务：读取下周 7 天上下文，先检查当期 Z 世代趋势来源并允许零采用，再运行逐日候选供给预检，区分主池缺口与全部合格候选缺口；通过后统一规划 70 词，按日期连续完成 10 词、10 卡、10 图、上传、验证和草稿提交；不发布、不调用 DeepSeek、不部署。
 
-周二至周日 14:40 验收与修复：检查下周整周 7 天是否全部为 10/10/10、valid、零 error、零 warning。发现问题时从同一周进度修复；整周通过后写 `verification.json`，本周后续触发不再访问 Production。
+周二至周日 14:40 服务器验收：检查下周整周 7 天是否全部为 10/10/10、Production 图片存储对象 10/10、valid、零 error、零 warning，并检查跨日词与语义簇去重。发现问题时只记录健康状态和告警，由 Codex/人工从同一周进度修复；整周通过后服务器健康标记使本周后续检查不再读取草稿或图片。
 
 每天 00:00 腾讯云发布：Codex 草稿不可用时同步执行 DeepSeek 兜底。只有最终完成才写成功标记；排队中、HTTP 失败或生成失败都会保持可重试。
 

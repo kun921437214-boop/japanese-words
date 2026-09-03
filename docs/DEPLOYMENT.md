@@ -203,6 +203,20 @@ The Tencent runtime checks above are a service-side safety net. Current Codex op
 - 14:30 Monday: generate and upload the following week's seven daily drafts.
 - 14:40 Tuesday through Sunday: verify the full following week in Production, repair missing work, and stop further checks for the week after the first complete verification.
 
+The reviewed server-side weekly verifier moves the deterministic 14:40 check to an isolated Tencent systemd oneshot. It reads the following Monday-to-Sunday drafts directly from Production FileKV and requires all seven days to have exactly 10 words, 10 ready cards, 10 ready images, 10 image objects still present in the Production image KV, `validation.valid=true`, zero errors, zero warnings, and no cross-day word or semantic-cluster duplicates. It writes only `operations-health:weekly:*`, never drafts, cards, images, or `todaySnapshot`. A healthy marker makes later Tuesday-to-Sunday timer runs exit before reading drafts or images.
+
+Code deployment alone does not enable this timer. After the reviewed commit is deployed, run the guarded activation separately:
+
+```bash
+cd /opt/japanese-words/app
+npm run activate:weekly-check -- --expected-commit=<full-40-character-git-hash> --dry-run
+npm run activate:weekly-check -- --expected-commit=<full-40-character-git-hash> --confirm=ACTIVATE_WEEKLY_CHECK
+```
+
+Activation creates a complete Production backup before the first check, installs a CPU- and memory-limited oneshot plus persistent timer, and verifies that Nginx, the Feishu bot, and Xray were neither stopped nor restarted. If `OPS_ALERT_WEBHOOK_URL` is configured, the checker sends failure and recovery notifications; otherwise the result remains visible at `/healthz` under `weeklyOperations.nextWeek` and must still be relayed by an external monitor.
+
+Do not disable the existing `japanese-words-production` Codex verification/recovery automation until this timer has been activated and its first health record has been observed. After cutover, disable its recurring full-week check; use Codex or a human only to repair a server-reported unhealthy week. The Monday content-generation task remains unchanged.
+
 Changing these Codex automation times does not change the Tencent runtime cron. Any future runtime-cron change requires its own reviewed code PR, tests, Production backup/preflight, and explicit deployment approval.
 
 ## Common Deployment Problems

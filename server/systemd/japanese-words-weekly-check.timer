@@ -1,0 +1,11 @@
+[Unit]
+Description=Tuesday-to-Sunday next-week Japanese Words verification
+
+[Timer]
+OnCalendar=Tue..Sun *-*-* 14:40:00 Asia/Shanghai
+Persistent=true
+AccuracySec=1min
+Unit=japanese-words-weekly-check.service
+
+[Install]
+WantedBy=timers.target

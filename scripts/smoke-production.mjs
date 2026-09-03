@@ -56,6 +56,11 @@ try {
   if (unhealthyDailyOperation) {
     fail('Production 每日内容健康检查仍处于异常状态', unhealthyDailyOperation);
   }
+  const unhealthyWeeklyOperation = Object.values(health.data.weeklyOperations || {})
+    .find(item => item?.status === 'unhealthy');
+  if (unhealthyWeeklyOperation) {
+    fail('Production 下周整周内容健康检查仍处于异常状态', unhealthyWeeklyOperation);
+  }
 
   const workflow = await fetchJson('/favorites?view=app&scope=today');
   const favoritesWorkflow = await fetchJson('/favorites?view=app&scope=favorites');
