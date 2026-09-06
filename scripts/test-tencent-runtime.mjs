@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
-import { mkdir, mkdtemp, readFile, readdir, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
@@ -203,8 +203,77 @@ test('Tencent Production deploy is explicit, guarded, backed up, and self-checki
   assert.match(deployer, /node server\/tencent-backup\.mjs/);
   assert.match(deployer, /git merge --ff-only/);
   assert.match(deployer, /systemctl restart japanese-words\.service/);
-  assert.match(deployer, /http:\/\/127\.0\.0\.1\/healthz/);
+  assert.match(deployer, /https:\/\/bijinihaitan\.cn\/healthz/);
   assert.match(deployer, /git -C "\$\{app_dir\}" reset --hard "\$\{current_commit\}"/);
+});
+
+test('Tencent staging exposes public files from a private mktemp directory', async t => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'japanese-words-staging-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const release = path.join(root, 'release');
+  const staged = await mkdtemp(path.join(root, 'staged-'));
+  await mkdir(path.join(release, 'dist'), { recursive: true });
+  await writeFile(path.join(release, 'dist', 'app.js'), 'reviewed app\n', { mode: 0o644 });
+  assert.equal((await stat(staged)).mode & 0o777, 0o700);
+  const deployer = await readFile(new URL('../server/deploy-production.sh', import.meta.url), 'utf8');
+  const stage = deployer.slice(deployer.indexOf('cp -a '), deployer.indexOf('echo "Creating a complete workflow'));
+  await execFileAsync('bash', ['-c', 'set -eu\nrelease_dir=$1\nstaged_dist=$2\n' + stage, 'staging', release, staged]);
+  assert.equal((await stat(staged)).mode & 0o777, 0o755);
+  assert.equal(await readFile(path.join(staged, 'app.js'), 'utf8'), 'reviewed app\n');
+});
+
+test('Tencent release acceptance checks real health JSON and the served artifact', async t => {
+  const deployer = await readFile(new URL('../server/deploy-production.sh', import.meta.url), 'utf8');
+  const checks = deployer.slice(deployer.indexOf('healthy=false\n'), deployer.indexOf('\ninstall -d -m 0700'));
+  const healthy = JSON.stringify({ ok: true, storageConfigured: true, workflowCoordinatorConfigured: true, imageStorageConfigured: true });
+  const cases = [
+    { name: 'healthy release needs two consecutive passes', body: healthy, asset: 'reviewed app', readable: '1', accepts: true },
+    { name: 'redirect HTML cannot report success', body: '<html>301 Moved Permanently</html>', asset: 'reviewed app', readable: '1' },
+    { name: 'unhealthy JSON triggers rollback', body: '{"ok":false}', asset: 'reviewed app', readable: '1' },
+    { name: 'inaccessible static files trigger rollback', body: healthy, asset: 'reviewed app', readable: '0' },
+    { name: 'old served JavaScript triggers rollback', body: healthy, asset: 'old app', readable: '1' }
+  ];
+  for (const fixture of cases) {
+    await t.test(fixture.name, async () => {
+      const root = await mkdtemp(path.join(os.tmpdir(), 'japanese-words-acceptance-'));
+      try {
+        await mkdir(path.join(root, 'dist'));
+        await writeFile(path.join(root, 'dist', 'app.js'), 'reviewed app');
+        await writeFile(path.join(root, 'served.js'), fixture.asset);
+        const harness = [
+          'set -euo pipefail', 'app_dir=$1', 'release_dir=$1',
+          'systemctl() { return 0; }', 'sleep() { :; }', 'rollback() { printf "ROLLED_BACK\\n"; }',
+          'curl() {',
+          '  local output="" url=""',
+          '  while [[ $# -gt 0 ]]; do',
+          '    case "$1" in --output) output="$2"; shift ;; https://*) url="$1" ;; esac',
+          '    shift',
+          '  done',
+          '  case "$url" in',
+          '    */healthz) printf "health\\n" >> "$app_dir/checks"; printf "%s" "$JW_HEALTH_BODY" ;;',
+          '    */app.js) printf "app\\n" >> "$app_dir/checks"; [[ "$JW_ASSET_READABLE" = 1 ]] || return 22; cp "$app_dir/served.js" "$output" ;;',
+          '    *) return 22 ;;',
+          '  esac',
+          '}',
+          checks,
+          'printf "ACCEPTED\\n"'
+        ].join('\n');
+        let result;
+        try {
+          result = await execFileAsync('bash', ['-c', harness, 'release-check', root], {
+            env: { ...process.env, JW_HEALTH_BODY: fixture.body, JW_ASSET_READABLE: fixture.readable }
+          });
+        } catch (error) {
+          result = error;
+        }
+        assert.equal(result.code || 0, fixture.accepts ? 0 : 1);
+        assert.match(result.stdout, fixture.accepts ? /ACCEPTED/ : /ROLLED_BACK/);
+        if (fixture.accepts) assert.equal(await readFile(path.join(root, 'checks'), 'utf8'), 'health\napp\nhealth\napp\n');
+      } finally {
+        await rm(root, { recursive: true, force: true });
+      }
+    });
+  }
 });
 
 test('GitHub publishes a credential-free fallback bundle for Tencent Production', async () => {
