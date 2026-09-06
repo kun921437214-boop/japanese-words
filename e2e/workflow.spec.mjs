@@ -317,6 +317,96 @@ test('daily recommendations load without the retired candidate workbench', async
   expect(controls.pageErrors).toEqual([]);
 });
 
+test('cached startup and refresh avoid full-list work and reuse scoring within each batch', async ({ page }) => {
+  const workflow = createPerformanceWorkflow();
+  for (let index = 30; index < 120; index += 1) {
+    const word = `検証語${index + 1}`;
+    workflow.words.push(word);
+    workflow.candidatePool[word] = {
+      ...candidate(word, 'けんしょうご', `缓存性能验收词 ${index + 1}`),
+      aiCard: { cardStatus: 'ready', summary: '缓存性能验收词卡' }
+    };
+  }
+  workflow.publishedRecords = Array.from({ length: 54 }, (_, index) => ({
+    ...workflow.publishedRecords[index % 25],
+    id: `cached-published-${index}`,
+    // Reproduce historical records whose word is absent from a scoped cache.
+    word: index >= 51 ? ['缺失甲词', '缺失乙词', '缺失丙词'][index - 51] : `検証語${index + 1}`,
+    title: `历史已发布 ${index + 1}`
+  }));
+  workflow.todaySnapshot.words.forEach(word => {
+    workflow.candidatePool[word].aiCard = { cardStatus: 'ready', summary: '已有正式词卡' };
+  });
+  const controls = await installApiFixture(page, { workflow });
+  await page.addInitScript(value => {
+    localStorage.setItem('kotoba_workflow_state_v2', JSON.stringify(value));
+    localStorage.setItem('kotoba_active_tab', 'today');
+  }, workflow);
+
+  // Instrument only this test's served module; production has no test facade.
+  const counters = ['getFavoriteWords', 'getCategoryPreferenceMap', 'buildRecommendedWord', 'getProtectedLibraryWords'];
+  const appSource = fs.readFileSync(path.join(STATIC_BUILD_ROOT, 'app.js'), 'utf8');
+  const probes = counters.map(name => `${name} = ((original) => function (...args) {
+    window.__startupCounts['${name}'] += 1;
+    return original.apply(this, args);
+  })(${name});`).join('\n');
+  const scoringCheck = `window.__checkScoringBatch = () => {
+    const word = todayWords[0];
+    const previousFavorites = favorites;
+    const previousStatuses = favoriteStatuses;
+    const context = buildRecommendationScoringContext();
+    const individual = buildRecommendedWord(word, word.origin, word.candidateMeta);
+    const batched = buildRecommendedWord(word, word.origin, word.candidateMeta, context);
+    const separateAggregates = {
+      categoryPreferenceMap: getCategoryPreferenceMap(),
+      sourcePreferenceMap: getSourcePreferenceMap(),
+      directionProfile: getPublishedDirectionProfile(),
+      styleProfile: getPublishedStyleProfile(),
+      publishedWordMap: getPublishedPerformanceWordMap()
+    };
+    try {
+      favorites = [...favorites, word.kanji];
+      favoriteStatuses = { ...favoriteStatuses, [word.kanji]: 'pending' };
+      const nextContext = buildRecommendationScoringContext();
+      return {
+        sameScore: JSON.stringify(individual.scoreBreakdown) === JSON.stringify(batched.scoreBreakdown),
+        sameCard: JSON.stringify(individual.aiCard) === JSON.stringify(batched.aiCard),
+        sameAggregates: JSON.stringify(context) === JSON.stringify(separateAggregates),
+        freshCategorySignal: nextContext.categoryPreferenceMap[word.category] - context.categoryPreferenceMap[word.category]
+      };
+    } finally {
+      favorites = previousFavorites;
+      favoriteStatuses = previousStatuses;
+    }
+  };`;
+  await page.route('**/app.js', route => route.fulfill({
+    contentType: 'text/javascript',
+    body: appSource.replace(/\ninit\(\);\s*$/, `
+      window.__startupCounts = ${JSON.stringify(Object.fromEntries(counters.map(name => [name, 0])))};
+      ${probes}
+      ${scoringCheck}
+      init();
+    `)
+  }));
+
+  await page.goto('/');
+  await expect(page.locator('#todayGrid .daily-hot-card')).toHaveCount(2);
+  await expect(page.locator('#publishedBadge')).toHaveText('54');
+  await page.getByRole('button', { name: '🔄 刷新', exact: true }).click();
+  await expect(page.locator('#toast')).toContainText('已同步云端榜单和团队工作流');
+  const calls = await page.evaluate(() => window.__startupCounts);
+  expect(calls.getFavoriteWords).toBe(0);
+  expect(calls.getCategoryPreferenceMap).toBeLessThan(calls.buildRecommendedWord);
+  expect(calls.getProtectedLibraryWords).toBeLessThan(30);
+  expect(await page.evaluate(() => window.__checkScoringBatch())).toEqual({
+    sameScore: true,
+    sameCard: true,
+    sameAggregates: true,
+    freshCategorySignal: 6
+  });
+  expect(controls.pageErrors).toEqual([]);
+});
+
 test('scoped saves preserve unloaded favorites and full cards, and undo survives reload', async ({ page }, testInfo) => {
   const workflow = createWorkflow();
   const hiddenFavorite = '検証のお気に入り';

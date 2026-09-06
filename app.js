@@ -1684,10 +1684,10 @@ function shouldFilterPureChineseCandidate(wordOrKanji) {
   return Boolean(word && isLikelyPureKanjiNoun(word));
 }
 
-function canUseHistoricalSeedWord(kanji) {
+function canUseHistoricalSeedWord(kanji, protectedWords = null) {
   const cleanKanji = cleanShortText(kanji, 80);
   if (!cleanKanji) return false;
-  if (getProtectedLibraryWords().has(cleanKanji)) return true;
+  if ((protectedWords || getProtectedLibraryWords()).has(cleanKanji)) return true;
   const entry = cleanCandidatePoolEntry(cleanKanji, candidatePool[cleanKanji] || {});
   if (!entry) return Boolean(getWordByKanji(cleanKanji) || (libraryReviewRecords[cleanKanji] && !isLibraryAuditRecordRemoved(libraryReviewRecords[cleanKanji])));
   if (entry.sourceType === 'manual_keep') return true;
@@ -1696,7 +1696,8 @@ function canUseHistoricalSeedWord(kanji) {
 }
 
 function getRankingCandidates(words = getAllWords()) {
-  return safeArray(words).filter(word => isWordApproved(word) && !shouldFilterPureChineseCandidate(word) && canUseHistoricalSeedWord(word.kanji));
+  const protectedWords = getProtectedLibraryWords();
+  return safeArray(words).filter(word => isWordApproved(word) && !shouldFilterPureChineseCandidate(word) && canUseHistoricalSeedWord(word.kanji, protectedWords));
 }
 
 function dateKey(date = new Date()) {
@@ -2118,7 +2119,7 @@ function cleanCandidatePool(pool) {
   }, {});
 }
 
-function buildReviewedSeedCandidateEntry(word = {}, existing = {}) {
+function buildReviewedSeedCandidateEntry(word = {}, existing = {}, protectedWords = null) {
   const cleanKanji = cleanShortText(word.kanji || existing.kanji, 80);
   if (!cleanKanji) return null;
   const record = libraryReviewRecords[cleanKanji] || {};
@@ -2128,8 +2129,7 @@ function buildReviewedSeedCandidateEntry(word = {}, existing = {}) {
     'approved'
   );
   if (['delete', 'deleted', 'archived'].includes(recordStatus) || isLibraryAuditRecordRemoved(record)) return null;
-  const protectedWords = getProtectedLibraryWords();
-  const isProtected = protectedWords.has(cleanKanji) || existing.protected || existing.sourceType === 'manual_keep' || ['protect', 'protected'].includes(recordStatus);
+  const isProtected = (protectedWords || getProtectedLibraryWords()).has(cleanKanji) || existing.protected || existing.sourceType === 'manual_keep' || ['protect', 'protected'].includes(recordStatus);
   const reviewStatus = isProtected ? 'protected' : (recordStatus === 'missing' ? 'approved' : recordStatus);
   const isReview = reviewStatus === 'review';
   const kana = cleanShortText(existing.kana || existing.reading || word.kana || word.reading || cleanKanji, 120);
@@ -2193,10 +2193,11 @@ function ensureReviewedSeedWordInCandidatePool(kanji) {
 
 function ensureReviewedSeedWordsInCandidatePool() {
   let changed = false;
+  const protectedWords = getProtectedLibraryWords();
   getAllWords().forEach(word => {
     if (!word?.kanji) return;
     const before = candidatePool[word.kanji];
-    const entry = buildReviewedSeedCandidateEntry(word, before || {});
+    const entry = buildReviewedSeedCandidateEntry(word, before || {}, protectedWords);
     if (!entry) return;
     if (!before || before.sourceType === 'original' || before.sourceType === 'audit_missing' || before.sourceType === 'deepseek_api') changed = true;
     candidatePool[word.kanji] = entry;
@@ -4229,7 +4230,9 @@ function getPublishedDisplayItems() {
   publishedDisplayItemsCache = safeArray(publishedRecords).filter(Boolean).map(record => ({
     type: 'record',
     record,
-    word: getDisplayWordByKanji(record.word) || findWord(record.word)
+    // A scoped cache may not include this word. The record already carries
+    // its own display content; resolving it must not rebuild all favorites.
+    word: getDisplayWordByKanji(record.word)
   })).sort((left, right) => String(right.record.publishedAt || right.record.updatedAt || '').localeCompare(String(left.record.publishedAt || left.record.updatedAt || '')));
   publishedDisplayItemsById = new Map(publishedDisplayItemsCache.map(item => [item.record.id, item]));
   return publishedDisplayItemsCache;
@@ -4366,7 +4369,7 @@ function getRecentHistoryBlockedWords(days = TODAY_HISTORY_DEDUP_DAYS) {
   return blocked;
 }
 
-function getCategoryPreferenceMap() {
+function getCategoryPreferenceMap(records = cleanPublishedRecords(publishedRecords), getRating = getRecordRating) {
   const categoryScore = {};
   const addCategoryScore = (kanji, amount) => {
     const word = getDisplayWordByKanji(kanji);
@@ -4377,8 +4380,8 @@ function getCategoryPreferenceMap() {
     const status = getFavoriteStatus(kanji);
     addCategoryScore(kanji, status === 'pending' ? 6 : status === 'published' ? 4 : 3);
   });
-  cleanPublishedRecords(publishedRecords).forEach(record => {
-    const rating = getRecordRating(record).level;
+  records.forEach(record => {
+    const rating = getRating(record).level;
     if (rating === '优秀') addCategoryScore(record.word, 8);
     else if (rating === '正常') addCategoryScore(record.word, 4);
     else if (rating === '偏弱') addCategoryScore(record.word, -3);
@@ -4387,7 +4390,7 @@ function getCategoryPreferenceMap() {
   return categoryScore;
 }
 
-function getSourcePreferenceMap() {
+function getSourcePreferenceMap(records = cleanPublishedRecords(publishedRecords), getRating = getRecordRating) {
   const sourceScore = {};
   const addSourceScore = (source, amount) => {
     const cleanSource = String(source || '').trim();
@@ -4400,9 +4403,9 @@ function getSourcePreferenceMap() {
     const status = getFavoriteStatus(kanji);
     addSourceScore(word.source, status === 'pending' ? 5 : status === 'published' ? 3 : 2);
   });
-  cleanPublishedRecords(publishedRecords).forEach(record => {
+  records.forEach(record => {
     const word = getDisplayWordByKanji(record.word);
-    const rating = getRecordRating(record).level;
+    const rating = getRating(record).level;
     if (!word?.source) return;
     if (rating === '优秀') addSourceScore(word.source, 6);
     else if (rating === '正常') addSourceScore(word.source, 3);
@@ -4412,7 +4415,7 @@ function getSourcePreferenceMap() {
   return sourceScore;
 }
 
-function getPublishedDirectionProfile() {
+function getPublishedDirectionProfile(records = cleanPublishedRecords(publishedRecords), getRating = getRecordRating) {
   const profile = {
     category: {},
     source: {},
@@ -4424,10 +4427,10 @@ function getPublishedDirectionProfile() {
     if (!cleanKey) return;
     bucket[cleanKey] = (bucket[cleanKey] || 0) + amount;
   };
-  cleanPublishedRecords(publishedRecords).forEach(record => {
+  records.forEach(record => {
     const word = getDisplayWordByKanji(record.word);
     if (!word) return;
-    const rating = getRecordRating(record).level;
+    const rating = getRating(record).level;
     const baseDelta = rating === '优秀' ? 10 : rating === '正常' ? 4 : rating === '偏弱' ? -4 : rating === '异常差' ? -8 : 0;
     if (!baseDelta) return;
     addScore(profile.category, word.category, baseDelta);
@@ -4479,7 +4482,7 @@ function getWordStyleModes(word, contentType = '图文') {
   return { titleMode, hookMode, referenceMode };
 }
 
-function getPublishedStyleProfile() {
+function getPublishedStyleProfile(records = cleanPublishedRecords(publishedRecords), now = Date.now()) {
   const profile = {
     titleMode: {},
     hookMode: {},
@@ -4490,12 +4493,12 @@ function getPublishedStyleProfile() {
     if (!cleanKey) return;
     bucket[cleanKey] = (bucket[cleanKey] || 0) + amount;
   };
-  cleanPublishedRecords(publishedRecords).forEach(record => {
+  records.forEach(record => {
     const word = getDisplayWordByKanji(record.word);
     if (!word) return;
     const assessment = getPublishedPerformanceAssessment(record, {
-      records: cleanPublishedRecords(publishedRecords),
-      now: Date.now()
+      records,
+      now
     });
     if (assessment.stage === 'collecting') return;
     const dimensionDelta = dimension => ({ strong: 10, normal: 4, weak: -6 }[dimension?.level] || 0);
@@ -4521,11 +4524,11 @@ function getStyleBiasForWord(word, styleProfile, contentType = '图文') {
   };
 }
 
-function getPublishedPerformanceWordMap() {
+function getPublishedPerformanceWordMap(records = cleanPublishedRecords(publishedRecords), getRating = getRecordRating) {
   const wordScores = {};
-  cleanPublishedRecords(publishedRecords).forEach(record => {
+  records.forEach(record => {
     if (!record.word) return;
-    const result = getRecordRating(record);
+    const result = getRating(record);
     const baseDelta = result.level === '优秀' ? 10 : result.level === '正常' ? 4 : result.level === '偏弱' ? -4 : result.level === '异常差' ? -8 : 0;
     wordScores[record.word] = (wordScores[record.word] || 0) + baseDelta;
   });
@@ -5059,14 +5062,35 @@ function getRiskPenalty(candidateMeta = null) {
   }[candidateMeta?.riskLevel] || 0;
 }
 
-function buildRecommendedWord(word, origin = 'global', candidateMeta = null) {
-  const categoryPreferenceMap = getCategoryPreferenceMap();
-  const sourcePreferenceMap = getSourcePreferenceMap();
-  const directionProfile = getPublishedDirectionProfile();
-  const styleProfile = getPublishedStyleProfile();
+function buildRecommendationScoringContext() {
+  // Share these aggregates only within one synchronous batch. The next
+  // render or user action must observe fresh workflow data.
+  const records = cleanPublishedRecords(publishedRecords);
+  const now = Date.now();
+  const ratings = new Map();
+  const getRating = record => {
+    if (!ratings.has(record)) ratings.set(record, ratePublishedRecord(record, { records, now }));
+    return ratings.get(record);
+  };
+  return {
+    categoryPreferenceMap: getCategoryPreferenceMap(records, getRating),
+    sourcePreferenceMap: getSourcePreferenceMap(records, getRating),
+    directionProfile: getPublishedDirectionProfile(records, getRating),
+    styleProfile: getPublishedStyleProfile(records, now),
+    publishedWordMap: getPublishedPerformanceWordMap(records, getRating)
+  };
+}
+
+function buildRecommendedWord(word, origin = 'global', candidateMeta = null, scoringContext = null) {
+  const {
+    categoryPreferenceMap,
+    sourcePreferenceMap,
+    directionProfile,
+    styleProfile,
+    publishedWordMap
+  } = scoringContext || buildRecommendationScoringContext();
   const directionSignal = getDirectionSignal(word, directionProfile, '图文');
   const styleBias = getStyleBiasForWord(word, styleProfile, '图文');
-  const publishedWordMap = getPublishedPerformanceWordMap();
   const platformHeatScore = getPlatformHeatScore(word, origin);
   const dataScore = platformHeatScore;
   const accountFitScore = getAccountFitScore(word, categoryPreferenceMap, sourcePreferenceMap, directionSignal);
@@ -5311,7 +5335,7 @@ function buildTodayWordFromCandidateEntry(entry, options = {}) {
       : cleanEntry.displayBucket === 'seasonal'
         ? 'history'
         : 'pool';
-  const recommended = buildRecommendedWord(enriched, origin, cleanEntry);
+  const recommended = buildRecommendedWord(enriched, origin, cleanEntry, options.scoringContext);
   if (!options.snapshotDisplay && recommended.reviewState === 'review') return null;
   const feedbackPenalty = getFeedbackPenalty(cleanEntry.kanji);
   const historicalBackfill = options.historicalBackfillWords?.has(cleanEntry.kanji) || Boolean(cleanEntry.historicalBackfill);
@@ -5359,10 +5383,11 @@ function getTodayCandidateWordsFromPool(excludeWords = [], options = {}) {
   const excluded = new Set(excludeWords);
   const recentBlockedWords = options.recentBlockedWords || new Set();
   const historicalBackfillWords = options.historicalBackfillWords || new Set();
+  const scoringContext = buildRecommendationScoringContext();
   return Object.values(cleanCandidatePool(candidatePool))
     .filter(entry => !excluded.has(entry.kanji))
     .filter(entry => ['today', 'meme_fast', 'long_term', 'seasonal'].includes(entry.displayBucket))
-    .map(entry => buildTodayWordFromCandidateEntry(entry, { recentBlockedWords, historicalBackfillWords }))
+    .map(entry => buildTodayWordFromCandidateEntry(entry, { recentBlockedWords, historicalBackfillWords, scoringContext }))
     .filter(Boolean)
     .sort((left, right) => {
       const bucketDiff = getTodayBucketWeight(right.candidateMeta?.displayBucket) - getTodayBucketWeight(left.candidateMeta?.displayBucket);
@@ -5451,6 +5476,7 @@ function hydrateTodayWordsFromSnapshot() {
     return false;
   }
   const auditByKanji = new Map(safeArray(snapshot.recommendationAudit?.items).map(item => [item.kanji, item]));
+  const scoringContext = buildRecommendationScoringContext();
   const words = snapshot.words
     .map(kanji => {
       const auditItem = auditByKanji.get(kanji);
@@ -5458,7 +5484,7 @@ function hydrateTodayWordsFromSnapshot() {
       const word = buildTodayWordFromCandidateEntry({
         ...sourceEntry,
         recommendationAudit: { ...(sourceEntry.recommendationAudit || {}), ...(auditItem || {}) }
-      }, { snapshotDisplay: true });
+      }, { snapshotDisplay: true, scoringContext });
       if (!word) return null;
       const audit = auditItem || word.candidateMeta?.recommendationAudit || {};
       return {
@@ -5484,8 +5510,9 @@ function generateTodayFromCandidatePool(mode = 'create') {
   refreshCandidatePool();
   const currentSnapshot = cleanTodaySnapshot(todaySnapshot);
   const previousWords = currentSnapshot.dateKey === todayKey() ? currentSnapshot.words : [];
+  const scoringContext = mode === 'fill' ? buildRecommendationScoringContext() : null;
   const existingWords = mode === 'fill'
-    ? previousWords.map(kanji => buildTodayWordFromCandidateEntry(candidatePool[kanji] || { kanji })).filter(Boolean)
+    ? previousWords.map(kanji => buildTodayWordFromCandidateEntry(candidatePool[kanji] || { kanji }, { scoringContext })).filter(Boolean)
     : [];
   const excluded = mode === 'fill' ? existingWords.map(word => word.kanji) : previousWords;
   let candidates = [];
@@ -6511,6 +6538,7 @@ async function regenerateFromFeedback(kanji, target = 'card', reason = '') {
 }
 
 function getFavoriteWords() {
+  const scoringContext = buildRecommendationScoringContext();
   return filterKnownFavorites(favorites)
     .filter(kanji => getFavoriteStatus(kanji) !== 'published')
     .map((kanji, index) => {
@@ -6521,7 +6549,7 @@ function getFavoriteWords() {
     const baseWord = getDisplayWordByKanji(kanji);
     if (!baseWord) return null;
     return {
-      ...buildRecommendedWord(enrichWords([{ ...baseWord }], `fav_${kanji}`)[0], 'favorite', candidateMeta),
+      ...buildRecommendedWord(enrichWords([{ ...baseWord }], `fav_${kanji}`)[0], 'favorite', candidateMeta, scoringContext),
       source: favoriteSource,
       candidateMeta
     };
@@ -7820,7 +7848,7 @@ async function refreshPublishedPageFromCloud() {
   });
 }
 
-function buildHistoryArchivedWord(kanji, dateKeyValue, index) {
+function buildHistoryArchivedWord(kanji, dateKeyValue, index, scoringContext = null) {
   const archivedSnapshot = cleanHistorySnapshot(historySnapshots[dateKeyValue] || {}, dateKeyValue);
   const auditItem = safeArray(archivedSnapshot.recommendationAudit?.items).find(item => item.kanji === kanji) || null;
   const displayWord = getDisplayWordByKanji(kanji) || {
@@ -7844,7 +7872,7 @@ function buildHistoryArchivedWord(kanji, dateKeyValue, index) {
   const recommended = buildRecommendedWord(enriched, 'history', {
     ...(candidateMeta || {}),
     recommendationAudit: { ...(candidateMeta?.recommendationAudit || {}), ...(auditItem || {}) }
-  });
+  }, scoringContext);
   const audit = auditItem || recommended.candidateMeta?.recommendationAudit || {};
   return {
     ...recommended,
@@ -7867,14 +7895,15 @@ function getCurrentHistoryWords() {
   const selectedDateKey = rankingHistoryDates.includes(currentHistoryDateKey) ? currentHistoryDateKey : fallbackDateKey;
   currentHistoryDateKey = selectedDateKey;
   const archivedSnapshot = cleanHistorySnapshot(historySnapshots[selectedDateKey] || {}, selectedDateKey);
+  const scoringContext = buildRecommendationScoringContext();
   if (archivedSnapshot.words.length) {
     return archivedSnapshot.words
-      .map((kanji, index) => buildHistoryArchivedWord(kanji, selectedDateKey, index))
+      .map((kanji, index) => buildHistoryArchivedWord(kanji, selectedDateKey, index, scoringContext))
       .filter(Boolean);
   }
   return safeArray(rankingHistoryWords[selectedDateKey]).filter(word => canUseHistoricalSeedWord(word.kanji)).map((word, index) => {
     const enriched = enrichWords([{ ...word }], `history_${selectedDateKey}_${index}`)[0];
-    return buildRecommendedWord(enriched, 'history');
+    return buildRecommendedWord(enriched, 'history', null, scoringContext);
   });
 }
 
@@ -8298,7 +8327,7 @@ function updateFavBadge() {
 function updatePublishedBadge() {
   const badge = document.getElementById('publishedBadge');
   if (!badge) return;
-  const count = publishedPageModelCache?.count ?? getPublishedDisplayItems().length;
+  const count = safeArray(publishedRecords).filter(Boolean).length;
   if (count > 0) {
     badge.style.display = '';
     badge.textContent = count;
