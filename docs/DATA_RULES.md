@@ -12,6 +12,8 @@
 
 `kotoba_pending_favorite_operations_v1` is a device-local delivery outbox, not a second team source of truth. It may temporarily overlay the last loaded workflow so a user action stays visible until the server confirms it.
 
+Scoped app responses contain the complete `words` / `statuses` but only some candidate details. Preserve that membership through caches, command responses, and full saves; a missing detail is not a removal and must not create a synthetic manual candidate. List projections retain their `candidateProjection` / `aiCard.projection` markers and cannot overwrite a complete formal card.
+
 ## Workflow Top-Level Fields
 
 ```json
@@ -80,6 +82,8 @@ Keep the three feedback objects separate:
 3. Cover feedback asks why the cover plan needs regeneration. It must not penalize the word itself.
 
 Current selection feedback should be idempotent for the same word, reason, and day. A user may undo the most recent dismissal; `lastUndoneAtByReason` is the merge tombstone that prevents an older cloud count from reappearing.
+
+`todayDismissed.wordActions` stores each word's latest hide/restore action and timestamp; `words` remains the compatible list of currently hidden words. Merge actions per word, retaining restore tombstones until the date changes. `ignoredCountUpdatedAt` allows the latest explicit counter update (including an undo decrement) to survive a stale merge; legacy counters keep their maximum when neither side has a timestamp.
 
 Card and cover regeneration must always record a structured reason in `generationFeedback` before generating a new version. Card regeneration preserves the current cover and reference image. Cover regeneration preserves the current card text and invalidates the old reference image so the image workflow can create the new visual.
 
@@ -178,7 +182,7 @@ For Codex daily drafts, `cardStatus = ready` is necessary but not sufficient. Th
 - Official published metrics import once per day at 13:20 Asia/Shanghai while the post is no more than 15 days old, so Monday's 14:30 next-week generation can consume the latest feedback. Older posts keep their final snapshot and do not update again. The Tencent runtime's legacy 14:30 link refresh is only a compatibility safety net and does not replace the official export as the primary source.
 - `selectionSource` distinguishes Daily Hot (Codex / DeepSeek / unknown provider), self-selected, and unmapped/unknown records.
 - When a word is marked published, capture the working `cardVersion`, `coverVersion`, selected/suggested title, and the relevant card and cover snapshots into `publicationSnapshot`. Published import copies this into immutable `creativeSnapshot` attribution data.
-- `performanceAssessment` separates `topic`, `cover`, and `content`. Before 72 hours it stays `collecting`; from 72 hours it may produce an `early` assessment; at 15 days or after the record is frozen it becomes `final`.
+- `performanceAssessment` separates `topic`, `cover`, and `content`. Maturity uses the post age at `lastMetricsImportedAt` (or the latest valid metric snapshot capture), not the current date or `metricsFrozen`. Before 72 hours it stays `collecting`; from 72 hours it may produce an `early` assessment; only a capture at least 15 days after publication qualifies as `final`. Missing capture times stay neutral. A frozen record with only early data remains `early`; the existing import cutoff is unchanged.
 - Topic assessment prioritizes favorites, shares, follows, and comments. Cover assessment prioritizes cover click-through and view rate. Content assessment prioritizes average watch, likes, comments, and shares.
 - A dimension assessment requires enough mature comparison posts. When the sample is insufficient, keep it neutral instead of manufacturing a positive or negative conclusion.
 - Daily recommendation learning may consume only mature topic assessment. Cover and content assessments are used to improve packaging and writing guidance.

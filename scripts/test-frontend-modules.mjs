@@ -1490,6 +1490,7 @@ test('published rating remains a derived compatibility signal instead of a store
 test('published assessment separates topic, cover and content after 72 hours', () => {
   const baselines = ['2026-07-10', '2026-07-11', '2026-07-12'].map((date, index) => ({
     id: `baseline-${index}`,
+    lastMetricsImportedAt: '2026-07-22T12:00:00+08:00',
     publishedAt: `${date}T09:00:00+08:00`,
     latestMetrics: {
       impressions: 5000,
@@ -1505,6 +1506,7 @@ test('published assessment separates topic, cover and content after 72 hours', (
   }));
   const record = {
     id: 'target',
+    lastMetricsImportedAt: '2026-07-22T12:00:00+08:00',
     word: '抜け感',
     publishedAt: '2026-07-18T09:00:00+08:00',
     latestMetrics: {

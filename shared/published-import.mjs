@@ -340,18 +340,31 @@ function buildPerformanceDimension(score = 0, sampleSize = 0, label = '') {
   return { score, level: 'weak', label: '表现偏弱', reason: `${label}低于账号近期常态，建议结合其他维度判断。` };
 }
 
+function getPublishedMetricAgeDays(record = {}, now = new Date()) {
+  const publishedAt = Date.parse(record.publishedAt || '');
+  const current = new Date(now).getTime();
+  const validCapture = value => {
+    const timestamp = Date.parse(value || '');
+    return Number.isFinite(timestamp) && timestamp >= publishedAt && timestamp <= current ? timestamp : NaN;
+  };
+  const importedAt = validCapture(record.lastMetricsImportedAt);
+  const capturedAt = Number.isFinite(importedAt) ? importedAt : Math.max(
+    ...safeArray(record.metricSnapshots).map(snapshot => validCapture(snapshot?.capturedAt)).filter(Number.isFinite)
+  );
+  return Number.isFinite(capturedAt) ? (capturedAt - publishedAt) / 86400000 : -1;
+}
+
 export function buildPublishedPerformanceAssessment(record = {}, records = [], now = new Date()) {
   const current = now instanceof Date ? now : new Date(now);
   const metrics = cleanPublishedMetrics(record?.latestMetrics || {});
   const comparisonRecords = safeArray(records).filter(item => (
-    item && item.id !== record?.id && getPublishedAgeDays(item, current) >= 3
+    item && item.id !== record?.id && getPublishedMetricAgeDays(item, current) >= 3
   ));
   const medians = computePublishedThirtyDayMedians(comparisonRecords, current);
-  const ageDays = getPublishedAgeDays(record, current);
-  const ageHours = ageDays * 24;
-  const stage = ageHours < 72
+  const metricAgeDays = getPublishedMetricAgeDays(record, current);
+  const stage = metricAgeDays < 3
     ? 'collecting'
-    : (ageDays >= PUBLISHED_METRIC_UPDATE_DAYS || record?.metricsFrozen ? 'final' : 'early');
+    : (metricAgeDays >= PUBLISHED_METRIC_UPDATE_DAYS ? 'final' : 'early');
   const coverScore = weightedRelativeScore([
     { value: metrics.coverClickRate, baseline: medians.coverClickRate, weight: 0.75 },
     { value: rate(metrics.views, metrics.impressions), baseline: medians.viewRate, weight: 0.25 }
@@ -369,12 +382,13 @@ export function buildPublishedPerformanceAssessment(record = {}, records = [], n
     { value: rate(metrics.shares, metrics.views), baseline: medians.shareRate, weight: 0.1 }
   ]);
   const stageLabel = stage === 'collecting' ? '数据收集中' : stage === 'early' ? '72小时初评' : '15天定评';
-  const topic = buildPerformanceDimension(topicScore, medians.sampleSize, '选题价值');
-  const cover = buildPerformanceDimension(coverScore, medians.sampleSize, '封面包装');
-  const content = buildPerformanceDimension(contentScore, medians.sampleSize, '内容承接');
+  const sampleSize = stage === 'collecting' ? 0 : medians.sampleSize;
+  const topic = buildPerformanceDimension(topicScore, sampleSize, '选题价值');
+  const cover = buildPerformanceDimension(coverScore, sampleSize, '封面包装');
+  const content = buildPerformanceDimension(contentScore, sampleSize, '内容承接');
   const summary = stage === 'collecting'
-    ? '发布未满72小时，暂不用于调整后续推荐。'
-    : `选题${topic.label}，封面${cover.label}，内容${content.label}；${stage === 'final' ? '已形成最终复盘。' : '当前为初步判断，15天后定稿。'}`;
+    ? (metricAgeDays < 0 ? '尚无有效指标采集时间，暂不用于调整后续推荐。' : '指标采集时发布未满72小时，暂不用于调整后续推荐。')
+    : `选题${topic.label}，封面${cover.label}，内容${content.label}；${stage === 'final' ? '已有发布满15天的指标，可用于最终复盘。' : `最新指标覆盖发布后${metricAgeDays.toFixed(1)}天，尚未取得15天数据，保留初评。`}`;
   return {
     stage,
     stageLabel,
