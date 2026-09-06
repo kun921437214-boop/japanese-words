@@ -5,6 +5,7 @@ import {
   isCompatibleTodaySnapshotGeneratorVersion,
   mergeWorkflow,
   mergeWorkflowForFullSave,
+  updateTeamDismissed,
   stripInvalidCurrentTodaySnapshot
 } from '../shared/workflow-schema.mjs';
 import {
@@ -70,6 +71,64 @@ const readyCard = {
   suggestedTitles: ['日本人说「こなれ」，不是普通熟练'],
   interactionPrompts: ['你会用它形容哪种穿搭？']
 };
+
+test('部分列表视图保存及收藏命令保留完整词卡和未加载收藏', () => {
+  const full = cleanStoredWorkflow({
+    words: ['未加载收藏'], statuses: { '未加载收藏': 'pending' },
+    candidatePool: {
+      'そわそわ': { kanji: 'そわそわ', sourceType: 'codex_generated', aiCard: readyCard },
+      '未加载收藏': { kanji: '未加载收藏', sourceType: 'codex_generated', aiCard: readyCard }
+    },
+    todaySnapshot: { dateKey: '2026-07-19', words: ['そわそわ'], generatedAt: '2026-07-19T00:00:00.000Z' }
+  });
+  const view = buildAppWorkflowView(full, { scope: 'today' });
+  assert.equal(view.candidatePool['未加载收藏'], undefined);
+  assert.equal(view.candidatePool['そわそわ'].aiCard.explanation, undefined);
+  const saved = mergeWorkflowForFullSave(full, view);
+  assert.deepEqual(saved.words, full.words);
+  assert.deepEqual(saved.statuses, full.statuses);
+  assert.equal(saved.candidatePool['未加载收藏'].sourceType, 'codex_generated');
+  assert.deepEqual(saved.candidatePool['そわそわ'].aiCard, full.candidatePool['そわそわ'].aiCard);
+  const command = applyFavoriteAction(full, { action: 'add', word: 'そわそわ', candidatePool: view.candidatePool });
+  assert.equal(command.candidatePool['そわそわ'].aiCard.explanation, readyCard.explanation);
+  assert.ok(command.words.includes('未加载收藏'));
+  const reversed = mergeWorkflow(view, full);
+  assert.equal(reversed.candidatePool['そわそわ'].aiCard.explanation, readyCard.explanation);
+  const regenerated = mergeWorkflowForFullSave(saved, { candidatePool: {
+    'そわそわ': { ...full.candidatePool['そわそわ'], aiCard: { ...readyCard, generatedAt: '2026-08-01T00:00:00.000Z', explanation: '新的完整词卡' } }
+  } });
+  assert.equal(regenerated.candidatePool['そわそわ'].aiCard.explanation, '新的完整词卡');
+});
+
+test('撤销跳过跨保存和旧客户端快照合并仍有效，并允许再次跳过', () => {
+  const dateKey = '2026-09-06';
+  const hidden = updateTeamDismissed({}, ['そわそわ'], dateKey, '2026-09-06T01:00:00.000Z');
+  const restored = updateTeamDismissed(hidden, [], dateKey, '2026-09-06T01:01:00.000Z');
+  const unrelated = updateTeamDismissed(hidden, ['そわそわ', '気が重い'], dateKey, '2026-09-06T01:02:00.000Z');
+  const merge = (left, right) => mergeWorkflowForFullSave({ todayDismissed: left }, { todayDismissed: right }).todayDismissed;
+  const saved = merge(hidden, restored);
+  assert.deepEqual(saved.words, []);
+  assert.deepEqual(merge(saved, hidden).words, []);
+  assert.deepEqual(merge(saved, { dateKey, words: ['そわそわ'], updatedAt: hidden.updatedAt }).words, []);
+  assert.deepEqual(merge(saved, unrelated).words, ['気が重い']);
+  assert.deepEqual(merge(unrelated, saved).words, ['気が重い']);
+  const hiddenAgain = updateTeamDismissed(saved, ['そわそわ'], dateKey, '2026-09-06T01:03:00.000Z');
+  assert.deepEqual(merge(saved, hiddenAgain).words, ['そわそわ']);
+  assert.deepEqual(updateTeamDismissed(hiddenAgain, [], '2026-09-07').wordActions, {});
+  assert.deepEqual(merge({ dateKey, words: ['旧词'] }, { dateKey, words: ['新词'] }).words, ['旧词', '新词']);
+});
+
+test('撤销后的忽略计数不被旧快照的较大计数覆盖', () => {
+  const candidate = (ignoredCount, ignoredCountUpdatedAt) => ({ candidatePool: {
+    'そわそわ': { kanji: 'そわそわ', ignoredCount, ignoredCountUpdatedAt }
+  } });
+  const hidden = candidate(3, '2026-09-06T01:00:00.000Z');
+  const restored = candidate(2, '2026-09-06T01:01:00.000Z');
+  const saved = mergeWorkflowForFullSave(hidden, restored);
+  assert.equal(saved.candidatePool['そわそわ'].ignoredCount, 2);
+  assert.equal(mergeWorkflow(saved, hidden).candidatePool['そわそわ'].ignoredCount, 2);
+  assert.equal(mergeWorkflow(candidate(3), candidate(2)).candidatePool['そわそわ'].ignoredCount, 3);
+});
 
 test('前端初始化不会自动触发今日推荐生成', () => {
   const appSource = fs.readFileSync(new URL('../app.js', import.meta.url), 'utf8');

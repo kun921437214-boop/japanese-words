@@ -76,6 +76,9 @@ import {
   cleanPublishedRecords as cleanSharedPublishedRecords,
   cleanTodaySnapshot as cleanSharedTodaySnapshot,
   cleanTodaySnapshotHistory as cleanSharedTodaySnapshotHistory,
+  cleanTeamDismissed as cleanSharedTeamDismissed,
+  updateTeamDismissed,
+  mergeIgnoredCount,
   mergeHistorySnapshots as mergeSharedHistorySnapshots,
   mergePublishedRecords as mergeSharedPublishedRecords,
   mergeTodaySnapshot as mergeSharedTodaySnapshot,
@@ -732,19 +735,12 @@ function getAiTraceFromUsage(usage = {}, payload = {}) {
 
 function getTodayDismissedState() {
   if (todayDismissed?.dateKey === todayKey()) {
-    return {
-      dateKey: todayDismissed.dateKey,
-      words: getUniqueWords(todayDismissed.words || []),
-      updatedAt: typeof todayDismissed.updatedAt === 'string' ? todayDismissed.updatedAt : ''
-    };
+    return cleanTeamDismissedState(todayDismissed);
   }
   try {
     const stored = JSON.parse(localStorage.getItem(TODAY_DISMISSED_STORAGE_KEY) || '{}');
     if (stored?.dateKey === todayKey() && Array.isArray(stored.words)) {
-      return {
-        dateKey: stored.dateKey,
-        words: getUniqueWords(stored.words)
-      };
+      return cleanTeamDismissedState(stored);
     }
   } catch (error) {
     console.warn('忽略已损坏的今日移除记录', error);
@@ -757,21 +753,12 @@ function getTodayDismissedWords() {
 }
 
 function setTodayDismissedWords(words) {
-  todayDismissed = cleanTeamDismissedState({
-    dateKey: todayKey(),
-    words: getUniqueWords(words),
-    updatedAt: nowIso()
-  });
+  todayDismissed = updateTeamDismissed(getTodayDismissedState(), words, todayKey(), nowIso());
   localStorage.setItem(TODAY_DISMISSED_STORAGE_KEY, JSON.stringify(todayDismissed));
 }
 
 function cleanTeamDismissedState(state = {}) {
-  const dateKeyValue = /^\d{4}-\d{2}-\d{2}$/.test(String(state.dateKey || '')) ? String(state.dateKey) : '';
-  return {
-    dateKey: dateKeyValue,
-    words: getUniqueWords(state.words || []).slice(0, 100),
-    updatedAt: typeof state.updatedAt === 'string' ? state.updatedAt : ''
-  };
+  return cleanSharedTeamDismissed(state);
 }
 
 function cleanAiPreviewState(preview = {}) {
@@ -1061,6 +1048,7 @@ function cleanAiCard(card = {}) {
   const status = normalizeEnumValue(card.cardStatus, ['none', 'pending', 'ready', 'failed', 'stale'], '');
   if (!status && !card.summary && !card.explanation) return null;
   return {
+    ...(['list', 'detail'].includes(card.projection) ? { projection: card.projection } : {}),
     cardStatus: status || 'ready',
     cardSource: ['codex', 'deepseek_api'].includes(card.cardSource) ? card.cardSource : '',
     cardModel: cleanShortText(card.cardModel, 120),
@@ -2049,6 +2037,7 @@ function cleanCandidatePoolEntry(kanji, entry = {}) {
     : cleanCandidateReviewState(entry.lastReviewState);
   return {
     kanji: cleanKanji,
+    ...(['list', 'detail'].includes(entry.candidateProjection) ? { candidateProjection: entry.candidateProjection } : {}),
     romaji: cleanShortText(entry.romaji, 120),
     kana: cleanShortText(entry.kana || entry.reading, 120),
     meaning: cleanShortText(entry.meaning, 240),
@@ -2104,6 +2093,7 @@ function cleanCandidatePoolEntry(kanji, entry = {}) {
     lastScore: clamp(toInt(entry.lastScore, 0), 0, 100),
     recommendationCount: clamp(toInt(entry.recommendationCount, 0), 0, 9999),
     ignoredCount: clamp(toInt(entry.ignoredCount, 0), 0, 9999),
+    ignoredCountUpdatedAt: typeof entry.ignoredCountUpdatedAt === 'string' ? entry.ignoredCountUpdatedAt : '',
     recommendationAudit: cleanRecommendationAuditTrace(entry.recommendationAudit || {}),
     wasRecommended: Boolean(entry.wasRecommended),
     historicalBackfill: Boolean(entry.historicalBackfill),
@@ -2256,6 +2246,7 @@ function mergeCandidatePool(localPool, remotePool) {
     if (remoteCard?.projection === 'list' && localCard?.projection !== 'list' && isMeaningfulCard(localCard)) {
       return localCard;
     }
+    if (localCard?.projection === 'list' && remoteCard?.projection !== 'list' && isMeaningfulCard(remoteCard)) return remoteCard;
     if (localCard?.cardStatus === 'ready' && remoteCard?.cardStatus !== 'ready') return localCard;
     if (remoteCard?.cardStatus === 'ready' && localCard?.cardStatus !== 'ready') return remoteCard;
     if (!isMeaningfulCard(remoteCard)) return localCard;
@@ -2323,7 +2314,8 @@ function mergeCandidatePool(localPool, remotePool) {
       lastScoredAt: [current.lastScoredAt, incoming.lastScoredAt].filter(Boolean).sort().pop() || null,
       lastRecommendedAt: [current.lastRecommendedAt, incoming.lastRecommendedAt].filter(Boolean).sort().pop() || null,
       recommendationCount: Math.max(toInt(current.recommendationCount, 0), toInt(incoming.recommendationCount, 0)),
-      ignoredCount: Math.max(toInt(current.ignoredCount, 0), toInt(incoming.ignoredCount, 0)),
+      ignoredCount: mergeIgnoredCount(current, incoming),
+      ignoredCountUpdatedAt: [current.ignoredCountUpdatedAt, incoming.ignoredCountUpdatedAt].filter(Boolean).sort().pop() || '',
       wasRecommended: Boolean(current.wasRecommended || incoming.wasRecommended),
       lastOrigin: recommendedSource.lastOrigin || newer.lastOrigin,
       lastConfidenceLevel: recommendedSource.lastConfidenceLevel || newer.lastConfidenceLevel,
@@ -2925,8 +2917,7 @@ function loadLocalWorkflow(options = {}) {
 }
 
 function saveLocalWorkflow() {
-  ensureFavoriteWordsHaveCandidateEntries();
-  favorites = filterKnownFavorites(favorites);
+  favorites = normalizeFavoriteWords(favorites);
   favoriteStatuses = Object.entries(favoriteStatuses || {}).reduce((result, [word, status]) => {
     const cleanWord = String(word || '').trim();
     const cleanStatus = cleanFavoriteStatus(status);
@@ -2937,7 +2928,9 @@ function saveLocalWorkflow() {
   publishedRecords = cleanPublishedRecords(publishedRecords);
   publishedDisplayItemsCache = null;
   publishedDisplayItemsById = new Map();
-  getProtectedLibraryWords().forEach(kanji => ensureManualKeepEntry(kanji));
+  getProtectedLibraryWords().forEach(kanji => {
+    if (candidatePool[kanji]) ensureManualKeepEntry(kanji);
+  });
   candidatePool = cleanCandidatePool(candidatePool);
   migrateOriginalWordsAfterAudit();
   ensureReviewedSeedWordsInCandidatePool();
@@ -2972,7 +2965,6 @@ function writeLocalWorkflowCache(payload = {}) {
 }
 
 function cacheCurrentWorkflow(updatedAt = nowIso()) {
-  ensureFavoriteWordsHaveCandidateEntries();
   aiPreview = cleanAiPreviewState(aiPreview);
   todayDismissed = cleanTeamDismissedState(todayDismissed);
   const payload = workflowStore.buildPayload(getCurrentWorkflowState(), updatedAt);
@@ -3030,7 +3022,7 @@ let favoriteIntentRetryTimer = null;
 
 function applyPendingFavoriteIntents() {
   const overlaid = favoriteIntentStore.overlay(favorites, favoriteStatuses);
-  favorites = filterKnownFavorites(overlaid.words, candidatePool);
+  favorites = normalizeFavoriteWords(overlaid.words);
   favoriteStatuses = cleanStoredWorkflow({
     words: favorites,
     statuses: overlaid.statuses
@@ -3243,7 +3235,7 @@ function applyRemoteWorkflowState(remoteData, options = {}) {
 function applyFavoriteCommandResponse(responseData, kanji) {
   const candidate = cleanCandidatePoolEntry(kanji, responseData?.candidate || {});
   if (candidate) candidatePool[kanji] = candidate;
-  favorites = filterKnownFavorites(responseData?.words, candidatePool);
+  favorites = normalizeFavoriteWords(responseData?.words);
   favoriteStatuses = cleanStoredWorkflow({
     words: favorites,
     statuses: responseData?.statuses
@@ -3290,7 +3282,6 @@ async function fetchFavoriteCommandState(kanji) {
 async function requestFavoriteCommand(kanji, action, status = '', operationId = '') {
   const endpoint = getFavoriteCommandEndpoint(kanji);
   if (!endpoint) throw new Error('收藏同步接口还没有配置');
-  ensureFavoriteWordsHaveCandidateEntries();
   const payload = buildFavoriteCommandPayload(kanji, action, status);
   return workflowSync.mutate({
     endpoint,
@@ -3371,13 +3362,12 @@ async function loadCloudWorkflow(options = false) {
 
 function buildCloudWorkflowPayload() {
   ensureReviewedSeedWordsInCandidatePool();
-  ensureFavoriteWordsHaveCandidateEntries();
   if (cleanTodaySnapshot(todaySnapshot).words.length) archiveTodaySnapshot(todaySnapshot);
   aiPreview = cleanAiPreviewState(aiPreview);
   todayDismissed = cleanTeamDismissedState(todayDismissed);
   return workflowStore.buildPayload({
     ...getCurrentWorkflowState(),
-    words: filterKnownFavorites(favorites, candidatePool),
+    words: normalizeFavoriteWords(favorites),
     feedback: cleanWordFeedback(wordFeedback),
     publishedRecords: cleanPublishedRecords(publishedRecords),
     candidatePool: cleanCandidatePool(candidatePool),
@@ -6563,11 +6553,8 @@ function ensureFavoriteWord(kanji) {
   if (cleanKanji && !favorites.includes(cleanKanji)) favorites.unshift(cleanKanji);
 }
 
-function ensureFavoriteWordsHaveCandidateEntries() {
-  favorites = getUniqueWords(favorites).map(normalizeKanjiSpelling).filter(Boolean);
-  favorites.forEach(kanji => {
-    if (!candidatePool[kanji]) ensureManualKeepEntry(kanji);
-  });
+function normalizeFavoriteWords(words) {
+  return getUniqueWords(getUniqueWords(words).map(normalizeKanjiSpelling)).slice(0, 500);
 }
 
 function ensureManualKeepEntry(kanji) {
@@ -7033,6 +7020,7 @@ function applyNegativeFeedback(kanji, reason, options = {}) {
       candidatePool[kanji] = cleanCandidatePoolEntry(kanji, {
         ...candidatePool[kanji],
         ignoredCount: toInt(candidatePool[kanji]?.ignoredCount, 0) + (alreadyAppliedToday ? 0 : 1),
+        ignoredCountUpdatedAt: nowIso(),
         updatedAt: nowIso()
       });
     }
@@ -7080,6 +7068,7 @@ function undoNegativeFeedback(kanji, reason, options = {}) {
       candidatePool[kanji] = cleanCandidatePoolEntry(kanji, {
         ...candidatePool[kanji],
         ignoredCount: Math.max(0, toInt(candidatePool[kanji].ignoredCount, 0) - 1),
+        ignoredCountUpdatedAt: nowIso(),
         updatedAt: nowIso()
       });
     }
@@ -9141,7 +9130,7 @@ async function restoreWorkflowBackup(event) {
 
 function exportWorkflowBackup() {
   const backup = buildWorkflowBackup({
-    words: filterKnownFavorites(favorites),
+    words: normalizeFavoriteWords(favorites),
     statuses: favoriteStatuses,
     feedback: wordFeedback,
     publishedRecords,

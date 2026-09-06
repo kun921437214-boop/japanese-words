@@ -430,6 +430,7 @@ export function cleanAiCard(card = {}) {
   const status = cleanEnum(card?.cardStatus, ['none', 'pending', 'ready', 'failed', 'stale'], hasContent ? 'ready' : 'none');
   return {
     ...(card || {}),
+    ...(['list', 'detail'].includes(card?.projection) ? { projection: card.projection } : {}),
     cardStatus: status,
     cardSource: cleanText(card?.cardSource, 80),
     cardModel: cleanText(card?.cardModel, 120),
@@ -686,6 +687,7 @@ export function cleanCandidatePoolEntry(kanji, entry = {}) {
   const displayBucket = cleanEnum(entry?.displayBucket, DISPLAY_BUCKET_OPTIONS, riskLevel === 'high' ? 'review' : 'long_term');
   return {
     ...(entry || {}),
+    ...(['list', 'detail'].includes(entry?.candidateProjection) ? { candidateProjection: entry.candidateProjection } : {}),
     kanji: cleanKanji,
     romaji: cleanText(entry?.romaji, 120),
     kana: cleanText(entry?.kana || entry?.reading, 120),
@@ -746,6 +748,7 @@ export function cleanCandidatePoolEntry(kanji, entry = {}) {
     lastScore: clamp(toInt(entry?.lastScore, 0), 0, 100),
     recommendationCount: clamp(toInt(entry?.recommendationCount, 0), 0, 9999),
     ignoredCount: clamp(toInt(entry?.ignoredCount, 0), 0, 9999),
+    ignoredCountUpdatedAt: isIsoLike(entry?.ignoredCountUpdatedAt) ? entry.ignoredCountUpdatedAt : '',
     expressionValueScore: clamp(toInt(entry?.expressionValueScore, 0), 0, 100),
     accountLearningTone: cleanText(entry?.accountLearningTone, 80),
     accountLearningBonus: clamp(toInt(entry?.accountLearningBonus, 0), -30, 30),
@@ -892,12 +895,44 @@ export function cleanAiPreview(preview = {}) {
 
 export function cleanTeamDismissed(dismissed = {}) {
   const dateKey = /^\d{4}-\d{2}-\d{2}$/.test(cleanText(dismissed?.dateKey, 20)) ? cleanText(dismissed.dateKey, 20) : '';
+  const updatedAt = isIsoLike(dismissed?.updatedAt) ? dismissed.updatedAt : '';
+  const wordActions = {};
+  uniqueStrings(dismissed?.words, 80, TEAM_DISMISSED_WORDS_LIMIT).forEach(word => {
+    wordActions[word] = { dismissed: true, updatedAt };
+  });
+  Object.entries(dismissed?.wordActions || {}).slice(0, TEAM_DISMISSED_WORDS_LIMIT).forEach(([word, action]) => {
+    const key = cleanText(word, 80);
+    if (!key || typeof action?.dismissed !== 'boolean' || !(isIsoLike(action?.updatedAt) || action.updatedAt === '')) return;
+    wordActions[key] = { dismissed: action.dismissed, updatedAt: action.updatedAt };
+  });
   return {
     ...(dismissed || {}),
     dateKey,
-    words: uniqueStrings(dismissed?.words, 80, TEAM_DISMISSED_WORDS_LIMIT),
-    updatedAt: isIsoLike(dismissed?.updatedAt) ? dismissed.updatedAt : ''
+    words: Object.keys(wordActions).filter(word => wordActions[word].dismissed).slice(0, TEAM_DISMISSED_WORDS_LIMIT),
+    wordActions,
+    updatedAt
   };
+}
+
+export function updateTeamDismissed(dismissed = {}, words = [], dateKey = '', updatedAt = new Date().toISOString()) {
+  const previous = cleanTeamDismissed(dismissed?.dateKey === dateKey ? dismissed : { dateKey });
+  const nextWords = uniqueStrings(words, 80, TEAM_DISMISSED_WORDS_LIMIT);
+  const wordActions = { ...previous.wordActions };
+  new Set([...previous.words, ...nextWords]).forEach(word => {
+    if (previous.words.includes(word) === nextWords.includes(word)) return;
+    wordActions[word] = { dismissed: nextWords.includes(word), updatedAt };
+  });
+  return cleanTeamDismissed({ dateKey, words: nextWords, wordActions, updatedAt });
+}
+
+export function mergeIgnoredCount(local = {}, remote = {}) {
+  const leftAt = isIsoLike(local.ignoredCountUpdatedAt) ? local.ignoredCountUpdatedAt : '';
+  const rightAt = isIsoLike(remote.ignoredCountUpdatedAt) ? remote.ignoredCountUpdatedAt : '';
+  if (leftAt || rightAt) {
+    const winner = rightAt > leftAt ? remote : local;
+    return clamp(toInt(winner.ignoredCount, 0), 0, 9999);
+  }
+  return Math.max(toInt(local.ignoredCount, 0), toInt(remote.ignoredCount, 0));
 }
 
 function cleanAuditState(state = {}) {
@@ -1280,6 +1315,8 @@ function chooseAiCard(localCard = {}, remoteCard = {}) {
   const remote = cleanAiCard(remoteCard);
   const localMeaningful = isMeaningfulAiCard(local);
   const remoteMeaningful = isMeaningfulAiCard(remote);
+  if (remote.projection === 'list' && local.projection !== 'list' && localMeaningful) return local;
+  if (local.projection === 'list' && remote.projection !== 'list' && remoteMeaningful) return remote;
   if (local.cardStatus === 'ready' && remote.cardStatus !== 'ready') return local;
   if (remote.cardStatus === 'ready' && local.cardStatus !== 'ready') return remote;
   if (!remoteMeaningful) return local;
@@ -1345,6 +1382,7 @@ function mergeCandidateEntry(localEntry = {}, remoteEntry = {}) {
     ...older,
     ...newer,
     kanji: local.kanji || remote.kanji,
+    candidateProjection: local.candidateProjection === 'list' && remote.candidateProjection === 'list' ? 'list' : 'detail',
     romaji: nonEmptyText(newer.romaji, older.romaji, 120),
     kana: nonEmptyText(newer.kana, older.kana, 120),
     meaning: nonEmptyText(newer.meaning, older.meaning, 240),
@@ -1366,7 +1404,9 @@ function mergeCandidateEntry(localEntry = {}, remoteEntry = {}) {
       card: mergeGenerationFeedbackBucket(local.generationFeedback?.card, remote.generationFeedback?.card, CARD_REGENERATION_REASONS, 'card'),
       cover: mergeGenerationFeedbackBucket(local.generationFeedback?.cover, remote.generationFeedback?.cover, COVER_REGENERATION_REASONS, 'cover')
     },
-    publicationSnapshot: cleanPublicationSnapshot(newer.publicationSnapshot || older.publicationSnapshot || {}),
+    publicationSnapshot: cleanPublicationSnapshot(newer.candidateProjection === 'list'
+      ? older.publicationSnapshot || {}
+      : newer.publicationSnapshot || older.publicationSnapshot || {}),
     examples: [...safeArray(local.examples), ...safeArray(remote.examples)].map(cleanAiExample).filter(Boolean).slice(0, 5),
     suggestedTitles: uniqueStrings([...(local.suggestedTitles || []), ...(remote.suggestedTitles || [])], 140, 8),
     coverSuggestion: {
@@ -1399,7 +1439,8 @@ function mergeCandidateEntry(localEntry = {}, remoteEntry = {}) {
     lastScoredAt: latestString(local.lastScoredAt, remote.lastScoredAt),
     lastRecommendedAt: latestString(local.lastRecommendedAt, remote.lastRecommendedAt),
     recommendationCount: Math.max(toInt(local.recommendationCount, 0), toInt(remote.recommendationCount, 0)),
-    ignoredCount: Math.max(toInt(local.ignoredCount, 0), toInt(remote.ignoredCount, 0)),
+    ignoredCount: mergeIgnoredCount(local, remote),
+    ignoredCountUpdatedAt: latestString(local.ignoredCountUpdatedAt, remote.ignoredCountUpdatedAt) || '',
     recommendationAudit: cleanRecommendationAuditTrace(recommendedSource.recommendationAudit || newer.recommendationAudit || older.recommendationAudit || {}),
     wasRecommended: Boolean(local.wasRecommended || remote.wasRecommended),
     lastOrigin: recommendedSource.lastOrigin || newer.lastOrigin,
@@ -1471,9 +1512,16 @@ function mergeTeamDismissed(localDismissed = {}, remoteDismissed = {}) {
   if (!local.dateKey) return remote;
   if (!remote.dateKey) return local;
   if (local.dateKey !== remote.dateKey) return cleanText(local.dateKey, 20) >= cleanText(remote.dateKey, 20) ? local : remote;
+  const wordActions = { ...local.wordActions };
+  Object.entries(remote.wordActions).forEach(([word, action]) => {
+    const current = wordActions[word];
+    if (!current || action.updatedAt > current.updatedAt || (action.updatedAt === current.updatedAt && !action.dismissed)) {
+      wordActions[word] = action;
+    }
+  });
   return cleanTeamDismissed({
     dateKey: local.dateKey,
-    words: uniqueStrings([...(local.words || []), ...(remote.words || [])], 80, TEAM_DISMISSED_WORDS_LIMIT),
+    wordActions,
     updatedAt: latestString(local.updatedAt, remote.updatedAt) || ''
   });
 }

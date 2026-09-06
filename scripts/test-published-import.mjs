@@ -3,6 +3,7 @@ import test from 'node:test';
 import {
   applyPublishedImport,
   buildPublishedLearningSummary,
+  buildPublishedPerformanceAssessment,
   computePublishedThirtyDayMedians,
   inferPublishedSelectionSource,
   normalizePublishedImportRow
@@ -20,6 +21,34 @@ import {
 } from '../frontend/published-page.mjs';
 
 const NOW = new Date('2026-07-20T14:30:00+08:00');
+
+test('复盘成熟度取实际指标时间，冻结和时间流逝不提升早期数据权重', () => {
+  const now = new Date('2026-09-06T12:00:00+08:00');
+  const record = {
+    id: 'stale-metrics', publishedAt: '2026-08-19T20:06:01+08:00',
+    lastMetricsImportedAt: '2026-08-24T13:20:00+08:00',
+    metricsFrozen: true, latestMetrics: { views: 1000, favorites: 80 }
+  };
+  const assess = patch => buildPublishedPerformanceAssessment({ ...record, ...patch }, [], now);
+  assert.equal(assess({}).stage, 'early');
+  assert.match(assess({}).summary, /尚未取得15天数据/);
+  assert.equal(assess({ lastMetricsImportedAt: '2026-08-20T13:20:00+08:00' }).stage, 'collecting');
+  assert.equal(assess({ lastMetricsImportedAt: '2026-09-03T20:06:01+08:00' }).stage, 'final');
+  assert.equal(assess({ lastMetricsImportedAt: '2026-09-03T20:06:00+08:00' }).stage, 'early');
+  assert.equal(assess({ lastMetricsImportedAt: '' }).stage, 'collecting');
+  assert.equal(assess({ lastMetricsImportedAt: '2026-09-07T00:00:00+08:00' }).stage, 'collecting');
+  assert.equal(assess({ lastMetricsImportedAt: '2026-08-18T00:00:00+08:00' }).stage, 'collecting');
+  assert.equal(assess({ lastMetricsImportedAt: '', metricSnapshots: [
+    { capturedAt: '2026-08-20T13:20:00+08:00' }, { capturedAt: record.lastMetricsImportedAt }
+  ] }).stage, 'early');
+  const staleBaselines = Array.from({ length: 3 }, (_, index) => ({
+    ...record, id: `baseline-${index}`, lastMetricsImportedAt: '2026-08-20T13:20:00+08:00'
+  }));
+  const insufficient = buildPublishedPerformanceAssessment(record, staleBaselines, now);
+  assert.equal(insufficient.baselineSampleSize, 0);
+  assert.equal(insufficient.topic.level, 'insufficient');
+  assert.equal(assess({ publishedAt: '' }).stage, 'collecting');
+});
 
 function row(overrides = {}) {
   return {
@@ -209,6 +238,7 @@ test('发布导入自动留档当前内容版本并生成72小时分层复盘', 
 test('发布学习 guidance 按用途分流并防止单篇过拟合', () => {
   const baselineRecords = ['余白', 'こなれ', '透明感'].map((word, index) => ({
     id: `guidance-baseline-${index}`,
+    lastMetricsImportedAt: NOW.toISOString(),
     word,
     title: word,
     publishedAt: `2026-07-${String(1 + index).padStart(2, '0')}T09:00:00+08:00`,
@@ -226,6 +256,7 @@ test('发布学习 guidance 按用途分流并防止单篇过拟合', () => {
   }));
   const oneStrongTopic = {
     id: 'guidance-strong-one',
+    lastMetricsImportedAt: NOW.toISOString(),
     word: '抜け感',
     title: '抜け感',
     publishedAt: '2026-07-16T09:00:00+08:00',
