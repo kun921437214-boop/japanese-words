@@ -36,6 +36,6 @@ jobs:
       - name: Install Playwright browser
         run: npx playwright install --with-deps chromium
       - name: Browser E2E
-        run: npm run test:e2e
+        run: npm run test:e2e:built
       - name: Dependency audit
         run: npm audit --audit-level=high

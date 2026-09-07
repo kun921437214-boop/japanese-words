@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { chown, lchown, mkdir, readFile, readdir, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { cleanStoredWorkflow, workflowDateKey } from '../shared/workflow-schema.mjs';
+import { copyKv } from './copy-kv.mjs';
 import { FileKV } from './file-kv.mjs';
 
 function parseArgs(argv) {
@@ -101,22 +102,6 @@ async function copyReferenceImages(images, storage, originValue) {
     }
   };
   await Promise.all(Array.from({ length: Math.min(4, Math.max(1, images.length)) }, copyNext));
-  return copied;
-}
-
-async function copyKv(source, target) {
-  const copied = [];
-  let cursor;
-  do {
-    const page = await source.list({ cursor });
-    for (const keyInfo of page.keys) {
-      const stored = await source.getWithMetadata(keyInfo.name, { type: 'arrayBuffer' });
-      if (!stored) continue;
-      await target.put(keyInfo.name, stored.value, { metadata: stored.metadata || undefined });
-      copied.push(keyInfo.name);
-    }
-    cursor = page.list_complete ? undefined : page.cursor;
-  } while (cursor);
   return copied;
 }
 
