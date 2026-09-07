@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { createJsonKv } from './test-helpers/kv.mjs';
 import {
   applyPublishedImport,
   buildPublishedLearningSummary,
@@ -82,17 +83,7 @@ function batch(rows, overrides = {}) {
 }
 
 function createKv(initialValue = null) {
-  let value = structuredClone(initialValue);
-  return {
-    putCalls: 0,
-    async get() {
-      return structuredClone(value);
-    },
-    async put(_key, nextValue) {
-      this.putCalls += 1;
-      value = JSON.parse(nextValue);
-    }
-  };
+  return createJsonKv(initialValue, { cloneReads: true });
 }
 
 test('官方导出字段完整拆分，标题中的日语词可自动映射', () => {

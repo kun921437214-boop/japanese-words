@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { cleanStoredWorkflow } from '../shared/workflow-schema.mjs';
+import { fetchJsonResponse } from './lib/http-json.mjs';
 
 const args = process.argv.slice(2);
 const fileArg = args.find(argument => !argument.startsWith('--'));
@@ -17,11 +18,15 @@ const stats = fs.statSync(file);
 if (!stats.isFile() || stats.size > 10 * 1024 * 1024) throw new Error('备份文件不存在或超过 10 MB');
 const backup = cleanStoredWorkflow(JSON.parse(fs.readFileSync(file, 'utf8')));
 
-const response = await fetch(endpoint, {
+const { data: currentData, parseError } = await fetchJsonResponse(endpoint, {
   headers: { Accept: 'application/json', Authorization: `Bearer ${token}` }
+}, {
+  checkResponse(response) {
+    if (!response.ok) throw new Error(`当前 workflow 读取失败（HTTP ${response.status}）`);
+  }
 });
-if (!response.ok) throw new Error(`当前 workflow 读取失败（HTTP ${response.status}）`);
-const current = cleanStoredWorkflow(await response.json());
+if (parseError) throw parseError;
+const current = cleanStoredWorkflow(currentData);
 const summary = {
   mode: apply ? 'apply' : 'dry-run',
   currentRevision: current.revision,
@@ -46,7 +51,7 @@ if (!confirmed) throw new Error('正式恢复必须同时提供 --apply --confir
 
 const { revision: _backupRevision, auditLog: _backupAuditLog, ...restorePayload } = backup;
 const operationId = `restore-${crypto.randomUUID()}`;
-const restoreResponse = await fetch(endpoint, {
+const { response: restoreResponse, data: result = {} } = await fetchJsonResponse(endpoint, {
   method: 'PUT',
   headers: {
     Accept: 'application/json',
@@ -57,7 +62,6 @@ const restoreResponse = await fetch(endpoint, {
   },
   body: JSON.stringify(restorePayload)
 });
-const result = await restoreResponse.json().catch(() => ({}));
 if (!restoreResponse.ok) {
   const message = result?.error?.message || `HTTP ${restoreResponse.status}`;
   throw new Error(`恢复失败：${message}`);

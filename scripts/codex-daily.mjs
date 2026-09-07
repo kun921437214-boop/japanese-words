@@ -10,6 +10,7 @@ import {
 } from '../shared/codex-image-batch.mjs';
 import { addDays, cleanDateKey, dateKey } from '../shared/rankings.mjs';
 import { validateCodexDailyDraft } from '../shared/codex-daily-draft.mjs';
+import { fetchJsonResponse } from './lib/http-json.mjs';
 
 function loadLocalAutomationEnv() {
   const envFile = path.resolve(process.env.CODEX_DAILY_ENV_FILE || '.env.codex-daily');
@@ -72,23 +73,9 @@ function writeJson(file, value) {
   return target;
 }
 
-async function fetchWithTimeout(url, options = {}) {
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 30000);
-  try {
-    return await fetch(url, { ...options, signal: controller.signal });
-  } finally {
-    clearTimeout(timeout);
-  }
-}
-
 async function requestJson(url, options = {}) {
-  const response = await fetchWithTimeout(url, options);
-  const text = await response.text();
-  let data = null;
-  try {
-    data = text ? JSON.parse(text) : {};
-  } catch {
+  const { response, text, data = {}, parseError } = await fetchJsonResponse(url, options, { timeoutMs: 30000 });
+  if (parseError && text) {
     throw new Error(`接口返回了非 JSON 内容（HTTP ${response.status}）`);
   }
   if (!response.ok) {
