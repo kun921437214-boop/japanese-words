@@ -1,0 +1,27 @@
+<view wx:if="{{demo}}" class="demo">交互示例 · 收藏仅在演示中生效</view>
+<view class="page">
+  <view wx:if="{{error}}" class="notice error"><view>{{error}}</view><button class="ghost small-button" bindtap="refresh">重新加载</button></view>
+  <view wx:if="{{offline}}" class="notice">当前离线，显示上次内容。选题操作会保留到联网后同步。</view>
+  <view wx:if="{{stale}}" class="notice">这是 {{dateLabel}} 的推荐，今天的内容还未就绪。</view>
+  <view class="row"><text class="eyebrow">DAILY PICKS / {{dateLabel}}</text><text class="tag">{{total || 0}} 个灵感</text></view>
+  <view class="headline"><view>挑一个，</view><view>想分享的词。</view></view>
+  <view class="sub">先看语感，再决定要不要收进选题池。</view>
+  <button wx:if="{{pendingCount}}" class="secondary spaced" bindtap="sync">{{pendingCount}} 个操作待同步 · 查看</button>
+  <block wx:if="{{loading}}"><view class="skeleton"></view><view class="skeleton"></view></block>
+  <view wx:elif="{{!items.length}}" class="empty"><view class="empty-title">{{laterCount ? '先把灵感放一放' : '推荐还在路上'}}</view><view>{{laterCount ? '需要时，可以恢复稍后看的词。' : '下拉刷新，或稍后再来看。'}}</view></view>
+  <view wx:for="{{items}}" wx:key="word" class="card">
+    <view bindtap="open" data-word="{{item.word}}" aria-role="button" aria-label="查看{{item.word}}词卡">
+      <view class="row"><text class="tag">{{item.category}}</text><text class="muted">展开词卡 ↗</text></view>
+      <view class="word spaced">{{item.word}}</view><view class="kana">{{item.kana}}</view>
+      <view class="meaning">{{item.meaning}}</view>
+      <view wx:if="{{item.cardReady}}" class="body">{{item.summary}}</view>
+      <view wx:else class="muted">{{item.cardLabel}} · 仅展示基础信息</view>
+    </view>
+    <view class="row word-actions">
+      <button class="ghost small-button" bindtap="later" data-word="{{item.word}}">稍后看</button>
+      <button class="{{item.favorite ? 'secondary' : 'primary'}} small-button" bindtap="collect" data-word="{{item.word}}" disabled="{{item.status === 'published'}}">{{item.label}}</button>
+    </view>
+  </view>
+  <button wx:if="{{laterCount}}" class="link spaced" bindtap="restore">恢复 {{laterCount}} 个稍后看的词</button>
+  <view class="footer-note">{{cachedAt ? '最近读取 ' + cachedAt + ' · ' : ''}}收藏后再决定制作与发布</view>
+</view>

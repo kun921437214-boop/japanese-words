@@ -1,0 +1,17 @@
+# Reviewed optional addition INSIDE the existing bijinihaitan.cn HTTPS server.
+# Do not replace the current site config or alter existing protected locations.
+# Keep the Node listener on 127.0.0.1. Backend must fail closed before exposure.
+location ^~ /miniapp/ {
+    proxy_pass http://127.0.0.1:8788;
+    proxy_http_version 1.1;
+    proxy_set_header Host $host;
+    proxy_set_header X-Forwarded-Host $host;
+    proxy_set_header X-Forwarded-Proto https;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header Authorization $http_authorization;
+    proxy_read_timeout 25s;
+    proxy_send_timeout 25s;
+    proxy_buffering on;
+    client_max_body_size 4k;
+}

@@ -39,6 +39,10 @@ export function cleanWorkflowStorageKey(value) {
 export function buildCoordinatedWorkflowMutation(currentInput = {}, candidateInput = {}, metadata = {}, options = {}) {
   const current = cleanStoredWorkflow(currentInput);
   const strategy = MUTATION_STRATEGIES.has(options.strategy) ? options.strategy : 'replace';
+  if (strategy === 'favorite-command' && metadata.protectPublished === true
+      && current.statuses?.[candidateInput.word] === 'published') {
+    throw Object.assign(new Error('已发布选题请在电脑端管理'), { code: 'PUBLISHED_READ_ONLY' });
+  }
   let nextWorkflow;
   if (strategy === 'full-save') {
     nextWorkflow = mergeWorkflowForFullSave(current, candidateInput);

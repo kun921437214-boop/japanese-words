@@ -8,9 +8,10 @@
   "scripts": {
     "build:words": "node scripts/build-words-data.mjs",
     "build": "npm run build:words && node scripts/build-static.mjs",
-    "lint": "eslint app.js sync-config.js frontend functions worker durable-object shared server scripts e2e playwright.config.mjs --max-warnings=0 && node scripts/check-cycles.mjs",
+    "lint": "eslint app.js sync-config.js frontend functions worker durable-object shared server scripts e2e miniprogram playwright.config.mjs --max-warnings=0 && node scripts/check-cycles.mjs",
     "typecheck": "tsc -p tsconfig.json",
-    "test": "npm run test:workflow && npm run test:published && npm run test:frontend && npm run test:hardening && npm run test:codex && npm run test:tencent && npm run test:scripts",
+    "test": "npm run test:workflow && npm run test:published && npm run test:frontend && npm run test:hardening && npm run test:codex && npm run test:tencent && npm run test:scripts && npm run test:miniapp",
+    "test:miniapp": "node --test scripts/test-miniapp.mjs",
     "test:frontend": "node --test scripts/test-frontend-modules.mjs",
     "test:codex": "node --test scripts/test-codex-daily.mjs",
     "test:tencent": "node --test scripts/test-tencent-runtime.mjs",

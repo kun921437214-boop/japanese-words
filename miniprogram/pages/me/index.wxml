@@ -1,0 +1,18 @@
+<view wx:if="{{demo}}" class="demo">交互示例 · 不连接团队数据</view>
+<view class="page">
+  <view class="eyebrow">YOUR WORKSPACE</view><view class="headline">把灵感接着做。</view><view class="sub">在手机上选题，回到电脑继续创作。</view>
+  <view class="card"><view class="row"><view class="meaning">{{demo ? '正在体验示例' : memberId ? '团队已连接' : '还没有登录'}}</view><text class="tag">{{offline ? '离线' : '在线'}}</text></view>
+    <view class="body">{{demo ? '这里的操作仅用于体验，正式使用前请登录团队。' : memberId ? '收藏与待发布标记会同步给团队。' : '登录后读取团队推荐与选题。'}}</view>
+    <button wx:if="{{demo || !memberId}}" class="primary spaced" bindtap="login">进入团队登录</button>
+    <button wx:else class="ghost spaced" bindtap="copyMember">复制成员编号</button>
+  </view>
+  <view class="section-label">同步状态</view>
+  <view wx:if="{{!queue.length}}" class="card"><view class="meaning">没有待同步操作</view><view class="body">新操作会在服务器确认后从这里移除。</view></view>
+  <view wx:for="{{queue}}" wx:key="operationId" class="card"><view class="row"><view class="meaning">{{item.word}}</view><text class="tag">待同步</text></view><view class="body">{{item.actionLabel}}</view><view class="muted spaced">{{item.error || '正在等待服务器确认'}}</view><button wx:if="{{item.error}}" class="ghost spaced" bindtap="acceptRemote" data-id="{{item.operationId}}">以团队最新状态为准</button></view>
+  <button wx:if="{{queue.length}}" class="primary spaced" bindtap="retry" loading="{{busy}}" disabled="{{busy || offline}}">重试同步（{{queue.length}}）</button>
+  <view wx:if="{{error}}" class="notice error spaced">{{error}}</view>
+  <view class="section-label">继续创作</view><view class="card"><view class="meaning">电脑网页工作台</view><view class="body">批量管理、发布记录与数据复盘。</view><button class="secondary spaced" bindtap="desktop">复制电脑端网址</button></view>
+  <button class="ghost spaced" bindtap="help">了解选题与同步规则</button>
+  <button wx:if="{{memberId && !demo}}" class="ghost spaced" bindtap="logout" disabled="{{busy}}">退出当前登录</button>
+  <view class="footer-note">日语选题 · 手机工作台 v1</view>
+</view>

@@ -21,6 +21,7 @@ import scheduledWorker, {
 import { FileKV } from './file-kv.mjs';
 import { LocalWorkflowCoordinator } from './local-coordinator.mjs';
 import { onRequest as publishedCoverThumbnail } from './published-cover-thumbnail.mjs';
+import { handleMiniappRequest } from './miniapp-api.mjs';
 
 function publishedCoverRoute(context) {
   const url = new URL(context.request.url);
@@ -81,6 +82,12 @@ function buildRuntimeEnv(options = {}) {
     FAVORITES: favoritesKv,
     REFERENCE_IMAGES_KV: imagesKv,
     WORKFLOW_COORDINATOR: options.coordinator || new LocalWorkflowCoordinator(favoritesKv),
+    ENABLE_WECHAT_MINIAPP: process.env.ENABLE_WECHAT_MINIAPP || 'false',
+    WECHAT_APP_ID: process.env.WECHAT_APP_ID || '',
+    WECHAT_APP_SECRET: process.env.WECHAT_APP_SECRET || '',
+    WECHAT_MEMBER_IDS: process.env.WECHAT_MEMBER_IDS || '',
+    MINIAPP_SESSIONS: process.env.ENABLE_WECHAT_MINIAPP === 'true'
+      ? new FileKV(path.join(dataDirectory, 'miniapp-sessions')) : null,
     ALLOW_PUBLIC_APP: process.env.ALLOW_PUBLIC_APP || 'true',
     SITE_URL: process.env.SITE_URL || 'http://127.0.0.1:8788',
     ALLOWED_ORIGINS: process.env.ALLOWED_ORIGINS || '',
@@ -171,6 +178,7 @@ export async function dispatchPagesFunction(handler, request, env, options = {})
 
 export async function handleWebRequest(request, env, options = {}) {
   const url = new URL(request.url);
+  if (url.pathname.startsWith('/miniapp/')) return handleMiniappRequest(request, env);
   const handler = ROUTES.get(url.pathname);
   if (!handler) {
     return Response.json({ ok: false, error: { code: 'NOT_FOUND', message: 'Not found', retryable: false } }, { status: 404 });

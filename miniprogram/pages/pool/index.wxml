@@ -1,0 +1,20 @@
+<view wx:if="{{demo}}" class="demo">交互示例 · 不连接团队数据</view>
+<view class="page">
+  <view class="eyebrow">YOUR TOPIC POOL</view><view class="headline">灵感，先留住。</view><view class="sub">{{total}} 个已选题目，从心动到准备发布。</view>
+  <view class="search"><input placeholder="搜索日语、读音或中文" value="{{query}}" bindinput="search" confirm-type="search" aria-label="搜索选题"/><button wx:if="{{query}}" class="ghost" bindtap="clearSearch" aria-label="清空搜索">×</button></view>
+  <view class="filters">
+    <button class="filter {{filter === 'all' ? 'active' : ''}}" data-filter="all" bindtap="filter">全部</button>
+    <button class="filter {{filter === 'saved' ? 'active' : ''}}" data-filter="saved" bindtap="filter">已收藏</button>
+    <button class="filter {{filter === 'pending' ? 'active' : ''}}" data-filter="pending" bindtap="filter">待发布</button>
+    <button class="filter {{filter === 'published' ? 'active' : ''}}" data-filter="published" bindtap="filter">已发布</button>
+  </view>
+  <button wx:if="{{pendingCount}}" class="secondary" bindtap="sync">{{pendingCount}} 个操作待同步 · 查看</button>
+  <view wx:if="{{error}}" class="notice error spaced"><view>{{error}}</view><button class="ghost" bindtap="refresh">重试</button></view>
+  <view wx:if="{{loading}}" class="skeleton"></view>
+  <view wx:elif="{{!items.length}}" class="empty"><view class="empty-title">{{query ? '还没找到这个词' : '给下一个好选题留个位置'}}</view><view>{{query ? '试试日语写法、读音或更短的关键词。' : '去今日推荐看看，喜欢的就收进来。'}}</view><button class="secondary" bindtap="today">看看今日推荐</button></view>
+  <view wx:for="{{items}}" wx:key="word" class="card" bindtap="open" data-word="{{item.word}}" aria-role="button" aria-label="查看{{item.word}}">
+    <view class="row"><text class="tag">{{item.label}}</text><text class="muted">查看 ↗</text></view>
+    <view class="word spaced">{{item.word}}</view><view class="kana">{{item.kana}}</view><view class="meaning">{{item.meaning}}</view>
+    <view wx:if="{{item.syncError}}" class="muted">{{item.syncError}}</view>
+  </view>
+</view>

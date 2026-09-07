@@ -1,0 +1,35 @@
+<view wx:if="{{demo}}" class="demo">交互示例 · 文案不是正式发布内容</view>
+<view class="page detail-page">
+  <view wx:if="{{error}}" class="notice error"><view>{{error}}</view><view wx:if="{{entry}}">当前显示上次读取的词卡。</view><button class="ghost" bindtap="refresh">重试</button></view>
+  <view wx:if="{{loading}}" class="skeleton"></view>
+  <block wx:elif="{{entry}}">
+    <view class="eyebrow">WORD NOTES / {{entry.category || '日语表达'}}</view>
+    <view class="detail-word">{{entry.kanji}}</view><view class="kana">{{entry.kana}} {{entry.romaji}}</view>
+    <view class="meaning">{{entry.meaning}}</view><view wx:if="{{ready}}" class="body">{{card.summary}}</view>
+    <view wx:if="{{state.pending}}" class="notice spaced">{{state.syncError || '选题操作待同步，可返回列表继续浏览。'}}</view>
+    <view wx:if="{{!ready}}" class="card"><view class="meaning">{{missingLabel}}</view><view class="body">当前只显示基础词条。可以先收藏，词卡就绪后再查看完整讲解与素材。</view><button class="secondary spaced" bindtap="refresh">刷新词卡状态</button></view>
+    <block wx:else>
+      <view class="filters detail-tabs"><button class="filter {{tab === 'meaning' ? 'active' : ''}}" data-tab="meaning" bindtap="tab">语感与例句</button><button class="filter {{tab === 'materials' ? 'active' : ''}}" data-tab="materials" bindtap="tab">标题与素材</button></view>
+      <block wx:if="{{tab === 'meaning'}}">
+        <view class="section-label">怎么理解</view><view class="card"><text user-select class="body">{{card.explanation}}</text></view>
+        <view wx:if="{{card.usageScenes.length}}" class="section-label">用在这些时候</view><view wx:for="{{card.usageScenes}}" wx:key="*this" class="scene">{{item}}</view>
+        <view wx:if="{{card.examples.length}}" class="section-label">自然地说出来</view>
+        <view wx:for="{{card.examples}}" wx:key="jp" class="card example"><text user-select class="example-jp">{{item.jp}}</text><view wx:if="{{item.kana}}" class="kana">{{item.kana}}</view><view wx:if="{{item.romaji}}" class="kana">{{item.romaji}}</view><view class="body spaced">{{item.cn}}</view><view wx:if="{{item.note || item.source}}" class="muted spaced">{{item.note || item.source}}</view></view>
+        <view wx:if="{{card.similarWords.length}}" class="section-label">相近的表达</view><view wx:for="{{card.similarWords}}" wx:key="word" class="card"><view class="meaning">{{item.word}}</view><view class="body">{{item.meaning}}</view><view class="body spaced">{{item.difference}}</view></view>
+        <view wx:if="{{card.riskWarning || card.wrongUsage}}" class="notice spaced"><view>使用时留意</view><view>{{card.riskWarning}}</view><view>{{card.wrongUsage}}</view></view>
+      </block>
+      <block wx:else>
+        <view class="section-label">从一句标题开始</view>
+        <view wx:for="{{card.suggestedTitles}}" wx:key="*this" class="card"><text user-select class="body">{{item}}</text><button class="secondary spaced" bindtap="copyTitle" data-index="{{index}}">复制这句标题</button></view>
+        <view class="section-label">封面方向</view><view class="card"><view class="meaning">{{card.coverSuggestion.coverText}}</view><view class="body">{{card.coverSuggestion.mainVisual}}</view><view wx:if="{{card.coverSuggestion.style}}" class="body spaced">{{card.coverSuggestion.style}}</view>
+          <block wx:if="{{card.referenceImage.status === 'ready'}}"><button class="secondary spaced" bindtap="image" loading="{{imageBusy}}">查看参考图</button><button class="primary spaced" bindtap="saveImage" disabled="{{imageBusy}}">保存参考图到相册</button></block>
+          <view wx:else class="muted spaced">参考图尚未就绪，可以先取用文案。</view>
+        </view>
+        <view wx:if="{{card.interactionPrompts.length}}" class="section-label">让评论聊起来</view><view wx:for="{{card.interactionPrompts}}" wx:key="*this" class="scene"><text user-select>{{item}}</text></view>
+      </block>
+    </block>
+    <view wx:if="{{state.favorite && state.status !== 'published'}}" class="card"><view class="meaning">这个选题的下一步</view><button class="secondary" bindtap="pending" disabled="{{state.pending}}">{{state.status === 'pending' ? '取消待发布标记' : '标记为待发布'}}</button><button class="ghost spaced" bindtap="remove" disabled="{{state.pending}}">移出选题池</button></view>
+    <view class="footer-note">复制与保存不会自动发布到小红书</view>
+  </block>
+</view>
+<view wx:if="{{entry}}" class="action-dock"><button class="secondary grow" bindtap="copy" disabled="{{!ready}}">复制词卡</button><button class="primary grow" bindtap="collect" disabled="{{state.status === 'published'}}">{{state.label}}</button></view>

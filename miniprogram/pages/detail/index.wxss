@@ -1,0 +1,7 @@
+.detail-page { padding-bottom: calc(190rpx + env(safe-area-inset-bottom)); }
+.detail-word { font-size: 78rpx; line-height: 1.35; font-weight: 650; margin-top: 30rpx; overflow-wrap: break-word; }
+.detail-tabs { position: sticky; top: 0; z-index: 1; background: #f7f7f2; padding: 14rpx 0; }
+.action-dock { position: fixed; bottom: 0; left: 0; right: 0; z-index: 3; background: #fff; border-top: 1rpx solid #e3e8dd; padding: 22rpx 30rpx calc(22rpx + env(safe-area-inset-bottom)); display: flex; gap: 18rpx; }
+.action-dock button { padding-left: 8rpx; padding-right: 8rpx; font-size: 26rpx; }
+.scene { margin-top: 18rpx; padding: 24rpx; border-left: 5rpx solid #b6caa5; background: #eef2e7; border-radius: 0 14rpx 14rpx 0; color: #546b50; font-size: 28rpx; }
+.example-jp { font-size: 33rpx; line-height: 1.65; font-weight: 550; }
