@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { createMemoryKv as makeKv } from './test-helpers/kv.mjs';
 import { onRequest as handleCodexDaily } from '../functions/codex-daily.js';
 import {
   KV_IMAGE_MAX_BYTES,
@@ -165,25 +166,6 @@ function addBackfillProof(item, options = {}) {
   item.usageScope = options.usageScope || '日常口语';
   item.stabilityLevel = options.stabilityLevel || 'stable';
   return item;
-}
-
-function makeKv(initial = {}) {
-  const values = new Map(Object.entries(initial).map(([key, value]) => [key, JSON.stringify(value)]));
-  return {
-    values,
-    putCalls: 0,
-    putOptions: [],
-    async get(key, type) {
-      const value = values.get(key);
-      if (value === undefined) return null;
-      return type === 'json' ? JSON.parse(value) : value;
-    },
-    async put(key, value, options = {}) {
-      this.putCalls += 1;
-      this.putOptions.push({ key, options });
-      values.set(key, String(value));
-    }
-  };
 }
 
 function apiRequest(path, options = {}) {

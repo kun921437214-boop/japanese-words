@@ -2,6 +2,7 @@ import fs from 'node:fs/promises';
 import process from 'node:process';
 import { applyPublishedImport } from '../shared/published-import.mjs';
 import { cleanStoredWorkflow, mergeWorkflow } from '../shared/workflow-schema.mjs';
+import { fetchJsonResponse } from './lib/http-json.mjs';
 
 function parseArgs(argv = []) {
   const options = {};
@@ -37,7 +38,7 @@ function buildWorkflow(currentInput, records) {
 }
 
 async function postImport(endpoint, payload, mode, token = '') {
-  const response = await fetch(endpoint, {
+  const { response, data = {} } = await fetchJsonResponse(endpoint, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -45,7 +46,6 @@ async function postImport(endpoint, payload, mode, token = '') {
     },
     body: JSON.stringify({ ...payload, mode })
   });
-  const data = await response.json().catch(() => ({}));
   if (!response.ok) {
     const error = new Error(data?.error?.message || `导入请求失败（HTTP ${response.status}）`);
     error.code = data?.error?.code || 'IMPORT_REQUEST_FAILED';

@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import test from 'node:test';
+import { createJsonKv as createKv } from './test-helpers/kv.mjs';
 import {
   authorizeRequest,
   buildCorsHeaders,
@@ -62,22 +63,6 @@ async function createAccessToken(claims) {
   );
   const jwk = await crypto.subtle.exportKey('jwk', keyPair.publicKey);
   return { token: `${input}.${base64Url(new Uint8Array(signature))}`, jwk: { ...jwk, kid: 'test-access-key' } };
-}
-
-function createKv(initialValue = null) {
-  let value = initialValue;
-  return {
-    getCalls: 0,
-    putCalls: 0,
-    async get() {
-      this.getCalls += 1;
-      return value;
-    },
-    async put(_key, nextValue) {
-      this.putCalls += 1;
-      value = JSON.parse(nextValue);
-    }
-  };
 }
 
 test('team authorization fails closed when no credentials are configured', async () => {

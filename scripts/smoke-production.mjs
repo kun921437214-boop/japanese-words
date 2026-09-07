@@ -1,5 +1,6 @@
 import { getExpectedDailyWordCount } from '../shared/daily-config.mjs';
 import { summarizeFavoriteCandidateCoverage } from './smoke-production-model.mjs';
+import { fetchJsonResponse } from './lib/http-json.mjs';
 
 const SITE_URL = String(process.env.SITE_URL || 'https://bijinihaitan.cn').replace(/\/+$/, '');
 const TIMEOUT_MS = 30000;
@@ -22,18 +23,14 @@ function todayKey() {
 }
 
 async function fetchJson(path) {
-  const response = await fetch(`${SITE_URL}${path}`, {
+  const { response, text, data, parseError } = await fetchJsonResponse(`${SITE_URL}${path}`, {
     headers: {
       Accept: 'application/json',
       'Cache-Control': 'no-cache'
     },
     signal: globalThis.AbortSignal.timeout(TIMEOUT_MS)
   });
-  const text = await response.text();
-  let data = {};
-  try {
-    data = JSON.parse(text);
-  } catch {
+  if (parseError) {
     fail(`${path} 返回了非 JSON 内容`, { status: response.status, bytes: Buffer.byteLength(text) });
   }
   if (!response.ok) {

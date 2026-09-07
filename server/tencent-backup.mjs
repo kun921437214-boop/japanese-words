@@ -2,28 +2,8 @@ import { createHash, randomUUID } from 'node:crypto';
 import { mkdir, rename, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { cleanStoredWorkflow } from '../shared/workflow-schema.mjs';
+import { copyKv } from './copy-kv.mjs';
 import { FileKV } from './file-kv.mjs';
-
-async function listAllKeys(kv) {
-  const keys = [];
-  let cursor;
-  do {
-    const page = await kv.list({ cursor });
-    keys.push(...page.keys.map(item => item.name));
-    cursor = page.list_complete ? undefined : page.cursor;
-  } while (cursor);
-  return keys;
-}
-
-async function copyKv(source, target) {
-  const keys = await listAllKeys(source);
-  for (const key of keys) {
-    const stored = await source.getWithMetadata(key, { type: 'arrayBuffer' });
-    if (!stored) continue;
-    await target.put(key, stored.value, { metadata: stored.metadata || undefined });
-  }
-  return keys;
-}
 
 const dataDirectory = path.resolve(process.env.JAPANESE_WORDS_DATA_DIR || '/var/lib/japanese-words');
 const backupDirectory = path.resolve(process.env.JAPANESE_WORDS_BACKUP_DIR || '/var/backups/japanese-words');
@@ -43,8 +23,8 @@ await mkdir(partialDirectory, { recursive: true, mode: 0o700 });
 
 const backupWorkflowKv = new FileKV(path.join(partialDirectory, 'workflow-kv'));
 const backupImageKv = new FileKV(path.join(partialDirectory, 'reference-images-kv'));
-const workflowKeys = await copyKv(workflowKv, backupWorkflowKv);
-const imageKeys = await copyKv(imageKv, backupImageKv);
+const workflowKeys = await copyKv(workflowKv, backupWorkflowKv, { reportListedKeys: true });
+const imageKeys = await copyKv(imageKv, backupImageKv, { reportListedKeys: true });
 const draftKeys = workflowKeys.filter(key => key.startsWith('codex-draft:'));
 const manifest = {
   version: 1,
