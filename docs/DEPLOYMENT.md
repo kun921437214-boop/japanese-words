@@ -42,6 +42,8 @@ The deploy command only accepts a clean working tree and a fast-forward update f
 
 The one-time transition from the former Production integration branch to `main` must be separately reviewed. On the first approved deployment after the reconciliation PR is merged, run the dry run with `--branch=main` explicitly and confirm the advertised full commit before applying. Subsequent versions of the deploy script default to `main`.
 
+Deployment sets a readable umask for source/build files and makes the staged public directory traversable by Nginx; workflow and image backups retain their explicit private permissions. Release acceptance requires two consecutive checks of the real local HTTPS health JSON and an exact match between the served `app.js` and the new static artifact. An HTTP redirect alone does not count as a healthy release.
+
 The official bundle is a transport fallback only. GitHub remains the source of truth, and the same fast-forward, test, backup, confirmation, health-check, and rollback gates still apply. If both GitHub paths are unavailable, transfer a bundle created from the reviewed branch through the trusted Tencent console and pin its full commit explicitly:
 
 ```bash

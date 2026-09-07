@@ -61,7 +61,7 @@ if [[ -n "${manual_bundle}" && -z "${expected_commit}" ]]; then
   exit 2
 fi
 
-for command_name in awk curl flock git nginx node npm sha256sum systemctl timeout; do
+for command_name in awk cmp curl flock git nginx node npm sha256sum systemctl timeout; do
   if ! command -v "${command_name}" >/dev/null 2>&1; then
     echo "Missing required command: ${command_name}" >&2
     exit 1
@@ -277,6 +277,11 @@ if [[ "${confirmation}" != "DEPLOY" ]]; then
   exit 2
 fi
 
+# Git checkout and the static build must be readable by the unprivileged
+# runtime and Nginx, even when the invoking maintenance shell uses umask 077.
+# The backup helper sets its own private directory and file modes explicitly.
+umask 022
+
 worktree_parent="$(mktemp -d /tmp/japanese-words-deploy.XXXXXX)"
 release_dir="${worktree_parent}/release"
 staged_dist="$(mktemp -d /opt/japanese-words/.dist-next.XXXXXX)"
@@ -324,6 +329,8 @@ git worktree add --detach "${release_dir}" "${target_commit}"
 )
 
 cp -a "${release_dir}/dist/." "${staged_dist}/"
+# mktemp directories remain 0700 regardless of the shell's umask.
+chmod 0755 "${staged_dist}"
 echo "Creating a complete workflow and image backup..."
 node server/tencent-backup.mjs
 
@@ -359,11 +366,24 @@ if ! systemctl restart japanese-words.service; then
 fi
 
 healthy=false
+healthy_checks=0
 for attempt in 1 2 3 4 5; do
-  if curl --fail --silent --show-error --max-time 15 \
-    -H 'Host: bijinihaitan.cn' http://127.0.0.1/healthz >/dev/null; then
-    healthy=true
-    break
+  if systemctl is-active --quiet japanese-words.service && \
+    curl --fail --silent --show-error --max-time 15 \
+      --noproxy bijinihaitan.cn --resolve bijinihaitan.cn:443:127.0.0.1 \
+      https://bijinihaitan.cn/healthz | \
+      node -e 'const h = JSON.parse(require("node:fs").readFileSync(0, "utf8")); process.exit([h.ok, h.storageConfigured, h.workflowCoordinatorConfigured, h.imageStorageConfigured].every(value => value === true) ? 0 : 1)' && \
+    curl --fail --silent --show-error --max-time 15 \
+      --noproxy bijinihaitan.cn --resolve bijinihaitan.cn:443:127.0.0.1 \
+      --output "${release_dir}/.served-app.js" https://bijinihaitan.cn/app.js && \
+    cmp -s "${release_dir}/.served-app.js" "${app_dir}/dist/app.js"; then
+    healthy_checks=$((healthy_checks + 1))
+    if [[ "${healthy_checks}" -ge 2 ]]; then
+      healthy=true
+      break
+    fi
+  else
+    healthy_checks=0
   fi
   sleep 2
 done
