@@ -1,0 +1,6 @@
+.login-page { padding-top: 64rpx; }
+.brand-mark { width: 110rpx; height: 110rpx; line-height: 110rpx; text-align: center; background: #e5ecdd; border-radius: 32rpx; font-size: 62rpx; font-family: serif; color: #2f6654; margin-bottom: 36rpx; }
+.login-points { color: #64725f; line-height: 2.4; font-size: 27rpx; margin: 40rpx 0; }
+.consent { margin: 30rpx 0; font-size: 25rpx; color: #61705f; min-height: 88rpx; display: flex; align-items: center; }
+.consent label { display: flex; align-items: center; gap: 10rpx; }
+.member-id { font-family: monospace; word-break: break-all; font-size: 25rpx; margin: 25rpx 0; }

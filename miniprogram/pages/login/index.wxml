@@ -1,0 +1,12 @@
+<view class="page login-page">
+  <view class="brand-mark">言</view><view class="eyebrow">KOTOBA / 日语选题</view>
+  <view class="headline"><view>好表达，</view><view>随手留住。</view></view><view class="sub"><view>手机上发现、筛选和取用灵感。</view><view>和电脑端共享同一个团队选题池。</view></view>
+  <view class="card login-points"><view>01　每天看一点新灵感</view><view>02　喜欢的词，一键收藏</view><view>03　文案和参考图，随时取用</view></view>
+  <view wx:if="{{error}}" class="notice error spaced">{{error}}</view>
+  <view wx:if="{{memberId}}" class="card"><view class="meaning">还差一次团队开通</view><view class="body">把下方成员编号交给管理员，开通后点“重新登录”。</view><view class="member-id">{{memberId}}</view><button class="secondary" bindtap="copyId">复制成员编号</button></view>
+  <checkbox-group bindchange="accept" class="consent"><label><checkbox value="agree" checked="{{accepted}}" color="#2f6654"/>我已了解团队使用与隐私说明</label></checkbox-group>
+  <button class="primary" bindtap="login" loading="{{busy}}" disabled="{{!accepted || busy}}">{{memberId ? '重新登录' : '微信登录团队'}}</button>
+  <button class="link" bindtap="privacy">查看使用与隐私说明</button>
+  <button class="ghost" bindtap="demo" disabled="{{busy}}">先体验交互示例 →</button>
+  <view class="footer-note">首次开通后，后续打开自动恢复登录</view>
+</view>

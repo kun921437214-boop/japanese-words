@@ -1,11 +1,15 @@
 const runtimeGlobals = Object.fromEntries([
-  'ALL_WORDS', 'AbortController', 'Blob', 'Buffer', 'DOMException', 'Element', 'Event', 'FileReader', 'Headers',
+  'ALL_WORDS', 'AbortController', 'AbortSignal', 'Blob', 'Buffer', 'DOMException', 'Element', 'Event', 'FileReader', 'Headers',
   'Intl', 'Request', 'Response', 'TextDecoder', 'TextEncoder', 'URL', 'URLSearchParams',
   'atob', 'clearTimeout', 'console', 'crypto', 'document', 'fetch', 'globalThis', 'localStorage',
   'navigator', 'performance', 'process', 'requestAnimationFrame', 'setTimeout', 'structuredClone', 'window'
 ].map(name => [name, 'readonly']));
 
 export default [
+  {
+    files: ['miniprogram/**/*.js'],
+    languageOptions: { sourceType: 'commonjs', globals: { wx: 'readonly', App: 'readonly', Page: 'readonly', getApp: 'readonly', require: 'readonly', module: 'readonly' } }
+  },
   {
     ignores: ['node_modules/**', 'words-data.js', 'shared/words-data.mjs', '.wrangler/**']
   },

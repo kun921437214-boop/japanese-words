@@ -1,0 +1,25 @@
+{
+  "description": "日语选题 · 手机工作台",
+  "appid": "touristappid",
+  "projectname": "日语选题",
+  "compileType": "miniprogram",
+  "libVersion": "3.10.3",
+  "miniprogramRoot": "./",
+  "setting": {
+    "es6": true,
+    "minified": true,
+    "urlCheck": true
+  },
+  "packOptions": {
+    "ignore": [
+      {
+        "type": "file",
+        "value": "README.md"
+      },
+      {
+        "type": "file",
+        "value": "package.json"
+      }
+    ]
+  }
+}

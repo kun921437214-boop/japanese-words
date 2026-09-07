@@ -1,0 +1,15 @@
+{
+  "pages": ["pages/today/index", "pages/pool/index", "pages/me/index", "pages/login/index", "pages/detail/index"],
+  "window": { "navigationBarTitleText": "日语选题", "navigationBarBackgroundColor": "#f7f7f2", "navigationBarTextStyle": "black", "backgroundColor": "#f7f7f2", "backgroundTextStyle": "dark" },
+  "tabBar": {
+    "color": "#727970", "selectedColor": "#2f6654", "backgroundColor": "#ffffff", "borderStyle": "white",
+    "list": [
+      { "pagePath": "pages/today/index", "text": "今日", "iconPath": "assets/today.png", "selectedIconPath": "assets/today-active.png" },
+      { "pagePath": "pages/pool/index", "text": "选题池", "iconPath": "assets/pool.png", "selectedIconPath": "assets/pool-active.png" },
+      { "pagePath": "pages/me/index", "text": "我的", "iconPath": "assets/me.png", "selectedIconPath": "assets/me-active.png" }
+    ]
+  },
+  "style": "v2",
+  "sitemapLocation": "sitemap.json",
+  "lazyCodeLoading": "requiredComponents"
+}
