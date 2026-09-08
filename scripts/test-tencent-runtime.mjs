@@ -10,6 +10,14 @@ import sharp from 'sharp';
 import { FileKV } from '../server/file-kv.mjs';
 import { LocalWorkflowCoordinator } from '../server/local-coordinator.mjs';
 import { dispatchPagesFunction, handleWebRequest, matchesSchedule } from '../server/tencent-runtime.mjs';
+import {
+  hasStoredReferenceImage,
+  runWeeklyContentCheck
+} from '../server/weekly-content-check.mjs';
+import {
+  getWeeklyContentHealthStorageKey,
+  getWeeklyContentWindow
+} from '../shared/weekly-content-health.mjs';
 
 const execFileAsync = promisify(execFile);
 
@@ -74,6 +82,7 @@ test('Tencent runtime dispatches existing API handlers', async () => {
   assert.equal(body.workflowCoordinatorConfigured, true);
   assert.equal(body.dailyOperations.todaySnapshot.status, 'unknown');
   assert.equal(body.dailyOperations.tomorrowDraft.status, 'unknown');
+  assert.equal(body.weeklyOperations.nextWeek.status, 'unknown');
   const missing = await handleWebRequest(new Request('https://bijinihaitan.cn/unknown'), env);
   assert.equal(missing.status, 404);
   await missing.arrayBuffer();
@@ -97,6 +106,153 @@ test('Tencent runtime dispatches existing API handlers', async () => {
   assert.ok((await thumbnail.arrayBuffer()).byteLength > 0);
   const thumbnailKey = `published-cover-thumbs/v1/${'a'.repeat(32)}.webp`;
   assert.ok((await env.REFERENCE_IMAGES_KV.getWithMetadata(thumbnailKey, { type: 'arrayBuffer' })).value.byteLength > 0);
+});
+
+test('weekly content window always targets the following Monday through Sunday', () => {
+  const window = getWeeklyContentWindow(new Date('2026-08-13T06:40:00.000Z'));
+  assert.deepEqual(window, {
+    runWeekStart: '2026-08-10',
+    targetWeekStart: '2026-08-17',
+    targetWeekEnd: '2026-08-23',
+    targetDateKeys: [
+      '2026-08-17', '2026-08-18', '2026-08-19', '2026-08-20',
+      '2026-08-21', '2026-08-22', '2026-08-23'
+    ]
+  });
+});
+
+test('weekly checker records and alerts when the entire next week is missing', async () => {
+  const env = await makeEnv();
+  await env.FAVORITES.put('favorites:global', JSON.stringify({ candidatePool: {} }));
+  const alertCalls = [];
+  const now = new Date('2026-08-13T06:40:00.000Z');
+  const result = await runWeeklyContentCheck({
+    workflowKv: env.FAVORITES,
+    imageKv: env.REFERENCE_IMAGES_KV,
+    now,
+    alertUrl: 'https://alerts.example.invalid/weekly',
+    async fetchImpl(url, options) {
+      alertCalls.push({ url, body: JSON.parse(options.body) });
+      return new Response('{}', { status: 200 });
+    }
+  });
+  assert.equal(result.status, 'unhealthy');
+  assert.equal(result.days.length, 7);
+  assert.ok(result.days.every(day => day.reasons.includes('draft_missing')));
+  assert.equal(alertCalls.length, 1);
+  assert.equal(alertCalls[0].body.event, 'japanese_words_weekly_content_health');
+  const stored = await env.FAVORITES.get(
+    getWeeklyContentHealthStorageKey('2026-08-10'),
+    'json'
+  );
+  assert.equal(stored.status, 'unhealthy');
+  assert.equal(stored.notification.sent, true);
+});
+
+test('weekly checker verifies 70 stored images and stops after the first healthy result', async () => {
+  const env = await makeEnv();
+  await env.FAVORITES.put('favorites:global', JSON.stringify({ candidatePool: {} }));
+  const now = new Date('2026-08-13T06:40:00.000Z');
+  const window = getWeeklyContentWindow(now);
+  for (const [dayIndex, targetDateKey] of window.targetDateKeys.entries()) {
+    const items = [];
+    for (let itemIndex = 0; itemIndex < 10; itemIndex += 1) {
+      const kanji = `week-${dayIndex}-word-${itemIndex}`;
+      const key = `codex-daily/${targetDateKey}/${kanji}.webp`;
+      await env.REFERENCE_IMAGES_KV.put(key, new Uint8Array([1, 2, 3]), {
+        expirationTtl: 60 * 24 * 60 * 60,
+        metadata: { contentType: 'image/webp' }
+      });
+      assert.equal(await hasStoredReferenceImage(env.REFERENCE_IMAGES_KV, key, { nowMs: now.getTime() }), true);
+      items.push({
+        kanji,
+        aiCard: {
+          referenceImage: {
+            status: 'ready',
+            key,
+            url: `/codex-image?key=${encodeURIComponent(key)}`
+          }
+        }
+      });
+    }
+    await env.FAVORITES.put(`codex-draft:global:${targetDateKey}`, JSON.stringify({ targetDateKey, items }));
+  }
+  const validateDraft = draft => ({
+    ...draft,
+    status: 'valid',
+    wordCount: 10,
+    cardReadyCount: 10,
+    imageReadyCount: 10,
+    validation: {
+      valid: true,
+      errors: [],
+      warnings: [],
+      recommendationAudit: {
+        items: draft.items.map(item => ({ semanticClusterKey: `cluster:${item.kanji}` }))
+      }
+    }
+  });
+  const first = await runWeeklyContentCheck({
+    workflowKv: env.FAVORITES,
+    imageKv: env.REFERENCE_IMAGES_KV,
+    now,
+    validateDraft
+  });
+  assert.equal(first.status, 'healthy');
+  assert.deepEqual(first.totals, {
+    words: 70,
+    cards: 70,
+    images: 70,
+    storedImages: 70,
+    errors: 0,
+    warnings: 0
+  });
+  const second = await runWeeklyContentCheck({
+    workflowKv: env.FAVORITES,
+    imageKv: env.REFERENCE_IMAGES_KV,
+    now: new Date('2026-08-14T06:40:00.000Z'),
+    validateDraft() {
+      throw new Error('healthy week must not be revalidated');
+    },
+    imageExists() {
+      throw new Error('healthy week must not reread images');
+    }
+  });
+  assert.equal(second.status, 'healthy');
+  assert.equal(second.skipped, true);
+  assert.equal(second.skipReason, 'already_verified');
+});
+
+test('health endpoint exposes the current server weekly-verification record', async () => {
+  const env = await makeEnv();
+  const nowWindow = getWeeklyContentWindow(new Date());
+  await env.FAVORITES.put(
+    getWeeklyContentHealthStorageKey(nowWindow.runWeekStart),
+    JSON.stringify({
+      status: 'healthy',
+      checkedAt: '2026-08-13T06:40:00.000Z',
+      totals: { words: 70, cards: 70, images: 70, storedImages: 70, errors: 0, warnings: 0 },
+      reasons: [],
+      days: [{
+        targetDateKey: nowWindow.targetWeekStart,
+        status: 'valid',
+        valid: true,
+        wordCount: 10,
+        cardReadyCount: 10,
+        imageReadyCount: 10,
+        imageStorageReadyCount: 10,
+        errorCount: 0,
+        warningCount: 0,
+        reasons: []
+      }],
+      notification: { configured: false, sent: false }
+    })
+  );
+  const response = await handleWebRequest(new Request('https://bijinihaitan.cn/healthz'), env);
+  const body = await response.json();
+  assert.equal(body.weeklyOperations.nextWeek.status, 'healthy');
+  assert.equal(body.weeklyOperations.nextWeek.totals.storedImages, 70);
+  assert.equal(body.weeklyOperations.nextWeek.days[0].imageStorageReadyCount, 10);
 });
 
 test('Tencent runtime exposes waitUntil so long Pages jobs return before background completion', async () => {
@@ -143,6 +299,29 @@ test('Tencent installer changes into the resolved repository before relative ins
   assert.ok(changeDirectoryAt < installer.indexOf('install -m 0600 server/tencent.env.example'));
   assert.ok(changeDirectoryAt < installer.indexOf('npm ci'));
   assert.match(installer, /\/var\/lib\/letsencrypt\/\.well-known\/acme-challenge/);
+  assert.match(installer, /japanese-words-weekly-check\.service/);
+  assert.match(installer, /japanese-words-weekly-check\.timer/);
+});
+
+test('weekly Production verification uses an isolated guarded systemd timer', async () => {
+  const service = await readFile(new URL('../server/systemd/japanese-words-weekly-check.service', import.meta.url), 'utf8');
+  const timer = await readFile(new URL('../server/systemd/japanese-words-weekly-check.timer', import.meta.url), 'utf8');
+  const runner = await readFile(new URL('../server/run-weekly-content-check.sh', import.meta.url), 'utf8');
+  const activator = await readFile(new URL('../server/activate-weekly-content-check.sh', import.meta.url), 'utf8');
+  assert.match(service, /Type=oneshot/);
+  assert.match(service, /MemoryMax=384M/);
+  assert.match(service, /CPUQuota=25%/);
+  assert.match(service, /ReadWritePaths=\/var\/lib\/japanese-words/);
+  assert.doesNotMatch(service, /ReadWritePaths=.*var\/backups/);
+  assert.match(timer, /OnCalendar=Tue\.\.Sun \*-\*-\* 14:40:00 Asia\/Shanghai/);
+  assert.match(timer, /Persistent=true/);
+  assert.match(runner, /flock --nonblock --exclusive/);
+  assert.match(runner, /runtime\/node-current\/bin\/node/);
+  assert.match(activator, /--confirm=ACTIVATE_WEEKLY_CHECK/);
+  assert.match(activator, /--expected-commit=<full lowercase Git hash>/);
+  assert.match(activator, /node server\/tencent-backup\.mjs/);
+  assert.match(activator, /Protected unit restarted during activation/);
+  assert.doesNotMatch(activator, /systemctl restart japanese-words\.service/);
 });
 
 test('Tencent Node 22 upgrade is pinned, explicit, backed up, and reversible', async () => {

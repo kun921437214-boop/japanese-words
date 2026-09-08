@@ -12,6 +12,7 @@ Production uses the existing Tencent Cloud Lighthouse instance in Beijing:
 - The primary official Xiaohongshu published-data import is a separate Codex automation at 13:20 Asia/Shanghai, before Monday's 14:30 next-week content generation.
 - Daily fallback completion is checked synchronously. The scheduler does not mark a queued or failed DeepSeek refresh as successful.
 - At 00:10 Asia/Shanghai the runtime verifies the current snapshot; at 17:15 it verifies the next-day Codex draft. Health records stay in FileKV, and an optional `OPS_ALERT_WEBHOOK_URL` receives failure/recovery JSON notifications.
+- An isolated systemd oneshot verifies the complete following week at 14:40 Asia/Shanghai from Tuesday through Sunday. It has its own lock, CPU/memory limits, persistent timer, and `operations-health:weekly:*` stop marker; it never generates or repairs content.
 - Pages Functions receive a real `waitUntil` implementation, so long DeepSeek jobs are queued in the Node process instead of holding the Nginx request open until a 504.
 - A systemd timer writes a complete state bundle every day at 15:00 Asia/Shanghai. The bundle includes the main workflow, auxiliary workflow KV keys such as Codex drafts, and all reference images.
 - Cloudflare Pages, Worker, KV, and the coordinator remain intact during the rollback window; only Worker cron triggers are disabled after Tencent scheduling is verified.
@@ -82,6 +83,15 @@ systemctl enable --now nginx
 curl -H 'Host: bijinihaitan.cn' http://127.0.0.1/healthz
 SITE_URL=http://127.0.0.1 npm run smoke:production
 ```
+
+The weekly checker is activated only after its reviewed code commit is deployed and pinned:
+
+```bash
+npm run activate:weekly-check -- --expected-commit=<full-40-character-git-hash> --dry-run
+npm run activate:weekly-check -- --expected-commit=<full-40-character-git-hash> --confirm=ACTIVATE_WEEKLY_CHECK
+```
+
+Keep the existing Codex Tuesday-to-Sunday verification/recovery automation active until the first server weekly-health record is visible. Then disable the duplicate recurring check and invoke Codex repair only for an unhealthy server record.
 
 Before DNS changes:
 

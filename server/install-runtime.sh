@@ -31,6 +31,8 @@ install -m 0644 server/nginx/japanese-words-http.conf /etc/nginx/conf.d/japanese
 install -m 0644 server/systemd/japanese-words.service /etc/systemd/system/japanese-words.service
 install -m 0644 server/systemd/japanese-words-backup.service /etc/systemd/system/japanese-words-backup.service
 install -m 0644 server/systemd/japanese-words-backup.timer /etc/systemd/system/japanese-words-backup.timer
+install -m 0644 server/systemd/japanese-words-weekly-check.service /etc/systemd/system/japanese-words-weekly-check.service
+install -m 0644 server/systemd/japanese-words-weekly-check.timer /etc/systemd/system/japanese-words-weekly-check.timer
 
 systemctl daemon-reload
 nginx -t
