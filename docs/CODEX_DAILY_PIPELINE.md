@@ -72,7 +72,7 @@ exports/codex-daily/<目标日期>/images/
 exports/codex-daily/<目标日期>/image-uploads.json
 ```
 
-`progress.json` 记录 `completedDays`、`reservedWords`、`nextTargetDate` 和逐日阶段。每完成一天立即落盘，再继续下一天；中断后从最早未完成日期恢复，不重做已 valid 日期、ready 词卡或 ready 图片。
+`progress.json` 记录 `completedDays`、`reservedWords`、`nextTargetDate` 和逐日阶段。每完成一天立即落盘，再继续下一天；中断后从最早未完成日期恢复，不重做已通过当前规则与视觉 QA 的日期、词卡或图片。ready 仅表示内容/存储就绪，不代表视觉验收通过；失败的未来图片可按 docs/CONTENT_PRODUCTION_RULES.md 定向修复，并保留旧版本和原因。
 
 `complete.json` 表示周一生成与上传已完成；`verification.json` 表示周二起的独立 Production 整周验收已通过。验收标记必须包含本周周一、下周日期范围、7 天逐日计数和检查时间；旧周标记不得复用。
 
@@ -124,6 +124,10 @@ Cloudflare Pages、Worker、KV 和协调器只作为回滚资源保留；其 Wor
 - 离线 bundle：`/Users/kun/Documents/Codex/japanese-words-backups/japanese-words-pre-codex-pipeline-2026-07-13.bundle`
 
 回滚时部署上述 tag 对应的 Pages 与 Worker，并重新启用旧 Worker cron；不要清 KV、图片 KV 或 R2。暂停腾讯云调度并把 Codex heartbeat 的站点地址切回旧站后，旧 Worker 才能恢复午夜 DeepSeek 流程。
+
+## 2026-10 整理准备状态
+
+本次整理仍未部署、未修改线上任务。当前本地定时任务仍按原配置运行。拟切换职责和批准步骤见 `docs/OPERATIONS_ROLLOUT.md`；腾讯检查不生成内容，也不能被描述为已完成内容生产迁云。
 
 ## 固定任务行为
 

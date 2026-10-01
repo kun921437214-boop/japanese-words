@@ -1,0 +1,20 @@
+[Unit]
+Description=Japanese Words daily Feishu operations summary
+After=network-online.target japanese-words.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=japanese-words
+Group=japanese-words
+WorkingDirectory=/opt/japanese-words/app
+EnvironmentFile=/etc/japanese-words.env
+EnvironmentFile=-/etc/japanese-words-ops-alert.env
+ExecStart=/opt/japanese-words/runtime/node-current/bin/node server/operations-report.mjs --send
+TimeoutStartSec=2min
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/japanese-words
+UMask=0077

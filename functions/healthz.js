@@ -1,5 +1,6 @@
 import { getRequestId, jsonResponse, optionsResponse } from '../shared/api-security.mjs';
 import { addDays, dateKey } from '../shared/rankings.mjs';
+import { getWeeklyContentWindow, getWeeklyContentHealthStorageKey } from '../shared/weekly-content-health.mjs';
 
 function summarizeDailyHealth(record, targetDateKey) {
   return {
@@ -28,18 +29,29 @@ export async function onRequest({ request, env }) {
   const currentDateKey = dateKey(new Date());
   const tomorrowDateKey = addDays(currentDateKey, 1);
   const healthStorageReadable = storageConfigured && typeof env.FAVORITES.get === 'function';
-  const [snapshotHealth, draftHealth] = healthStorageReadable
+  const weeklyWindow = getWeeklyContentWindow();
+  const [snapshotHealth, draftHealth, weeklyHealth] = healthStorageReadable
     ? await Promise.all([
       env.FAVORITES.get(`operations-health:daily:today-snapshot:${currentDateKey}`, 'json'),
-      env.FAVORITES.get(`operations-health:daily:tomorrow-draft:${tomorrowDateKey}`, 'json')
+      env.FAVORITES.get(`operations-health:daily:tomorrow-draft:${tomorrowDateKey}`, 'json'),
+      env.FAVORITES.get(getWeeklyContentHealthStorageKey(weeklyWindow.runWeekStart), 'json')
     ])
-    : [null, null];
+    : [null, null, null];
   const response = jsonResponse(request, env, {
     ok: storageConfigured,
     service: 'japanese-words-pages',
     storageConfigured,
     workflowCoordinatorConfigured,
     imageStorageConfigured,
+    weeklyOperations: {
+      runWeekStart: weeklyWindow.runWeekStart,
+      targetWeekStart: weeklyWindow.targetWeekStart,
+      targetWeekEnd: weeklyWindow.targetWeekEnd,
+      status: ['healthy', 'unhealthy'].includes(weeklyHealth?.status) ? weeklyHealth.status : 'unknown',
+      checkedAt: String(weeklyHealth?.checkedAt || ''),
+      notificationConfigured: Boolean(weeklyHealth?.notification?.configured),
+      notificationSent: Boolean(weeklyHealth?.notification?.sent)
+    },
     dailyOperations: {
       todaySnapshot: summarizeDailyHealth(snapshotHealth, currentDateKey),
       tomorrowDraft: summarizeDailyHealth(draftHealth, tomorrowDateKey)

@@ -88,6 +88,7 @@ function buildRuntimeEnv(options = {}) {
     DEEPSEEK_MODEL: process.env.DEEPSEEK_MODEL || '',
     AUTO_REFRESH_SECRET: process.env.AUTO_REFRESH_SECRET || '',
     OPS_ALERT_WEBHOOK_URL: process.env.OPS_ALERT_WEBHOOK_URL || '',
+    OPS_ALERT_SIGNING_SECRET: process.env.OPS_ALERT_SIGNING_SECRET || '',
     ADMIN_API_TOKEN: process.env.ADMIN_API_TOKEN || '',
     CODEX_AUTOMATION_SECRET: process.env.CODEX_AUTOMATION_SECRET || '',
     TEAM_ACCESS_EMAILS: process.env.TEAM_ACCESS_EMAILS || '',

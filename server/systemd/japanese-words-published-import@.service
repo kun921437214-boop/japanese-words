@@ -1,0 +1,20 @@
+[Unit]
+Description=Japanese Words approved official export import (%i)
+After=japanese-words.service
+Requires=japanese-words.service
+
+[Service]
+Type=oneshot
+User=japanese-words
+Group=japanese-words
+WorkingDirectory=/opt/japanese-words/app
+EnvironmentFile=/etc/japanese-words.env
+EnvironmentFile=-/etc/japanese-words-ops-alert.env
+ExecStart=/opt/japanese-words/runtime/node-current/bin/node server/published-import-run.mjs /var/lib/japanese-words/published-import-inbox/%i.json --confirm=IMPORT_PUBLISHED
+TimeoutStartSec=3min
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/japanese-words
+UMask=0077
