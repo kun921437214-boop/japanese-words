@@ -285,9 +285,13 @@ umask 022
 worktree_parent="$(mktemp -d /tmp/japanese-words-deploy.XXXXXX)"
 release_dir="${worktree_parent}/release"
 staged_dist="$(mktemp -d /opt/japanese-words/.dist-next.XXXXXX)"
+staged_dependencies="$(mktemp -d /opt/japanese-words/.dependencies-next.XXXXXX)"
 previous_dist="/opt/japanese-words/.dist-previous-${current_short}-$(date -u +%Y%m%dT%H%M%SZ)"
 failed_dist="/opt/japanese-words/.dist-failed-${target_short}-$(date -u +%Y%m%dT%H%M%SZ)"
+previous_dependencies="/opt/japanese-words/.dependencies-previous-${current_short}-$(date -u +%Y%m%dT%H%M%SZ)"
+failed_dependencies="/opt/japanese-words/.dependencies-failed-${target_short}-$(date -u +%Y%m%dT%H%M%SZ)"
 dist_swapped=false
+dependencies_swapped=false
 code_advanced=false
 
 cleanup() {
@@ -297,6 +301,12 @@ cleanup() {
     if ! rmdir "${staged_dist}" >/dev/null 2>&1; then
       mv "${staged_dist}" "${failed_dist}" >/dev/null 2>&1 || true
       echo "Preserved the failed staged artifact at ${failed_dist}." >&2
+    fi
+  fi
+  if [[ -d "${staged_dependencies}" ]]; then
+    if ! rmdir "${staged_dependencies}" >/dev/null 2>&1; then
+      mv "${staged_dependencies}" "${failed_dependencies}" >/dev/null 2>&1 || true
+      echo "Preserved failed staged dependencies at ${failed_dependencies}." >&2
     fi
   fi
 }
@@ -309,12 +319,28 @@ rollback() {
     mv "${app_dir}/dist" "${failed_dist}"
     mv "${previous_dist}" "${app_dir}/dist"
   fi
+  if [[ "${dependencies_swapped}" == true ]]; then
+    mv "${app_dir}/node_modules" "${failed_dependencies}"
+    mv "${previous_dependencies}" "${app_dir}/node_modules"
+    dependencies_swapped=false
+  fi
   if [[ "${code_advanced}" == true ]]; then
     git -C "${app_dir}" reset --hard "${current_commit}"
   fi
   systemctl restart japanese-words.service
   systemctl reload nginx
   set -e
+}
+
+swap_runtime_dependencies() {
+  if ! mv "${app_dir}/node_modules" "${previous_dependencies}"; then
+    return 1
+  fi
+  if ! mv "${staged_dependencies}" "${app_dir}/node_modules"; then
+    mv "${previous_dependencies}" "${app_dir}/node_modules"
+    return 1
+  fi
+  dependencies_swapped=true
 }
 
 echo "Preparing and validating ${target_short} outside the live directory..."
@@ -331,6 +357,8 @@ git worktree add --detach "${release_dir}" "${target_commit}"
 cp -a "${release_dir}/dist/." "${staged_dist}/"
 # mktemp directories remain 0700 regardless of the shell's umask.
 chmod 0755 "${staged_dist}"
+cp -a "${release_dir}/node_modules/." "${staged_dependencies}/"
+chmod 0755 "${staged_dependencies}"
 echo "Creating a complete workflow and image backup..."
 node server/tencent-backup.mjs
 
@@ -341,6 +369,11 @@ fi
 code_advanced=true
 
 if ! nginx -t; then
+  rollback
+  exit 1
+fi
+
+if ! swap_runtime_dependencies; then
   rollback
   exit 1
 fi
@@ -395,7 +428,9 @@ fi
 
 install -d -m 0700 "${backup_root}/releases"
 mv "${previous_dist}" "${backup_root}/releases/"
+mv "${previous_dependencies}" "${backup_root}/releases/"
 dist_swapped=false
+dependencies_swapped=false
 
 echo "Production deployment completed: ${current_short} -> ${target_short}"
 echo "Run SITE_URL=https://bijinihaitan.cn npm run smoke:production from a trusted workstation."

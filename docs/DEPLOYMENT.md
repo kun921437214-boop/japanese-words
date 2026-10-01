@@ -84,6 +84,14 @@ The override is rejected unless the bundle HEAD, fetched target commit, and
 target `package-lock.json` digest all match the pinned values. The normal
 dependency-free path remains unchanged.
 
+The tested `node_modules` directory is staged on the application filesystem and
+switched with the code and static build. Failed switches or health checks restore
+the previous dependencies before restarting the application. A successful release
+preserves the old dependency directory beside the previous static artifact under
+the private releases backup directory. A lockfile approval alone does not prove
+that the running process uses the patched package; verify the installed version
+and the application's health after deployment.
+
 After it succeeds, run the read-only smoke check from a trusted workstation and visually check the affected desktop and mobile workflows. A GitHub push is never sufficient authorization to run this command.
 
 ### Reviewed Node 22 runtime upgrade
