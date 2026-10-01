@@ -1,0 +1,11 @@
+[Unit]
+Description=Daily Japanese Words Feishu summary after backup
+
+[Timer]
+OnCalendar=*-*-* 15:10:00 Asia/Shanghai
+Persistent=true
+AccuracySec=1min
+Unit=japanese-words-operations-report.service
+
+[Install]
+WantedBy=timers.target

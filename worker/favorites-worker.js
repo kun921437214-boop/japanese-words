@@ -1,3 +1,4 @@
+import { sendOperationsNotification } from '../shared/operations-alert.mjs';
 import {
   addDays,
   buildRankingForDate,
@@ -110,11 +111,9 @@ async function readLimitedText(response, maxLength = 500) {
 }
 
 function cleanAlertUrl(value) {
-  const text = String(value || '').trim();
-  if (!text) return '';
   try {
-    const url = new URL(text);
-    return ['https:', 'http:'].includes(url.protocol) ? url.toString() : '';
+    const url = new URL(String(value || '').trim());
+    return url.protocol === 'https:' ? url.toString() : '';
   } catch {
     return '';
   }
@@ -125,37 +124,11 @@ function dailyHealthStorageKey(kind, targetDateKey) {
 }
 
 async function sendOperationsAlert(env, record, options = {}) {
-  const webhookUrl = cleanAlertUrl(env.OPS_ALERT_WEBHOOK_URL);
-  if (!webhookUrl) return { configured: false, sent: false, error: '' };
-  const fetchImpl = options.fetchImpl || fetch;
-  const stateLabel = record.status === 'healthy' ? '恢复' : '异常';
-  try {
-    const response = await fetchImpl(webhookUrl, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        text: `[japanese-words] 每日内容${stateLabel}：${record.kind} ${record.targetDateKey}（${record.reasons.join('；') || '检查通过'}）`,
-        event: 'japanese_words_daily_health',
-        status: record.status,
-        kind: record.kind,
-        targetDateKey: record.targetDateKey,
-        reasons: record.reasons,
-        checkedAt: record.checkedAt
-      }),
-      signal: globalThis.AbortSignal?.timeout?.(10_000)
-    });
-    if (!response.ok) {
-      const message = await readLimitedText(response);
-      throw new Error(`HTTP ${response.status}${message ? `: ${message}` : ''}`);
-    }
-    return { configured: true, sent: true, error: '' };
-  } catch (error) {
-    return {
-      configured: true,
-      sent: false,
-      error: String(error?.message || error).slice(0, 500)
-    };
-  }
+  return sendOperationsNotification(env, {
+    text: `[japanese-words] 每日内容${record.status === 'healthy' ? '恢复' : '异常'}：${record.kind} ${record.targetDateKey}（${record.reasons.join('；') || '检查通过'}）`,
+    event: 'japanese_words_daily_health', status: record.status, kind: record.kind,
+    targetDateKey: record.targetDateKey, reasons: record.reasons, checkedAt: record.checkedAt
+  }, options);
 }
 
 function buildDraftHealthRecord(draft, targetDateKey, checkedAt) {
