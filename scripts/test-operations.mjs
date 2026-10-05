@@ -13,7 +13,8 @@ import { getWeeklyContentWindow } from '../shared/weekly-content-health.mjs';
 import { runPublishedImport, validateOfficialPayload } from '../server/published-import-run.mjs';
 import { handleWebRequest } from '../server/tencent-runtime.mjs';
 import { LocalWorkflowCoordinator } from '../server/local-coordinator.mjs';
-import { collectOperationsReport, runOperationsReport } from '../server/operations-report.mjs';
+import { collectOperationsReport, formatOperationsReport, runOperationsReport } from '../server/operations-report.mjs';
+import { getCodexDraftStorageKey } from '../shared/codex-daily-draft.mjs';
 
 const WEBHOOK = 'https://open.feishu.cn/open-apis/bot/v2/hook/placeholder-test-only';
 const NOW = new Date();
@@ -140,4 +141,126 @@ test('daily report distinguishes not-due checks from missing results and retries
   assert.equal((await runOperationsReport({ ...options, fetchImpl: async () => Response.json({ code: 19024 }) })).notification.sent, false);
   assert.equal((await runOperationsReport({ ...options, fetchImpl: async () => Response.json({ code: 0 }) })).notification.sent, true);
   assert.equal((await runOperationsReport({ ...options, fetchImpl: () => { throw new Error('unexpected repeated send'); } })).skipped, true);
+});
+
+async function reportFixture(t, now = new Date('2026-10-04T07:10:00Z')) {
+  const kv = new FileKV(await temporary(t));
+  const today = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit' }).format(now);
+  const words = Array.from({ length: 10 }, (_, index) => `report-fixture-${index}`);
+  await kv.put('favorites:global', JSON.stringify({ revision: 281, todaySnapshot: { dateKey: today, words, source: 'codex_draft' },
+    candidatePool: Object.fromEntries(words.map(word => [word, { aiCard: { cardStatus: 'ready', referenceImage: { status: 'ready' } } }])) }));
+  const window = getWeeklyContentWindow(now);
+  await kv.put(`operations-health:weekly:next-week:${window.runWeekStart}`, JSON.stringify({ status: 'healthy', targetWeekStart: window.targetWeekStart, targetWeekEnd: window.targetWeekEnd }));
+  return { now, workflowKv: kv, backup: { createdAt: new Date(now.getTime() - 60000).toISOString(), revision: 281 } };
+}
+
+function tomorrowFixture(targetDateKey, images = 10) {
+  return { targetDateKey, status: 'valid', validation: { valid: true }, updatedAt: '2026-10-04T09:00:00Z',
+    items: Array.from({ length: 10 }, (_, index) => ({ kanji: `tomorrow-fixture-${index}`, aiCard: {
+      cardStatus: 'ready', referenceImage: { status: index < images ? 'ready' : 'pending', url: '/reference-image?key=fixture' }
+    } })) };
+}
+
+test('official missing confirmation, explicit failure, not-due and success stay distinct', async t => {
+  const base = await reportFixture(t);
+  const key = 'operations-health:published:official-import:2026-10-04';
+  const missing = await collectOperationsReport(base);
+  assert.equal(missing.published.status, 'unverified');
+  assert.equal(missing.priority, 'verify');
+  assert.match(formatOperationsReport(missing), /这不能证明同步失败/);
+  assert.equal(missing.problems.includes('official_import_failed'), false);
+  await base.workflowKv.put(key, JSON.stringify({ status: 'preview' }));
+  assert.equal((await collectOperationsReport(base)).published.status, 'unverified');
+  await base.workflowKv.put(key, JSON.stringify({ status: 'failed', error: 'READBACK_MISMATCH' }));
+  const failed = await collectOperationsReport(base);
+  assert.equal(failed.published.status, 'failed');
+  assert.equal(failed.priority, 'action');
+  assert.match(formatOperationsReport(failed), /实测问题/);
+  assert.doesNotMatch(formatOperationsReport(failed), /READBACK_MISMATCH/);
+  await base.workflowKv.delete(key);
+  const pending = await collectOperationsReport({ ...base, now: new Date('2026-10-04T04:00:00Z'), backup: null });
+  assert.equal(pending.published.status, 'pending');
+  assert.equal(pending.backup.status, 'pending');
+  assert.equal(pending.problems.includes('backup_not_current'), false);
+  await base.workflowKv.put(key, JSON.stringify({ status: 'verified', checkedAt: '2026-10-04T05:30:00Z' }));
+  const verified = await collectOperationsReport(base);
+  assert.equal(verified.published.status, 'verified');
+  assert.match(formatOperationsReport(verified), /已同步，并核对了保存结果/);
+});
+
+test('tomorrow uses Shanghai dates across month, year and UTC date boundaries without invented counts', async t => {
+  for (const [instant, today, tomorrow] of [
+    ['2026-01-31T15:30:00Z', '2026-01-31', '2026-02-01'],
+    ['2026-12-31T15:30:00Z', '2026-12-31', '2027-01-01'],
+    ['2026-12-31T16:30:00Z', '2027-01-01', '2027-01-02']
+  ]) {
+    const report = await collectOperationsReport(await reportFixture(t, new Date(instant)));
+    assert.equal(report.dateKey, today);
+    assert.equal(report.tomorrow.targetDateKey, tomorrow);
+    assert.equal(report.tomorrow.countsKnown, false);
+    assert.equal(report.tomorrow.words, null);
+    const section = formatOperationsReport(report).split('二、明日内容')[1].split('三、下周准备')[0];
+    assert.match(section, /数量尚未确认/);
+    assert.doesNotMatch(section, /10个词|10张词卡|10张配图|检查未通过/);
+  }
+});
+
+test('tomorrow awaits scheduled time or missing checkedAt and rejects stale or incomplete positive checks', async t => {
+  const base = await reportFixture(t, new Date('2026-10-04T09:20:00Z'));
+  const draftKey = getCodexDraftStorageKey('2026-10-05');
+  const healthKey = 'operations-health:daily:tomorrow-draft:2026-10-05';
+  await base.workflowKv.put(draftKey, JSON.stringify(tomorrowFixture('2026-10-05', 8)));
+  await base.workflowKv.put(healthKey, JSON.stringify({ targetDateKey: '2026-10-05', status: 'healthy', wordCount: 10, cardReadyCount: 10, imageReadyCount: 8 }));
+  let report = await collectOperationsReport(base);
+  assert.equal(report.tomorrow.images, 8);
+  assert.equal(report.tomorrow.status, 'unverified');
+  assert.equal(report.problems.includes('tomorrow_check_failed'), false);
+  await base.workflowKv.put(healthKey, JSON.stringify({ targetDateKey: '2026-10-05', status: 'unhealthy' }));
+  assert.equal((await collectOperationsReport(base)).tomorrow.status, 'unverified');
+  await base.workflowKv.delete(healthKey);
+  assert.equal((await collectOperationsReport(base)).tomorrow.status, 'unverified');
+  const health = { targetDateKey: '2026-10-05', status: 'healthy', checkedAt: '2026-10-04T09:16:00Z', wordCount: 10, cardReadyCount: 10, imageReadyCount: 10 };
+  await base.workflowKv.put(healthKey, JSON.stringify(health));
+  report = await collectOperationsReport(base);
+  assert.equal(report.tomorrow.status, 'unverified');
+  assert.doesNotMatch(formatOperationsReport(report).split('二、明日内容')[1].split('三、下周准备')[0], /检查已通过/);
+  await base.workflowKv.put(draftKey, JSON.stringify(tomorrowFixture('2026-10-05')));
+  assert.equal((await collectOperationsReport(base)).tomorrow.status, 'verified');
+  await base.workflowKv.put(draftKey, JSON.stringify({ ...tomorrowFixture('2026-10-05'), updatedAt: '2026-10-04T09:18:00Z' }));
+  assert.equal((await collectOperationsReport(base)).tomorrow.status, 'unverified');
+  await base.workflowKv.put(draftKey, JSON.stringify(tomorrowFixture('2026-10-05')));
+  await base.workflowKv.put(healthKey, JSON.stringify({ ...health, status: 'unhealthy' }));
+  assert.equal((await collectOperationsReport(base)).tomorrow.status, 'failed');
+  const early = await collectOperationsReport({ ...base, now: new Date('2026-10-04T07:10:00Z') });
+  assert.equal(early.tomorrow.status, 'pending');
+  assert.equal(early.problems.includes('tomorrow_check_failed'), false);
+});
+
+test('Chinese historical preview preserves October 4 facts, section order and Beijing backup time', async t => {
+  const base = await reportFixture(t);
+  const report = await collectOperationsReport({ ...base, backup: { createdAt: '2026-10-04T07:01:00.505Z', revision: 281 } });
+  const text = formatOperationsReport(report);
+  assert.match(text, /每日汇总｜2026年10月4日/);
+  assert.match(text, /今日内容（2026年10月4日）/);
+  assert.match(text, /明日内容（2026年10月5日）/);
+  assert.match(text, /下周准备（2026年10月5日至2026年10月11日）/);
+  assert.match(text, /北京时间2026年10月4日 15:01/);
+  assert.match(text, /不代表已在小红书发布/);
+  assert.match(text, /质检需另行确认/);
+  assert.doesNotMatch(text, /codex_draft|healthy|missing_or_failed|revision|systemd|281|[A-Za-z]/);
+  const positions = ['一、今日内容', '二、明日内容', '三、下周准备', '四、待处理与下一步', '五、备份'].map(label => text.indexOf(label));
+  assert.deepEqual(positions, [...positions].sort((a, b) => a - b));
+  assert.equal(positions.every(position => position >= 0), true);
+});
+
+test('weekly failure shows actual dated gaps, and a record for another week cannot count as success', async t => {
+  const base = await reportFixture(t);
+  const key = 'operations-health:weekly:next-week:2026-09-28';
+  await base.workflowKv.put(key, JSON.stringify({ status: 'unhealthy', targetWeekStart: '2026-10-05', targetWeekEnd: '2026-10-11',
+    days: [{ targetDateKey: '2026-10-05', valid: false, wordCount: 6, cardReadyCount: 7, imageStorageReadyCount: 5 }] }));
+  const failed = await collectOperationsReport(base);
+  assert.equal(failed.priority, 'action');
+  assert.match(formatOperationsReport(failed), /2026年10月5日：还缺4个词、3张词卡、5张可读取配图/);
+  await base.workflowKv.put(key, JSON.stringify({ status: 'healthy', targetWeekStart: '2026-09-28', targetWeekEnd: '2026-10-04' }));
+  assert.equal((await collectOperationsReport(base)).weekly.status, 'unverified');
 });
