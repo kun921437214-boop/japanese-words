@@ -1,5 +1,16 @@
 import { cleanDateKey } from '../shared/rankings.mjs';
 import {
+  codexBytesSha256,
+  codexOperationFailure,
+  codexOperationIdFromHeader,
+  codexOperationScope,
+  codexValueSha256,
+  executeCodexOperation,
+  lookupCodexOperation,
+  requireCodexOperationId,
+  withCodexWrite
+} from '../shared/codex-operation.mjs';
+import {
   API_LIMITS,
   authorizeRequest,
   errorResponse,
@@ -70,6 +81,15 @@ async function writeImage(storage, key, bytes, contentType) {
   });
 }
 
+async function inspectImageEffect(storage, record) {
+  if (record.effect.storage !== storage.kind) return 'conflict';
+  const object = await readImage(storage, record.effect.key);
+  if (!object) return 'absent';
+  const bytes = await new Response(object.body).arrayBuffer();
+  return object.contentType === record.effect.contentType && bytes.byteLength === record.effect.size
+    && await codexBytesSha256(bytes) === record.effect.bytesSha256 ? 'complete' : 'conflict';
+}
+
 export async function onRequest({ request, env }) {
   const requestId = getRequestId(request);
   const respond = (body, status = 200) => jsonResponse(request, env, body, status, { methods: METHODS, requestId });
@@ -78,6 +98,23 @@ export async function onRequest({ request, env }) {
   const storage = getImageStorage(env);
   if (!storage) return fail(503, 'IMAGE_STORAGE_NOT_CONFIGURED', '参考图片存储尚未配置');
   const url = new URL(request.url);
+
+  if (request.method === 'GET' && url.searchParams.has('operationId')) {
+    const authorization = await authorizeRequest(request, env, { allowCodexAutomation: true });
+    if (!authorization.ok) return unauthorizedResponse(request, env, authorization, { methods: METHODS, requestId });
+    if (!['codex_automation_secret', 'admin_token', 'local_dev'].includes(authorization.method)) {
+      return fail(403, 'OPERATION_LOOKUP_FORBIDDEN', '当前身份不能查询上传操作');
+    }
+    try {
+      const identity = { scope: codexOperationScope(url), kind: 'image',
+        operationId: requireCodexOperationId(url.searchParams.get('operationId')) };
+      const operation = await lookupCodexOperation(env, identity, record => inspectImageEffect(storage, record));
+      return respond({ ok: true, operation });
+    } catch (error) {
+      const failure = codexOperationFailure(error);
+      return fail(failure.status, failure.code, '上传操作状态无法确认');
+    }
+  }
 
   if (request.method === 'GET') {
     const key = cleanKey(url.searchParams.get('key'));
@@ -115,18 +152,40 @@ export async function onRequest({ request, env }) {
     return fail(413, 'IMAGE_TOO_LARGE', `参考图片不能为空且不能超过 ${sizeLimit}`);
   }
 
-  const safeWord = encodeURIComponent(word).replace(/%/g, '_');
-  const key = `codex-daily/${targetDateKey}/${safeWord}-${crypto.randomUUID()}.${extension}`;
-  await writeImage(storage, key, bytes, contentType);
-  const imageUrl = new URL('/codex-image', url.origin);
-  imageUrl.searchParams.set('key', key);
-  return respond({
-    ok: true,
-    key,
-    url: `${imageUrl.pathname}${imageUrl.search}`,
-    contentType,
-    size: bytes.byteLength,
-    storage: storage.kind,
-    expiresInSeconds: storage.kind === 'kv' ? KV_IMAGE_TTL_SECONDS : null
-  });
+  const scope = codexOperationScope(url);
+  const resultForKey = key => {
+    const imageUrl = new URL('/codex-image', url.origin);
+    imageUrl.searchParams.set('key', key);
+    return { ok: true, key, url: `${imageUrl.pathname}${imageUrl.search}`, contentType,
+      size: bytes.byteLength, storage: storage.kind,
+      expiresInSeconds: storage.kind === 'kv' ? KV_IMAGE_TTL_SECONDS : null };
+  };
+  try {
+    const operationId = codexOperationIdFromHeader(request);
+    if (!operationId) {
+      return await withCodexWrite(env, scope, async () => {
+        const safeWord = encodeURIComponent(word).replace(/%/g, '_');
+        const key = `codex-daily/${targetDateKey}/${safeWord}-${crypto.randomUUID()}.${extension}`;
+        await writeImage(storage, key, bytes, contentType);
+        return respond(resultForKey(key));
+      });
+    }
+    const bytesSha256 = await codexBytesSha256(bytes);
+    const inputSha256 = await codexValueSha256({ targetDateKey, word, contentType, bytesSha256 });
+    const identity = { scope, kind: 'image', operationId, target: `${targetDateKey}:${word}`, inputSha256 };
+    const result = await executeCodexOperation(env, identity, {
+      prepare: async () => {
+        const keyHash = await codexValueSha256({ scope, operationId });
+        const key = `codex-daily/${targetDateKey}/${keyHash}.${extension}`;
+        return { effect: { key, bytesSha256, contentType, size: bytes.byteLength, storage: storage.kind },
+          response: { status: 200, body: resultForKey(key) } };
+      },
+      inspect: record => inspectImageEffect(storage, record),
+      apply: record => writeImage(storage, record.effect.key, bytes, record.effect.contentType)
+    });
+    return respond({ ...result.body, operation: result.operation }, result.status);
+  } catch (error) {
+    const failure = codexOperationFailure(error);
+    return fail(failure.status, failure.code, '上传操作未能确认完成');
+  }
 }

@@ -1,4 +1,5 @@
 import { createServer } from 'node:http';
+import cluster from 'node:cluster';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { onRequest as middleware } from '../functions/_middleware.js';
@@ -270,7 +271,18 @@ export function createTencentRuntime(options = {}) {
   return { server, env, stopScheduler };
 }
 
+// The in-memory coordinator is supported only in one server process. This
+// catches declared worker setups; independent replicas still require an
+// operator's process/state-directory check before enabling operation writes.
+export function assertTencentSingleProcess({ env = process.env, clusterWorker = cluster.isWorker } = {}) {
+  if (clusterWorker || String(env.JAPANESE_WORDS_RUNTIME_PROCESSES || '1') !== '1'
+      || (env.WEB_CONCURRENCY !== undefined && String(env.WEB_CONCURRENCY) !== '1')) {
+    throw new Error('SINGLE_TENCENT_SERVER_PROCESS_REQUIRED');
+  }
+}
+
 export function startTencentRuntime(options = {}) {
+  assertTencentSingleProcess();
   const port = Number(options.port || process.env.PORT || 8788);
   const host = String(options.host || process.env.HOST || '127.0.0.1');
   const scheduler = options.scheduler ?? String(process.env.DISABLE_SCHEDULER || '').toLowerCase() !== 'true';
