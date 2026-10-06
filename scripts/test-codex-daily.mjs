@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import './test-codex-operations.mjs';
+import './test-codex-operation-client.mjs';
 import { createMemoryKv as makeKv } from './test-helpers/kv.mjs';
 import { onRequest as handleCodexDaily } from '../functions/codex-daily.js';
 import {
