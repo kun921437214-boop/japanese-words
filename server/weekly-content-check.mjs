@@ -13,6 +13,7 @@ import {
   getWeeklyContentWindow
 } from '../shared/weekly-content-health.mjs';
 import { cleanStoredWorkflow } from '../shared/workflow-schema.mjs';
+import { dateKey } from '../shared/rankings.mjs';
 import { FileKV } from './file-kv.mjs';
 
 const HEALTH_TTL_SECONDS = 35 * 24 * 60 * 60;
@@ -74,6 +75,15 @@ function summarizeDayFailure(day) {
   return day.reasons.map(reason => `${day.targetDateKey}:${reason}`);
 }
 
+export function isNonUrgentWeeklyGap(record, now) {
+  const gapReasons = new Set(['draft_missing', 'word_count_incomplete', 'cards_incomplete', 'images_incomplete', 'image_storage_incomplete']);
+  return record.status === 'unhealthy' && record.targetWeekStart > dateKey(now)
+    && !record.crossDayDuplicateWords?.length && !record.crossDayDuplicateClusters?.length
+    && Array.isArray(record.days) && record.days.length === 7
+    && record.days.some(day => !day.valid)
+    && record.days.filter(day => !day.valid).every(day => day.reasons?.length && day.reasons.every(reason => gapReasons.has(reason)));
+}
+
 export async function runWeeklyContentCheck(options = {}) {
   const now = options.now instanceof Date ? options.now : new Date();
   const dataDirectory = path.resolve(options.dataDirectory || process.env.JAPANESE_WORDS_DATA_DIR || '/var/lib/japanese-words');
@@ -88,7 +98,8 @@ export async function runWeeklyContentCheck(options = {}) {
   const previous = await workflowKv.get(storageKey, 'json');
 
   if (
-    previous?.status === 'healthy'
+    !options.forceRecheck
+    && previous?.status === 'healthy'
     && previous?.runWeekStart === window.runWeekStart
     && previous?.targetWeekStart === window.targetWeekStart
     && previous?.targetWeekEnd === window.targetWeekEnd
@@ -212,7 +223,9 @@ export async function runWeeklyContentCheck(options = {}) {
     skipped: true
   };
   let lastNotificationAttemptAt = String(previous?.lastNotificationAttemptAt || '');
-  if (notificationDue || recoveryDue) {
+  const dailyCoveredGap = isNonUrgentWeeklyGap(record, now);
+  if (dailyCoveredGap) notification.skipReason = 'covered_by_chinese_daily_report';
+  if ((notificationDue && !dailyCoveredGap) || recoveryDue) {
     notification = await sendWeeklyAlert(alertUrl, record, fetchImpl);
     lastNotificationAttemptAt = checkedAt;
   }

@@ -62,16 +62,20 @@ test('image verification rejects expired, corrupt, mismatched records without de
   }
 });
 
-test('weekly missing content alerts, recovery notifies once, and successful checks stop', async t => {
+test('future weekly gaps retain check records without duplicate alert; recovery still notifies once', async t => {
   const root = await temporary(t);
   const workflowKv = new FileKV(path.join(root, 'workflow'));
   const imageKv = new FileKV(path.join(root, 'images'));
   const now = new Date('2026-10-01T06:40:00Z');
   let notifications = 0;
   const options = { now, workflowKv, imageKv, alertUrl: WEBHOOK, validateDraft: draft => draft, imageExists: async () => true, fetchImpl: async () => { notifications++; return Response.json({ code: 0 }); } };
+  const missing = await runWeeklyContentCheck(options);
+  assert.equal(missing.status, 'unhealthy');
+  assert.equal(missing.notification.sent, false);
+  assert.equal(missing.notification.skipReason, 'covered_by_chinese_daily_report');
+  assert.equal((await workflowKv.get('operations-health:weekly:next-week:2026-09-28', 'json')).days.length, 7);
   assert.equal((await runWeeklyContentCheck(options)).status, 'unhealthy');
-  assert.equal((await runWeeklyContentCheck(options)).status, 'unhealthy');
-  assert.equal(notifications, 1);
+  assert.equal(notifications, 0);
   for (const date of getWeeklyContentWindow(now).targetDateKeys) {
     const items = Array.from({ length: 10 }, (_, index) => ({ kanji: `${date}-${index}`, aiCard: { referenceImage: { status: 'ready', key: `codex-daily/${date}/${index}.webp`, url: `/codex-image?key=codex-daily/${date}/${index}.webp` } } }));
     await workflowKv.put(`codex-draft:global:${date}`, JSON.stringify({ targetDateKey: date, status: 'valid', wordCount: 10, cardReadyCount: 10, imageReadyCount: 10, items, validation: { valid: true, errors: [], warnings: [], recommendationAudit: { items: items.map(item => ({ semanticClusterKey: item.kanji })) } } }));
@@ -79,7 +83,7 @@ test('weekly missing content alerts, recovery notifies once, and successful chec
   const result = await runWeeklyContentCheck(options);
   assert.equal(result.status, 'healthy');
   assert.equal(result.totals.storedImages, 70);
-  assert.equal(notifications, 2);
+  assert.equal(notifications, 1);
   assert.equal((await runWeeklyContentCheck({ ...options, validateDraft: () => { throw new Error('unexpected rescan'); } })).skipped, true);
 });
 
