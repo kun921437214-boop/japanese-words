@@ -7,6 +7,8 @@ import { dateKey, addDays } from '../shared/rankings.mjs';
 import { getWeeklyContentWindow, getWeeklyContentHealthStorageKey } from '../shared/weekly-content-health.mjs';
 import { getCodexDraftStorageKey } from '../shared/codex-daily-draft.mjs';
 import { sendOperationsNotification } from '../shared/operations-alert.mjs';
+import { reconcileOperationsFollowup, verifyOperationsFollowupResult } from './operations-followup.mjs';
+import { runWeeklyContentCheck } from './weekly-content-check.mjs';
 
 function count(value) {
   return Number.isFinite(Number(value)) && Number(value) >= 0 ? Math.floor(Number(value)) : 0;
@@ -106,7 +108,7 @@ export async function collectOperationsReport(options = {}) {
       totals: matchingWeek && weekly?.totals && [weekly.totals.words, weekly.totals.cards, weekly.totals.storedImages].every(value => recordedCount(value) !== null)
         ? { words: count(weekly.totals.words), cards: count(weekly.totals.cards), images: count(weekly.totals.storedImages) } : null,
       days: matchingWeek && Array.isArray(weekly?.days) ? weekly.days.filter(day => window.targetDateKeys.includes(day.targetDateKey)).map(day => ({
-        dateKey: day.targetDateKey, valid: day.valid === true, words: recordedCount(day.wordCount), cards: recordedCount(day.cardReadyCount), images: recordedCount(day.imageStorageReadyCount)
+        dateKey: day.targetDateKey, valid: day.valid === true, words: recordedCount(day.wordCount), cards: recordedCount(day.cardReadyCount), images: recordedCount(day.imageStorageReadyCount), reasons: Array.isArray(day.reasons) ? day.reasons : []
       })) : [] },
     published: { status: officialStatus, lastVerifiedAt: official?.status === 'verified' ? String(official?.checkedAt || '') : '', error: /^[A-Z][A-Z0-9_]{1,70}$/.test(official?.error || '') ? official.error : '' },
     backup: { createdAt: String(backup?.createdAt || ''), revision: Number(backup?.revision) || 0, current: backupToday, status: backupStatus },
@@ -210,11 +212,29 @@ export async function runOperationsReport(options = {}) {
   const key = `operations-health:report:${report.dateKey}`;
   const digest = createHash('sha256').update(JSON.stringify({ ...report, checkedAt: '' })).digest('hex');
   const previous = await kv.get(key, 'json');
-  if (previous?.digest === digest && previous?.notification?.sent) return { ...report, skipped: true };
+  if (previous?.digest === digest && previous?.notification?.sent) {
+    let followup;
+    try { followup = await reconcileOperationsFollowup(report, options); }
+    catch { followup = { status: 'not_dispatched', dispatched: false, reason: 'followup_journal_failed' }; }
+    await kv.put(key, JSON.stringify({ ...report, digest, notification: previous.notification, followup }), { expirationTtl: 35 * 86400 });
+    return { ...report, notification: previous.notification, followup, skipped: true };
+  }
   const text = formatOperationsReport(report);
   const notification = await sendOperationsNotification(options.env || process.env, { text, event: 'japanese_words_daily_report' }, options);
-  await kv.put(key, JSON.stringify({ ...report, digest, notification }), { expirationTtl: 35 * 86400 });
-  return { ...report, notification };
+  // Store delivery before followup: a successful webhook never proves task creation.
+  await kv.put(key, JSON.stringify({ ...report, digest, notification, followup: { status: 'pending', dispatched: false } }), { expirationTtl: 35 * 86400 });
+  let followup;
+  try { followup = await reconcileOperationsFollowup(report, options); }
+  catch { followup = { status: 'not_dispatched', dispatched: false, reason: 'followup_journal_failed' }; }
+  await kv.put(key, JSON.stringify({ ...report, digest, notification, followup }), { expirationTtl: 35 * 86400 });
+  return { ...report, notification, followup };
+}
+
+export async function verifyOperationsReportFollowup(taskReceipt, options = {}) {
+  return verifyOperationsFollowupResult(taskReceipt, { ...options, recheck: async () => {
+    await runWeeklyContentCheck({ ...options, forceRecheck: true, alertUrl: '' });
+    return collectOperationsReport(options);
+  } });
 }
 
 async function main() {

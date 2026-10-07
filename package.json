@@ -36,10 +36,10 @@
     "deploy": "npm run build && node scripts/deploy-pages.mjs",
     "deploy:pages": "npm run deploy",
     "deploy:worker": "node scripts/deploy-worker.mjs",
-    "test:operations": "node --test scripts/test-operations.mjs && python3 scripts/test-hidden-input.py"
+    "test:operations": "node --test scripts/test-operations.mjs scripts/test-operations-followup.mjs && python3 scripts/test-hidden-input.py"
   },
   "dependencies": {
-    "sharp": "0.35.4"
+    "sharp": "0.35.5"
   },
   "devDependencies": {
     "@playwright/test": "^1.55.1",
@@ -48,7 +48,7 @@
     "wrangler": "4.120.0"
   },
   "overrides": {
-    "sharp": "0.35.4",
+    "sharp": "0.35.5",
     "undici": "7.29.1"
   }
 }
