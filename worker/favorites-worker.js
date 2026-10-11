@@ -47,6 +47,7 @@ const AI_CARD_BATCH_CRONS = new Set([
 const AI_CARD_BATCH_MAX_WORDS = 5;
 const DAILY_HEALTH_TTL_SECONDS = 30 * 24 * 60 * 60;
 const DAILY_HEALTH_NOTIFICATION_COOLDOWN_MS = 30 * 60 * 1000;
+const dailyHealthChecksInFlight = new WeakMap();
 export const AI_CARD_FAILED_RETRY_TTL_MS = 30 * 60 * 1000;
 
 function toCount(value) {
@@ -173,7 +174,39 @@ function buildSnapshotHealthRecord(workflow, targetDateKey, checkedAt) {
   };
 }
 
+function isMissingDraftHealthRecord(record) {
+  return record?.kind === 'tomorrow-draft'
+    && record.status === 'unhealthy'
+    && Array.isArray(record.reasons)
+    && record.reasons.length === 1
+    && record.reasons[0] === 'draft_missing';
+}
+
 export async function runDailyOperationsHealthCheck(env, options = {}) {
+  if (!env.FAVORITES) throw new Error('daily health check requires FAVORITES storage');
+  const kind = options.kind === 'tomorrow-draft' ? 'tomorrow-draft' : 'today-snapshot';
+  const now = options.now instanceof Date ? new Date(options.now.getTime()) : new Date();
+  const currentDateKey = dateKey(now);
+  const targetDateKey = kind === 'tomorrow-draft' ? addDays(currentDateKey, 1) : currentDateKey;
+  const key = dailyHealthStorageKey(kind, targetDateKey);
+  let pending = dailyHealthChecksInFlight.get(env.FAVORITES);
+  if (!pending) {
+    pending = new Map();
+    dailyHealthChecksInFlight.set(env.FAVORITES, pending);
+  }
+  // Serialize this KV instance and key only; this is not a distributed lock.
+  const run = (pending.get(key) || Promise.resolve()).catch(() => {}).then(() => (
+    runDailyOperationsHealthCheckUnlocked(env, { ...options, kind, now })
+  ));
+  pending.set(key, run);
+  try {
+    return await run;
+  } finally {
+    if (pending.get(key) === run) pending.delete(key);
+  }
+}
+
+async function runDailyOperationsHealthCheckUnlocked(env, options = {}) {
   if (!env.FAVORITES) throw new Error('daily health check requires FAVORITES storage');
   const kind = options.kind === 'tomorrow-draft' ? 'tomorrow-draft' : 'today-snapshot';
   const now = options.now instanceof Date ? options.now : new Date();
@@ -195,7 +228,21 @@ export async function runDailyOperationsHealthCheck(env, options = {}) {
     );
 
   const previousAttemptMs = Date.parse(String(previous?.lastNotificationAttemptAt || ''));
+  const continuingMissingDraft = isMissingDraftHealthRecord(record)
+    && isMissingDraftHealthRecord(previous)
+    && previous.targetDateKey === targetDateKey;
+  let draftMissingNotifiedAt = '';
+  if (continuingMissingDraft) {
+    const persistedSuccessAt = String(previous?.draftMissingNotifiedAt || '');
+    if (Number.isFinite(Date.parse(persistedSuccessAt))) {
+      draftMissingNotifiedAt = persistedSuccessAt;
+    } else if (previous?.notification?.sent === true && Number.isFinite(previousAttemptMs)) {
+      // Migrate only a recorded successful send, never an attempt or a skipped check.
+      draftMissingNotifiedAt = previous.lastNotificationAttemptAt;
+    }
+  }
   const notificationDue = record.status === 'unhealthy'
+    && !draftMissingNotifiedAt
     && (!Number.isFinite(previousAttemptMs) || now.getTime() - previousAttemptMs >= DAILY_HEALTH_NOTIFICATION_COOLDOWN_MS);
   const recoveryDue = record.status === 'healthy' && previous?.status === 'unhealthy';
   let notification = {
@@ -212,10 +259,14 @@ export async function runDailyOperationsHealthCheck(env, options = {}) {
     };
     lastNotificationAttemptAt = checkedAt;
   }
+  if (isMissingDraftHealthRecord(record) && notification.sent === true) {
+    draftMissingNotifiedAt = checkedAt;
+  }
   const storedRecord = {
     ...record,
     previousStatus: String(previous?.status || ''),
     lastNotificationAttemptAt,
+    ...(kind === 'tomorrow-draft' ? { draftMissingNotifiedAt } : {}),
     notification
   };
   await env.FAVORITES.put(key, JSON.stringify(storedRecord), {
