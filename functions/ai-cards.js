@@ -1,3 +1,4 @@
+import { DEEPSEEK_GENERATION_ENABLED, DEEPSEEK_DISABLED_CODE, DEEPSEEK_DISABLED_MESSAGE } from '../shared/generation-policy.mjs';
 import {
   cleanAiBatch,
   cleanAiBatches,
@@ -450,6 +451,9 @@ export async function onRequest({ request, env }) {
 
   const authorization = await authorizeRequest(request, env, { allowAutomation: true });
   if (!authorization.ok) return unauthorizedResponse(request, env, authorization, { methods, requestId });
+  if (!DEEPSEEK_GENERATION_ENABLED && request.method === 'POST') {
+    return fail(410, DEEPSEEK_DISABLED_CODE, DEEPSEEK_DISABLED_MESSAGE);
+  }
 
   const url = new URL(request.url);
   const key = getStorageKey(url);

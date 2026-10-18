@@ -516,10 +516,8 @@ test('Tencent runtime owns scheduled jobs while Cloudflare rollback cron stays d
   assert.ok(workerSource.includes("const AI_CARD_BATCH_MAX_WORDS = 5;"));
   assert.ok(workerSource.includes("new URL(`${siteUrl}/codex-daily`)"));
   assert.ok(workerSource.includes("action: 'promote'"));
-  assert.ok(workerSource.includes("new URL(`${siteUrl}/daily-refresh`)"));
-  assert.ok(workerSource.includes("refreshUrl.searchParams.set('mode', 'manual')"));
-  assert.ok(workerSource.includes("refreshUrl.searchParams.set('runInline', 'true')"));
-  assert.ok(workerSource.includes("refreshUrl.searchParams.set('skipCards', 'true')"));
+  assert.equal(workerSource.includes("new URL(`${siteUrl}/daily-refresh`)"), false);
+  assert.ok(workerSource.includes('DEEPSEEK_GENERATION_ENABLED && AI_CARD_BATCH_CRONS.has(cron)'));
   assert.ok(workerSource.includes("'Content-Type': 'application/json'"));
   assert.ok(workerSource.includes('Authorization: `Bearer ${autoRefreshSecret}`'));
   assert.ok(workerSource.includes("new URL(`${siteUrl}/ai-cards`)"));

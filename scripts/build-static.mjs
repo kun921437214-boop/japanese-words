@@ -8,6 +8,7 @@ const files = ['index.html', 'styles.css', 'app.js', 'words-data.js', 'sync-conf
 const directories = ['assets'];
 const moduleDirectories = ['frontend'];
 const sharedModules = [
+  'generation-policy.mjs',
   'daily-config.mjs',
   'workflow-schema.mjs',
   'published-import.mjs',

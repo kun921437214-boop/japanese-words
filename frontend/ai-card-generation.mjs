@@ -1,3 +1,4 @@
+import { DEEPSEEK_GENERATION_ENABLED, DEEPSEEK_DISABLED_MESSAGE } from '../shared/generation-policy.mjs';
 import { cleanAiCard } from '../shared/workflow-schema.mjs';
 
 export const AI_CARD_AUTO_MAX_ATTEMPTS_PER_DAY = 2;
@@ -29,7 +30,7 @@ export function isAiCardStalePending(aiCard = {}, entry = {}, options = {}) {
 export function getTodayAiCardActionState({ aiCard = {}, entry = {}, inFlight = false, nowMs } = {}) {
   const status = getCardStatus(aiCard);
   const stalePending = isAiCardStalePending(aiCard, entry, { nowMs });
-  const label = inFlight
+  const label = !DEEPSEEK_GENERATION_ENABLED ? DEEPSEEK_DISABLED_MESSAGE : inFlight
     ? '生成中'
     : status === 'ready'
       ? '重新生成'
@@ -44,7 +45,7 @@ export function getTodayAiCardActionState({ aiCard = {}, entry = {}, inFlight = 
     status,
     stalePending,
     label,
-    disabled: Boolean(inFlight || (status === 'pending' && !stalePending))
+    disabled: Boolean(!DEEPSEEK_GENERATION_ENABLED || inFlight || (status === 'pending' && !stalePending))
   };
 }
 
@@ -65,7 +66,7 @@ export function canAutoGenerateAiCard({
   force = false,
   maxAttempts = AI_CARD_AUTO_MAX_ATTEMPTS_PER_DAY
 } = {}) {
-  if (inFlight) return false;
+  if (!DEEPSEEK_GENERATION_ENABLED || inFlight) return false;
   const status = getCardStatus(aiCard);
   if (status === 'ready' || status === 'pending') return false;
   if (!force && clamp(attemptCount, 0, 20) >= clamp(maxAttempts, 1, 20)) return false;

@@ -1,3 +1,4 @@
+import { DEEPSEEK_GENERATION_ENABLED } from '../shared/generation-policy.mjs';
 import {
   addDays,
   buildRankingForDate,
@@ -288,41 +289,16 @@ export async function triggerDailyPublishOrFallback(env, fetchImpl = fetch) {
       console.log('Codex daily draft promoted', targetDateKey, result.source || 'codex_draft');
       return { ok: true, source: 'codex', status: codexResponse.status };
     }
-    console.warn('Codex daily draft unavailable; using DeepSeek fallback', codexResponse.status, result?.error?.code || 'UNKNOWN');
-  } catch (error) {
-    console.warn('Codex daily draft promotion failed; using DeepSeek fallback', error?.message || error);
-  }
-
-  const refreshUrl = new URL(`${siteUrl}/daily-refresh`);
-  refreshUrl.searchParams.set('mode', 'manual');
-  refreshUrl.searchParams.set('runInline', 'true');
-  refreshUrl.searchParams.set('skipCards', 'true');
-  const response = await fetchImpl(refreshUrl.toString(), {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${autoRefreshSecret}`
-    },
-    body: JSON.stringify({ action: 'scheduled_fallback', targetDateKey })
-  });
-  const result = await response.json().catch(() => null);
-  if (!response.ok || result?.ok === false || result?.queued === true || result?.status === 'failed') {
-    const reason = result?.error?.code || result?.error || result?.status || 'daily_refresh_failed';
-    console.warn('daily refresh did not complete', response.status, reason);
     return {
       ok: false,
-      source: 'deepseek',
-      status: response.status,
-      reason: String(reason).slice(0, 200)
+      source: 'codex',
+      status: codexResponse.status,
+      reason: result?.error?.code || 'CODEX_DRAFT_UNAVAILABLE'
     };
+  } catch (error) {
+    console.warn('Codex daily draft promotion failed', error?.message || error);
+    return { ok: false, source: 'codex', status: 0, reason: 'network_error' };
   }
-  console.log('daily refresh completed', response.status, result?.status || 'completed');
-  return {
-    ok: true,
-    source: 'deepseek',
-    status: response.status,
-    refreshStatus: String(result?.status || 'completed')
-  };
 }
 
 export async function triggerCodexPromotionIfAvailable(env, fetchImpl = fetch) {
@@ -888,7 +864,7 @@ export default {
       );
     }
 
-    if (AI_CARD_BATCH_CRONS.has(cron)) {
+    if (DEEPSEEK_GENERATION_ENABLED && AI_CARD_BATCH_CRONS.has(cron)) {
       ctx.waitUntil(
         triggerTodayAiCardBatch(env).catch(error => console.warn('ai card batch failed', error?.message || error))
       );

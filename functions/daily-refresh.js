@@ -1,3 +1,4 @@
+import { DEEPSEEK_GENERATION_ENABLED, DEEPSEEK_DISABLED_CODE, DEEPSEEK_DISABLED_MESSAGE } from '../shared/generation-policy.mjs';
 import { isStoredDailyWordCount } from '../shared/daily-config.mjs';
 import { addDays, buildRankingForDate, cleanDateKey, cleanStoredRanking, dateKey, WORDS_PER_DAY } from '../shared/rankings.mjs';
 import {
@@ -1314,6 +1315,9 @@ export async function onRequest(context) {
   }
   const authorization = await authorizeRequest(request, env, { allowAutomation: true });
   if (!authorization.ok) return unauthorizedResponse(request, env, authorization, { methods, requestId: responseRequestId });
+  if (!DEEPSEEK_GENERATION_ENABLED && request.method === 'POST') {
+    return fail(410, DEEPSEEK_DISABLED_CODE, DEEPSEEK_DISABLED_MESSAGE);
+  }
   if (!env.FAVORITES) {
     return fail(500, 'STORAGE_NOT_CONFIGURED', 'KV namespace FAVORITES is not configured');
   }

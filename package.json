@@ -15,7 +15,7 @@
     "test:codex": "node --test scripts/test-codex-daily.mjs",
     "test:tencent": "node --test scripts/test-tencent-runtime.mjs",
     "test:scripts": "node --test scripts/test-script-helpers.mjs",
-    "test:hardening": "node --test scripts/test-hardening.mjs",
+    "test:hardening": "node --test scripts/test-hardening.mjs scripts/test-generation-retirement.mjs",
     "test:workflow": "node scripts/test-workflow-schema.mjs",
     "test:published": "node --test scripts/test-published-import.mjs",
     "test:e2e": "npm run build && npm run test:e2e:built",

@@ -1,3 +1,4 @@
+import { DEEPSEEK_GENERATION_ENABLED, DEEPSEEK_DISABLED_CODE, DEEPSEEK_DISABLED_MESSAGE } from '../shared/generation-policy.mjs';
 import { getAccountLearningPromptContext } from '../shared/account-learning.mjs';
 import {
   API_LIMITS,
@@ -1698,6 +1699,9 @@ export async function onRequest({ request, env }) {
 
   const authorization = await authorizeRequest(request, env, { allowAutomation: true });
   if (!authorization.ok) return unauthorizedResponse(request, env, authorization, { methods, requestId });
+  if (!DEEPSEEK_GENERATION_ENABLED) {
+    return fail(410, DEEPSEEK_DISABLED_CODE, DEEPSEEK_DISABLED_MESSAGE);
+  }
   if (!env.DEEPSEEK_API_KEY) {
     return fail(503, 'AI_NOT_CONFIGURED', 'DEEPSEEK_API_KEY is not configured');
   }

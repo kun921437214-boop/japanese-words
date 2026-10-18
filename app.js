@@ -1,3 +1,4 @@
+import { DEEPSEEK_GENERATION_ENABLED, DEEPSEEK_DISABLED_MESSAGE } from './shared/generation-policy.mjs';
 import { createApiClient } from './frontend/api-client.mjs';
 import {
   AI_CARD_AUTO_MAX_ATTEMPTS_PER_DAY,
@@ -5209,11 +5210,11 @@ function buildRecommendedWord(word, origin = 'global', candidateMeta = null, sco
     scoreBreakdown: cleanCandidateScoreBreakdown(scores),
     rankingSignals: buildRankingSignals(word, scores, candidateMeta),
     aiCard,
-    suggestedTitle: hasReadyAiCard ? wordCardView.title : (aiCardStatus === 'pending' ? 'DeepSeek 词卡生成中' : ''),
+    suggestedTitle: hasReadyAiCard ? wordCardView.title : (aiCardStatus === 'pending' ? '等待 Codex 内容' : ''),
     contentHook: hasReadyAiCard ? (wordCardView.contentAngles[0] || '') : '',
     targetAudience: wordCardView.targetAudience,
     referenceDirection: wordCardView.referenceDirection,
-    recommendationReason: hasReadyAiCard ? wordCardView.summary : (aiCardStatus === 'pending' ? 'DeepSeek 词卡生成中' : 'DeepSeek 词卡未生成'),
+    recommendationReason: hasReadyAiCard ? wordCardView.summary : '等待 Codex 内容',
     detail: wordCardView.explanation,
     examples: wordCardView.examples,
     interactions: wordCardView.interactionPrompts,
@@ -5815,6 +5816,7 @@ function loadAiPreviewState(options = {}) {
 }
 
 async function autoGenerateAiCandidates() {
+  if (!DEEPSEEK_GENERATION_ENABLED) return { items: [], batch: {}, usage: {}, summary: {} };
   const payload = buildAutoAiCandidatePayload({
     favorites,
     negativeFeedback: wordFeedback,
@@ -5985,6 +5987,9 @@ function renderAiCardActionButton(kanji, aiCard = {}, className = 'btn btn-ghost
   const cleanKanji = cleanShortText(kanji, 80);
   const safeKanji = escapeHTML(cleanKanji);
   const card = cleanAiCard(aiCard || {}) || { cardStatus: 'none' };
+  if (!DEEPSEEK_GENERATION_ENABLED && card.cardStatus !== 'ready') {
+    return `<button class="${escapeHTML(className)}" disabled>${escapeHTML(DEEPSEEK_DISABLED_MESSAGE)}</button>`;
+  }
   const inFlight = aiCardAutoInFlight.has(cleanKanji);
   if (isTodaySnapshotWord(cleanKanji)) {
     const entry = candidatePool?.[cleanKanji] || {};
@@ -6007,6 +6012,7 @@ function renderAiCardActionButton(kanji, aiCard = {}, className = 'btn btn-ghost
 }
 
 async function generateTodayAiCardsOnServer(kanjis = [], options = {}) {
+  if (!DEEPSEEK_GENERATION_ENABLED) return 0;
   const endpoint = getAiCardsEndpoint();
   if (!endpoint) {
     showToast('云端后端还没有配置');
@@ -6133,6 +6139,7 @@ function getMissingAiCardKanjis(kanjis = [], options = {}) {
 }
 
 async function queueAutoGenerateAiCards(kanjis = [], options = {}) {
+  if (!DEEPSEEK_GENERATION_ENABLED) return 0;
   const targets = getMissingAiCardKanjis(kanjis, options);
   if (!targets.length) return 0;
   targets.forEach(kanji => {
@@ -6319,6 +6326,7 @@ function markAiCardStatus(kanjis, status, message = '') {
 }
 
 async function generateDeepSeekWordCards(kanjis, options = {}) {
+  if (!DEEPSEEK_GENERATION_ENABLED) return 0;
   const targetKanjis = getUniqueWords(kanjis);
   if (!targetKanjis.length) {
     if (!options.silent) showToast('先选择要生成词卡的候选词');
@@ -6502,6 +6510,7 @@ function openRegenerationReasonModal(kanji, target = 'card') {
 }
 
 async function regenerateFromFeedback(kanji, target = 'card', reason = '') {
+  if (!DEEPSEEK_GENERATION_ENABLED) return 0;
   const cleanKanji = cleanShortText(kanji, 80);
   const cleanTarget = target === 'cover' ? 'cover' : 'card';
   if (!recordGenerationFeedback(cleanKanji, cleanTarget, reason)) {
@@ -6636,7 +6645,7 @@ function ensureManualWordCandidate(kanji, options = {}) {
     kanji: cleanKanji,
     kana: existing.kana || word.kana || word.reading || '',
     romaji: existing.romaji || word.romaji || '',
-    meaning: existing.meaning || word.meaning || discoveryContext || '手动添加词，等待 DeepSeek 生成词卡',
+    meaning: existing.meaning || word.meaning || discoveryContext || '手动添加词，词卡由 Codex 内容流程补充',
     category: existing.category || word.category || '手动添加',
     candidateType: existing.candidateType || '稳定候选',
     freshness: existing.freshness || '中期',
@@ -6650,7 +6659,7 @@ function ensureManualWordCandidate(kanji, options = {}) {
     libraryAuditStatus: 'protected',
     libraryAuditAction: 'protect',
     protected: true,
-    reason: discoveryContext || existing.reason || '手动添加词，等待 DeepSeek 生成词卡',
+    reason: discoveryContext || existing.reason || '手动添加词，词卡由 Codex 内容流程补充',
     sourceTags,
     discoverySource,
     discoveryContext,
@@ -6687,10 +6696,10 @@ function openManualWordModal() {
           <label class="form-field"><span>发现渠道</span><select class="form-input" id="manualWordDiscoverySource"><option value="">未选择</option>${MANUAL_DISCOVERY_SOURCE_OPTIONS.map(source => `<option value="${escapeHTML(source)}">${escapeHTML(source)}</option>`).join('')}</select></label>
           <label class="form-field full"><span>看到它的语境 / 为什么想添加</span><textarea class="form-input form-textarea" id="manualWordDiscoveryContext" maxlength="1200" placeholder="可以粘贴一句原文，或写下你为什么觉得这个词适合做小红书内容。"></textarea></label>
         </div>
-        <div class="published-score-note">添加后会先进入团队选题池；DeepSeek 词卡会随后生成。生成失败不会删除这个词。</div>
+        <div class="published-score-note">添加后进入团队选题池；词卡由 Codex 内容流程补充。</div>
         <div class="modal-footer-actions form-actions">
           <button class="btn btn-ghost" data-manual-word-action="close">取消</button>
-          <button class="btn btn-primary" data-manual-word-action="submit">添加并生成词卡</button>
+          <button class="btn btn-primary" data-manual-word-action="submit">添加到选题池</button>
         </div>
       </div>
     </div>`;
@@ -6704,7 +6713,7 @@ function openManualWordDuplicateModal(kanji, state, options = {}) {
   const copy = {
     favorite: {
       title: '这个词已经在团队选题池中',
-      body: '不会重复创建。你可以直接打开详情查看或重新生成 DeepSeek 词卡。'
+      body: '不会重复创建。你可以直接打开详情查看。'
     },
     candidate: {
       title: '系统中已有这个词',
@@ -6776,7 +6785,7 @@ async function addManualWordToFavorites(kanji, options = {}) {
   saveLocalWorkflow();
   updateAllBadges();
   renderFavorites();
-  const synced = await syncManualWordWorkflow(`已添加「${cleanKanji}」，正在生成 DeepSeek 词卡`, cleanKanji);
+  const synced = await syncManualWordWorkflow(`已添加「${cleanKanji}」，词卡由 Codex 内容流程补充`, cleanKanji);
   if (!synced) {
     updateAllBadges();
     renderFavorites();
@@ -8116,7 +8125,7 @@ async function finishTodaySnapshotGeneration(result, actionLabel, options = {}) 
   const supplementHint = supplementStats.attempts
     ? ` DeepSeek 已补充候选 ${supplementStats.imported || 0} 个。`
     : '';
-  const shortageHint = result.shortage ? ` 备选池可用词不足，已尝试 DeepSeek 补充后仍不足 ${WORDS_PER_DAY} 个。` : '';
+  const shortageHint = result.shortage ? ` 备选池可用词不足，请通过 Codex 补充至 ${WORDS_PER_DAY} 个。` : '';
   const dedupHint = result.relaxedDedup
     ? ' 注意：本次结果启用了去重放宽。'
     : '';
@@ -8140,6 +8149,7 @@ async function generateTodaySnapshotOnServer(mode) {
 }
 
 async function generateTodaySnapshotOnServerWithAiSupplement(mode) {
+  if (!DEEPSEEK_GENERATION_ENABLED) return generateTodaySnapshotOnServer(mode);
   let result = await generateTodaySnapshotOnServer(mode);
   const importStats = { generated: 0, imported: 0, skipped: 0, review: 0, blocked: 0 };
   for (let round = 0; result.shortage && round < 2; round += 1) {
@@ -8633,8 +8643,8 @@ function renderWordDetail(word) {
       </div>
       <div class="modal-footer-actions">
         <button class="btn btn-primary" data-modal-action="mark-pending" data-kanji="${safeKanjiAction}">标记待发布</button>
-        <button class="btn btn-ghost" data-modal-action="open-regeneration-reasons" data-kanji="${safeKanjiAction}" data-target="card">重新生成单词卡</button>
-        <button class="btn btn-ghost" data-modal-action="open-regeneration-reasons" data-kanji="${safeKanjiAction}" data-target="cover">重新生成封面</button>
+        <button class="btn btn-ghost" ${!DEEPSEEK_GENERATION_ENABLED ? 'disabled' : ''} data-modal-action="open-regeneration-reasons" data-kanji="${safeKanjiAction}" data-target="card">重新生成单词卡</button>
+        <button class="btn btn-ghost" ${!DEEPSEEK_GENERATION_ENABLED ? 'disabled' : ''} data-modal-action="open-regeneration-reasons" data-kanji="${safeKanjiAction}" data-target="cover">重新生成封面</button>
       </div>
     </div>`;
   document.getElementById('modalOverlay').classList.add('open');

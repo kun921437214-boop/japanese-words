@@ -44,7 +44,7 @@ npm run deploy:worker
 4. Published Records should feed back into future recommendation ranking.
 5. Candidate Pool is a system-side potential topic pool, not the final human-approved publishing list.
 6. Do not optimize only for views; save rate and engagement rate are stronger signals for this account.
-7. DeepSeek word cards must serve Xiaohongshu content creation, not ordinary dictionary explanation.
+7. DeepSeek generation is retired. New words and cards use the Codex content pipeline; preserve historical DeepSeek cards and source attribution. Do not re-enable candidate, card, cover, or scheduled fallback generation through DeepSeek.
 8. Do not push words that are too basic, too textbook-like, too niche, hard to visualize, high risk, unstable, or generic topic labels into Daily Recommendations.
 9. Do not change the existing `aiCard` structure when adding account-learning context.
 10. Preserve localStorage and Cloudflare sync compatibility for major changes.
@@ -103,7 +103,7 @@ At minimum, check:
 2. Favorites / Topic Pool still works.
 3. Candidate Pool still works.
 4. Published Records still works.
-5. DeepSeek card generation path still returns compatible JSON.
+5. Legacy DeepSeek generation routes return a non-retryable 410 without outbound calls or workflow writes; Codex content routes remain usable.
 6. Cloudflare workflow data does not lose `candidatePool`, `aiBatches`, `todaySnapshot`, or `aiCard`.
 7. `npm run build:words` still succeeds.
 8. `npm run test:workflow` still succeeds when schema logic is touched.
