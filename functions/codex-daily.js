@@ -6,7 +6,6 @@ import {
   promoteCodexDailyDraft,
   validateCodexDailyDraft
 } from '../shared/codex-daily-draft.mjs';
-import { isExpectedDailyWordCount } from '../shared/daily-config.mjs';
 import { addDays, cleanDateKey, dateKey } from '../shared/rankings.mjs';
 import { cleanStoredWorkflow } from '../shared/workflow-schema.mjs';
 import {
@@ -19,8 +18,10 @@ import {
   readJsonBody,
   unauthorizedResponse
 } from '../shared/api-security.mjs';
-import { commitWorkflowMutation } from '../shared/workflow-coordinator.mjs';
+import { buildCoordinatedWorkflowMutation, commitWorkflowMutationDirect } from '../shared/workflow-coordinator.mjs';
 import {
+  CodexOperationError,
+  codexOperationStorageKey,
   codexOperationFailure,
   codexOperationIdFromHeader,
   codexValueSha256,
@@ -29,6 +30,146 @@ import {
   requireCodexOperationId,
   withCodexWrite
 } from '../shared/codex-operation.mjs';
+
+// Called only by the authenticated business route. No environment discovery,
+// identity creation, direct filesystem access, or scheduled work lives here.
+
+const MARKER = 'codex-promotion-v1 ';
+const fail = (code, status = 409) => { throw new CodexOperationError(code, status); };
+const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+const hasWords = value => Array.isArray(value?.words) && value.words.length > 0;
+
+function targetOccupied(workflow, target) {
+  return (workflow?.todaySnapshot?.dateKey === target && hasWords(workflow.todaySnapshot))
+    || hasWords(workflow?.historySnapshots?.[target])
+    || (Array.isArray(workflow?.todaySnapshotHistory) ? workflow.todaySnapshotHistory : [])
+      .some(row => row?.dateKey === target && hasWords(row));
+}
+
+// These are server-owned lifecycle fields, not the frozen request payload.
+// All other stored fields (including operation ID, items, cards and image URLs)
+// remain bound even when a workflow commit succeeded before the status write.
+function immutableDraft(document) {
+  const { status, publishedAt, updatedAt, validation, ...content } = document;
+  return content;
+}
+
+async function verifyDraftReceipt(env, scope, draft, target, draftSha256) {
+  if (!draft.operationId) return ''; // Existing legacy drafts did not opt into the ID protocol.
+  const record = await env.FAVORITES.get(codexOperationStorageKey(scope, draft.operationId), 'json');
+  if (!record || record.schemaVersion !== 1 || record.kind !== 'draft' || record.scope !== scope
+      || record.operationId !== draft.operationId || record.target !== target
+      || record.status !== 'complete' || record.response?.status !== 200 || record.response?.body?.ok !== true
+      || !/^[a-f0-9]{64}$/.test(record.inputSha256 || '') || !record.effect?.document
+      || record.effect.key !== getCodexDraftStorageKey(target, scope)) {
+    fail('CODEX_PROMOTION_DRAFT_RECEIPT_CONFLICT');
+  }
+  const { journalSha256, ...content } = record;
+  if (journalSha256 !== await codexValueSha256(content)
+      || record.resultSha256 !== await codexValueSha256(record.response.body)
+      || record.effect.documentSha256 !== await codexValueSha256(record.effect.document)
+      || draftSha256 !== await codexValueSha256(immutableDraft(record.effect.document))) {
+    fail('CODEX_PROMOTION_DRAFT_RECEIPT_CONFLICT');
+  }
+  return record.inputSha256;
+}
+
+function effectProjection(workflow, target) {
+  const snapshot = workflow.todaySnapshot;
+  if (snapshot?.dateKey !== target || snapshot.source !== 'codex_draft' || !hasWords(snapshot)) {
+    fail('CODEX_PROMOTION_EFFECT_CONFLICT');
+  }
+  return { snapshot, candidates: snapshot.words.map(word => ({ word, entry: workflow.candidatePool?.[word] || null })) };
+}
+
+function readBinding(event) {
+  if (!event || !String(event.summary || '').startsWith(MARKER)) return null;
+  try { return JSON.parse(event.summary.slice(MARKER.length)); } catch { return null; }
+}
+
+async function verifyCompleted(workflow, draft, target, operationId, draftSha256, draftInputSha256) {
+  const event = workflow.auditLog.find(row => row.id === operationId);
+  const binding = readBinding(event);
+  const words = cleanCodexDailyDraft(draft).items.map(item => item.kanji);
+  if (!binding || event.action !== 'codex-daily.promote' || event.target !== target
+      || binding.draftId !== String(draft.operationId || '') || binding.draftSha256 !== draftSha256
+      || binding.draftInputSha256 !== draftInputSha256
+      || !same(workflow.todaySnapshot?.words, words)
+      || binding.effectSha256 !== await codexValueSha256(effectProjection(workflow, target))) {
+    fail('CODEX_PROMOTION_EFFECT_CONFLICT');
+  }
+  // Both representations must still contain the same published word sequence.
+  if (!same(workflow.historySnapshots?.[target]?.words, words)
+      || !workflow.todaySnapshotHistory.some(row => row.dateKey === target && same(row.words, words))) {
+    fail('CODEX_PROMOTION_EFFECT_CONFLICT');
+  }
+  return event;
+}
+
+async function markPublished(env, draftKey, storedDraft, target, event, validation) {
+  if (storedDraft.status === 'published' && storedDraft.publishedAt) return storedDraft;
+  const publishedAt = event.at;
+  if (!publishedAt) fail('CODEX_PROMOTION_EVENT_INVALID', 503);
+  const draft = { ...storedDraft, status: 'published', publishedAt, updatedAt: publishedAt,
+    ...(validation ? { validation } : {}) };
+  await env.FAVORITES.put(draftKey, JSON.stringify(draft), {
+    expirationTtl: getCodexDailyDraftTtlSeconds(target)
+  });
+  return draft;
+}
+
+export function promoteCodexDraftWithoutReplacement(env, { scope, targetDateKey, actor }) {
+  // Tencent's existing queue serializes draft operation writes and every normal
+  // workflow mutation on this same key. No unlocked fallback is permitted.
+  return withCodexWrite(env, scope, async () => {
+    const workflowKey = `favorites:${scope}`;
+    const draftKey = getCodexDraftStorageKey(targetDateKey, scope);
+    const rawWorkflow = await env.FAVORITES.get(workflowKey, 'json');
+    const workflow = cleanStoredWorkflow(rawWorkflow);
+    const storedDraft = await env.FAVORITES.get(draftKey, 'json');
+    if (!storedDraft) fail('CODEX_DRAFT_MISSING', 404);
+    if (storedDraft.targetDateKey !== targetDateKey) fail('CODEX_PROMOTION_DRAFT_IDENTITY_CONFLICT');
+    const draftSha256 = await codexValueSha256(immutableDraft(storedDraft));
+    const draftInputSha256 = await verifyDraftReceipt(env, scope, storedDraft, targetDateKey, draftSha256);
+    const operationId = `codex-promote-${scope}-${targetDateKey}`;
+    const priorEvent = workflow.auditLog.find(row => row.id === operationId);
+
+    if (targetOccupied(rawWorkflow, targetDateKey) || targetOccupied(workflow, targetDateKey) || priorEvent) {
+      const event = await verifyCompleted(workflow, storedDraft, targetDateKey, operationId, draftSha256, draftInputSha256);
+      const draft = await markPublished(env, draftKey, storedDraft, targetDateKey, event);
+      return { httpStatus: 200, body: { ok: true, published: true, alreadyPublished: true,
+        source: 'codex_draft', revision: workflow.revision, draft } };
+    }
+    if (hasWords(workflow.todaySnapshot) && workflow.todaySnapshot.dateKey > targetDateKey) {
+      fail('CODEX_PROMOTION_NEWER_SNAPSHOT_PRESENT');
+    }
+    const promoted = promoteCodexDailyDraft(workflow, storedDraft, { expectedDateKey: targetDateKey });
+    if (!promoted.ok) return { httpStatus: 422, body: { ok: false, published: false,
+      error: { code: 'CODEX_DRAFT_INVALID', message: 'Codex 草稿未通过发布门', retryable: true }, draft: promoted.draft } };
+    const metadata = { operationId, expectedRevision: workflow.revision,
+      action: 'codex-daily.promote', actor, target: targetDateKey, summary: '' };
+    // Preview the existing automated merge, so the proof binds the actual
+    // stored snapshot and cards, including its normal merge semantics.
+    const preview = buildCoordinatedWorkflowMutation(workflow, promoted.workflow, metadata, { strategy: 'automated' });
+    if (!preview.ok || preview.duplicate || preview.conflict) fail('CODEX_PROMOTION_PREVIEW_CONFLICT');
+    metadata.summary = MARKER + JSON.stringify({ draftId: String(storedDraft.operationId || ''), draftSha256, draftInputSha256,
+      effectSha256: await codexValueSha256(effectProjection(preview.workflow, targetDateKey)) });
+    if (metadata.summary.length > 500) fail('CODEX_PROMOTION_BINDING_TOO_LONG', 503);
+
+    // We already hold the coordinator queue: calling its fetch/enqueue again
+    // would deadlock. Reuse the official commit helper inside this critical
+    // section, with a revision check for unexpected non-coordinated writers.
+    const mutation = await commitWorkflowMutationDirect(env.FAVORITES, {
+      key: workflowKey, candidateWorkflow: promoted.workflow, metadata, strategy: 'automated'
+    });
+    if (mutation.conflict) fail('WORKFLOW_REVISION_CONFLICT');
+    if (!mutation.ok) fail('CODEX_PROMOTION_COMMIT_UNCONFIRMED', 503);
+    const event = await verifyCompleted(mutation.workflow, storedDraft, targetDateKey, operationId, draftSha256, draftInputSha256);
+    const draft = await markPublished(env, draftKey, storedDraft, targetDateKey, event, promoted.draft.validation);
+    return { httpStatus: 200, body: { ok: true, published: true, alreadyPublished: mutation.duplicate,
+      source: 'codex_draft', revision: mutation.workflow.revision, draft } };
+  }, true);
+}
 
 const METHODS = ['GET', 'PUT', 'POST', 'OPTIONS'];
 
@@ -218,58 +359,16 @@ export async function onRequest({ request, env }) {
     if (!parsed.ok) return fail(parsed.status, parsed.code, parsed.message);
     if (parsed.value?.action !== 'promote') return fail(400, 'INVALID_ACTION', 'action 必须是 promote');
     const expectedDateKey = cleanDateKey(parsed.value?.targetDateKey) || dateKey();
-    const workflowKey = getWorkflowStorageKey(scope);
-    const draftKey = getCodexDraftStorageKey(expectedDateKey, scope);
-    const workflow = cleanStoredWorkflow(await env.FAVORITES.get(workflowKey, 'json'));
-    const storedDraft = await env.FAVORITES.get(draftKey, 'json');
-
-    const existingSnapshotIsCodex = workflow.todaySnapshot?.dateKey === expectedDateKey
-      && isExpectedDailyWordCount(workflow.todaySnapshot?.words?.length, expectedDateKey)
-      && workflow.todaySnapshot?.source === 'codex_draft';
-    if (existingSnapshotIsCodex) {
-      if (storedDraft) {
-        const publishedDraft = {
-          ...validateCodexDailyDraft(storedDraft, { workflow, expectedDateKey }),
-          status: 'published',
-          publishedAt: storedDraft.publishedAt || new Date().toISOString()
-        };
-        await env.FAVORITES.put(draftKey, JSON.stringify(publishedDraft), {
-          expirationTtl: getCodexDailyDraftTtlSeconds(expectedDateKey)
-        });
-      }
-      return respond({ ok: true, published: true, alreadyPublished: true, source: workflow.todaySnapshot.source });
+    try {
+      const result = await promoteCodexDraftWithoutReplacement(env, {
+        scope, targetDateKey: expectedDateKey, actor: authorization.actor
+      });
+      return respond({ ...result.body,
+        ...(result.body.draft ? { draft: summarizeDraft(result.body.draft) } : {}) }, result.httpStatus);
+    } catch (error) {
+      const failure = codexOperationFailure(error);
+      return fail(failure.status, failure.code, '草稿发布未能确认完成', failure.status === 503);
     }
-    if (!storedDraft) return fail(404, 'CODEX_DRAFT_MISSING', `未找到 ${expectedDateKey} 的 Codex 草稿`, true);
-
-    const promoted = promoteCodexDailyDraft(workflow, storedDraft, { expectedDateKey });
-    if (!promoted.ok) {
-      return respond({
-        ok: false,
-        published: false,
-        error: { code: 'CODEX_DRAFT_INVALID', message: 'Codex 草稿未通过发布门', retryable: true },
-        draft: summarizeDraft(promoted.draft)
-      }, 422);
-    }
-    const operationId = `codex-promote-${scope}-${expectedDateKey}`;
-    const mutation = await commitWorkflowMutation(env, workflowKey, promoted.workflow, {
-      operationId,
-      expectedRevision: null,
-      action: 'codex-daily.promote',
-      actor: authorization.actor,
-      target: expectedDateKey,
-      summary: `发布 Codex 周计划草稿 ${promoted.draft.wordCount} 个词`
-    }, { strategy: 'automated' });
-    await env.FAVORITES.put(draftKey, JSON.stringify(promoted.draft), {
-      expirationTtl: getCodexDailyDraftTtlSeconds(expectedDateKey)
-    });
-    return respond({
-      ok: true,
-      published: true,
-      alreadyPublished: mutation.duplicate,
-      source: 'codex_draft',
-      revision: mutation.workflow.revision,
-      draft: summarizeDraft(promoted.draft)
-    });
   }
 
   const authorization = await authorizeRequest(request, env, { allowCodexAutomation: true });

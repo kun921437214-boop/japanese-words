@@ -1710,4 +1710,33 @@ test('stripInvalidCurrentTodaySnapshot 清除当天旧逻辑快照但保留归�
   assert.deepEqual(cleaned.historySnapshots['2026-06-08'].words, ['旧逻辑词']);
 });
 
+test('backfilling four missing dates preserves every existing daily archive', () => {
+  const missing = new Set(['2026-10-13', '2026-10-14', '2026-10-15', '2026-10-16']);
+  const snapshots = {};
+  for (let offset = 0; offset < 124; offset += 1) {
+    const date = new Date(Date.UTC(2026, 9, 18 - offset)).toISOString().slice(0, 10);
+    if (missing.has(date)) continue;
+    snapshots[date] = {
+      dateKey: date, words: [`existing-${date}`], version: 1,
+      generatedAt: `${date}T00:00:00.000Z`, createdBy: 'codex', source: 'codex_draft'
+    };
+  }
+  const before = cleanStoredWorkflow({
+    words: ['protected-favorite'], statuses: { 'protected-favorite': 'pending' },
+    historySnapshots: snapshots
+  });
+  assert.equal(Object.keys(before.historySnapshots).length, 120);
+  const additions = Object.fromEntries([...missing].map(date => [date, {
+    dateKey: date, words: [`backfill-${date}`], version: 1,
+    generatedAt: '2026-10-18T00:00:00.000Z', createdBy: 'codex', source: 'codex_draft'
+  }]));
+  const saved = mergeWorkflowForFullSave(before, { historySnapshots: additions });
+  for (const [date, snapshot] of Object.entries(before.historySnapshots)) {
+    assert.deepEqual(saved.historySnapshots[date]?.words, snapshot.words, date);
+  }
+  for (const date of missing) assert.deepEqual(saved.historySnapshots[date]?.words, [`backfill-${date}`]);
+  assert.deepEqual(saved.words, before.words);
+  assert.deepEqual(saved.statuses, before.statuses);
+});
+
 console.log('workflow schema smoke tests passed');
