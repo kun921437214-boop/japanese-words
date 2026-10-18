@@ -1,4 +1,5 @@
-import { readFile, readdir } from 'node:fs/promises';
+import { readFile, readdir, open, lstat, realpath, unlink } from 'node:fs/promises';
+import { constants } from 'node:fs';
 import { createHash } from 'node:crypto';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -205,29 +206,124 @@ export function formatOperationsReport(report) {
   return lines.join('\n');
 }
 
+const reportSendQueues = new Map();
+const REPORT_SEND_LOCK = '.operations-report-send.lock';
+const REPORT_TTL_SECONDS = 35 * 86400;
+const reportSendFail = code => { throw Object.assign(new Error(code), { code }); };
+const sameReportInode = (a, b) => a.dev === b.dev && a.ino === b.ino && a.uid === b.uid && a.gid === b.gid;
+
+async function withReportSendLock(kv, operation) {
+  if (!(kv instanceof FileKV) || typeof kv.directory !== 'string'
+      || path.resolve(kv.directory) !== kv.directory) reportSendFail('REPORT_KV_DIRECTORY_INVALID');
+  await kv.ready;
+  const directory = kv.directory, previous = reportSendQueues.get(directory) || Promise.resolve();
+  const current = previous.catch(() => {}).then(async () => {
+    let directoryHandle, lockHandle, owned, directoryIdentity, cleanupFailed = false;
+    const lockPath = path.join(directory, REPORT_SEND_LOCK);
+    try {
+      if (await realpath(directory) !== directory) reportSendFail('REPORT_KV_DIRECTORY_INVALID');
+      directoryIdentity = await lstat(directory, { bigint: true });
+      if (!directoryIdentity.isDirectory() || directoryIdentity.uid !== BigInt(process.getuid())
+          || (directoryIdentity.mode & 0o077n)) reportSendFail('REPORT_KV_DIRECTORY_INVALID');
+      directoryHandle = await open(directory, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+      if (!sameReportInode(await directoryHandle.stat({ bigint: true }), directoryIdentity)) reportSendFail('REPORT_DIRECTORY_CHANGED');
+      // Existing lock is never read, aged out, removed or stolen automatically.
+      try { lockHandle = await open(lockPath, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY | constants.O_NOFOLLOW, 0o600); }
+      catch (error) { if (error?.code === 'EEXIST') reportSendFail('REPORT_SEND_LOCK_HELD'); throw error; }
+      owned = await lockHandle.stat({ bigint: true });
+      if (!owned.isFile() || owned.uid !== BigInt(process.getuid()) || owned.nlink !== 1n
+          || (owned.mode & 0o777n) !== 0o600n) reportSendFail('REPORT_LOCK_IDENTITY_INVALID');
+      await lockHandle.writeFile('daily-report-send-lock-v1\n'); await lockHandle.sync(); await directoryHandle.sync();
+      const checkDirectory = async () => {
+        const currentDirectory = await lstat(directory, { bigint: true });
+        if (await realpath(directory) !== directory || !sameReportInode(currentDirectory, directoryIdentity)
+            || !currentDirectory.isDirectory() || (currentDirectory.mode & 0o077n)) reportSendFail('REPORT_DIRECTORY_CHANGED');
+      };
+      await checkDirectory();
+      // Fresh canonical FileKV avoids stale cached receipts across processes.
+      const receiptKv = new FileKV(directory); await receiptKv.ready;
+      return await operation(receiptKv, async () => { await checkDirectory(); await directoryHandle.sync(); });
+    } finally {
+      if (lockHandle) {
+        try {
+          const currentDirectory = await lstat(directory, { bigint: true });
+          const currentLock = await lstat(lockPath, { bigint: true });
+          const handleLock = await lockHandle.stat({ bigint: true });
+          if (!owned || !sameReportInode(currentDirectory, directoryIdentity) || !currentDirectory.isDirectory()
+              || (currentDirectory.mode & 0o077n) || !currentLock.isFile() || currentLock.nlink !== 1n
+              || (currentLock.mode & 0o777n) !== 0o600n || !sameReportInode(currentLock, owned)
+              || !sameReportInode(handleLock, owned)) reportSendFail('REPORT_LOCK_CLEANUP_IDENTITY_CHANGED');
+          await unlink(lockPath); await directoryHandle.sync();
+        } catch { cleanupFailed = true; }
+        try { await lockHandle.close(); } catch { cleanupFailed = true; }
+      }
+      if (directoryHandle) try { await directoryHandle.close(); } catch { cleanupFailed = true; }
+      if (cleanupFailed) reportSendFail('REPORT_SEND_LOCK_CLEANUP_FAILED');
+    }
+  });
+  reportSendQueues.set(directory, current);
+  try { return await current; }
+  finally { if (reportSendQueues.get(directory) === current) reportSendQueues.delete(directory); }
+}
+
+function reportDefinitelyNotSent(notification) {
+  return notification?.sent === false && (['not_configured', 'invalid_webhook_url'].includes(notification.error)
+    || (notification.error === 'feishu_rejected' && Number.isInteger(notification.remoteCode) && notification.remoteCode !== 0));
+}
+
+async function reportFollowup(report, options) {
+  try { return await reconcileOperationsFollowup(report, options); }
+  catch { return { status: 'not_dispatched', dispatched: false, reason: 'followup_journal_failed' }; }
+}
+
 export async function runOperationsReport(options = {}) {
   const report = await collectOperationsReport(options);
   if (!options.send) return report;
   const kv = options.workflowKv || new FileKV(path.join(process.env.JAPANESE_WORDS_DATA_DIR || '/var/lib/japanese-words', 'workflow-kv'));
-  const key = `operations-health:report:${report.dateKey}`;
-  const digest = createHash('sha256').update(JSON.stringify({ ...report, checkedAt: '' })).digest('hex');
-  const previous = await kv.get(key, 'json');
-  if (previous?.digest === digest && previous?.notification?.sent) {
-    let followup;
-    try { followup = await reconcileOperationsFollowup(report, options); }
-    catch { followup = { status: 'not_dispatched', dispatched: false, reason: 'followup_journal_failed' }; }
-    await kv.put(key, JSON.stringify({ ...report, digest, notification: previous.notification, followup }), { expirationTtl: 35 * 86400 });
-    return { ...report, notification: previous.notification, followup, skipped: true };
-  }
-  const text = formatOperationsReport(report);
-  const notification = await sendOperationsNotification(options.env || process.env, { text, event: 'japanese_words_daily_report' }, options);
-  // Store delivery before followup: a successful webhook never proves task creation.
-  await kv.put(key, JSON.stringify({ ...report, digest, notification, followup: { status: 'pending', dispatched: false } }), { expirationTtl: 35 * 86400 });
-  let followup;
-  try { followup = await reconcileOperationsFollowup(report, options); }
-  catch { followup = { status: 'not_dispatched', dispatched: false, reason: 'followup_journal_failed' }; }
-  await kv.put(key, JSON.stringify({ ...report, digest, notification, followup }), { expirationTtl: 35 * 86400 });
-  return { ...report, notification, followup };
+  return withReportSendLock(kv, async (receiptKv, durableDirectory) => {
+    const assertCurrentDay = () => { if (dateKey(new Date()) !== report.dateKey) reportSendFail('REPORT_DATE_CHANGED_BEFORE_SEND'); };
+    assertCurrentDay();
+    const key = `operations-health:report:${report.dateKey}`;
+    const raw = await receiptKv.get(key, 'text');
+    let previous = null;
+    if (raw !== null) {
+      try { previous = JSON.parse(raw); } catch { reportSendFail('REPORT_RECEIPT_CORRUPT'); }
+      if (!previous || typeof previous !== 'object' || Array.isArray(previous) || previous.dateKey !== report.dateKey)
+        reportSendFail('REPORT_RECEIPT_CORRUPT');
+    } else {
+      // A present-but-unreadable receipt is not evidence of no prior send.
+      try { await lstat(receiptKv.fileForKey(key)); reportSendFail('REPORT_RECEIPT_CORRUPT'); }
+      catch (error) { if (error?.code !== 'ENOENT') throw error; }
+    }
+    if (previous?.notification?.sent === true) {
+      // Never replace the report/digest actually delivered with a later refresh.
+      return { ...previous, skipped: true, skipReason: 'daily_report_already_sent',
+        latestObservation: report, latestFollowup: await reportFollowup(report, options) };
+    }
+    if (previous && !reportDefinitelyNotSent(previous.notification)) {
+      return { ...previous, skipped: true, skipReason: 'daily_report_delivery_unresolved',
+        deliveryState: previous.deliveryState === 'pending' ? 'pending' : 'unknown',
+        latestObservation: report, latestFollowup: await reportFollowup(report, options) };
+    }
+    const digest = createHash('sha256').update(JSON.stringify({ ...report, checkedAt: '' })).digest('hex');
+    const pending = { ...report, digest, deliveryState: 'pending',
+      notification: { configured: false, sent: false, error: 'delivery_not_attempted' },
+      followup: { status: 'pending', dispatched: false } };
+    // Durable pending precedes the only POST; crash/storage failure cannot
+    // authorize an automatic second POST for this Beijing date.
+    await receiptKv.put(key, JSON.stringify(pending), { expirationTtl: REPORT_TTL_SECONDS });
+    await durableDirectory(); assertCurrentDay();
+    const notification = await sendOperationsNotification(options.env || process.env,
+      { text: formatOperationsReport(report), event: 'japanese_words_daily_report' }, options);
+    const receipt = { ...pending, notification, deliveryState: notification.sent === true ? 'sent'
+      : reportDefinitelyNotSent(notification) ? 'not_sent' : 'unknown' };
+    await receiptKv.put(key, JSON.stringify(receipt), { expirationTtl: REPORT_TTL_SECONDS });
+    await durableDirectory();
+    const followup = await reportFollowup(report, options);
+    await receiptKv.put(key, JSON.stringify({ ...receipt, followup }), { expirationTtl: REPORT_TTL_SECONDS });
+    await durableDirectory();
+    return { ...receipt, followup };
+  });
 }
 
 export async function verifyOperationsReportFollowup(taskReceipt, options = {}) {
@@ -241,7 +337,8 @@ async function main() {
   if (process.argv.slice(2).some(arg => arg !== '--send')) throw new Error('invalid_argument');
   const result = await runOperationsReport({ send: process.argv.includes('--send') });
   console.log(JSON.stringify({ event: 'operations_report', ...result }));
-  if (result.notification && !result.notification.sent && !result.skipped) process.exitCode = 1;
+  if ((result.notification && !result.notification.sent && !result.skipped)
+      || ['pending', 'unknown'].includes(result.deliveryState)) process.exitCode = 1;
 }
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   main().catch(() => { console.error(JSON.stringify({ event: 'operations_report_failed', error: 'report_runtime_failed' })); process.exitCode = 1; });

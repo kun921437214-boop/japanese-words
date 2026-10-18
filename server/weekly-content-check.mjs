@@ -2,7 +2,6 @@ import { readFile, stat } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import sharp from 'sharp';
-import { sendOperationsNotification } from '../shared/operations-alert.mjs';
 import {
   CODEX_DAILY_WORD_COUNT,
   getCodexDraftStorageKey,
@@ -17,7 +16,6 @@ import { dateKey } from '../shared/rankings.mjs';
 import { FileKV } from './file-kv.mjs';
 
 const HEALTH_TTL_SECONDS = 35 * 24 * 60 * 60;
-const ALERT_COOLDOWN_MS = 20 * 60 * 60 * 1000;
 
 function parseStoredImageKey(referenceImage = {}, targetDateKey = '') {
   const key = String(referenceImage?.key || '').trim();
@@ -61,15 +59,6 @@ function collectDuplicates(values = []) {
   return [...counts.entries()].filter(([, count]) => count > 1).map(([value]) => value);
 }
 
-async function sendWeeklyAlert(alertUrl, record, fetchImpl = fetch) {
-  return sendOperationsNotification({ OPS_ALERT_WEBHOOK_URL: alertUrl, OPS_ALERT_SIGNING_SECRET: process.env.OPS_ALERT_SIGNING_SECRET }, {
-    text: `[japanese-words] 下周内容${record.status === 'healthy' ? '验收通过' : '异常'}：${record.targetWeekStart} 至 ${record.targetWeekEnd}；${record.totals.words}词/${record.totals.cards}卡/${record.totals.storedImages}图；${record.reasons.join('；') || '7天全部通过'}`,
-    event: 'japanese_words_weekly_content_health', status: record.status,
-    targetWeekStart: record.targetWeekStart, targetWeekEnd: record.targetWeekEnd,
-    reasons: record.reasons, checkedAt: record.checkedAt
-  }, { fetchImpl });
-}
-
 function summarizeDayFailure(day) {
   if (day.valid) return [];
   return day.reasons.map(reason => `${day.targetDateKey}:${reason}`);
@@ -91,7 +80,6 @@ export async function runWeeklyContentCheck(options = {}) {
   const imageKv = options.imageKv || new FileKV(path.join(dataDirectory, 'reference-images-kv'));
   const validateDraft = options.validateDraft || validateCodexDailyDraft;
   const imageExists = options.imageExists || hasStoredReferenceImage;
-  const fetchImpl = options.fetchImpl || fetch;
   const alertUrl = String(options.alertUrl ?? process.env.OPS_ALERT_WEBHOOK_URL ?? '');
   const window = options.window || getWeeklyContentWindow(now);
   const storageKey = getWeeklyContentHealthStorageKey(window.runWeekStart);
@@ -107,13 +95,8 @@ export async function runWeeklyContentCheck(options = {}) {
     && previous.days.length === 7
     && previous.days.every(day => day?.valid)
   ) {
-    const lastAttempt = Date.parse(previous.lastNotificationAttemptAt || '');
-    if (alertUrl && !previous.notification?.sent && (!Number.isFinite(lastAttempt) || now.getTime() - lastAttempt >= ALERT_COOLDOWN_MS)) {
-      previous.notification = await sendWeeklyAlert(alertUrl, previous, fetchImpl);
-      previous.lastNotificationAttemptAt = now.toISOString();
-      await workflowKv.put(storageKey, JSON.stringify(previous), { expirationTtl: HEALTH_TTL_SECONDS });
-    }
-    return { ...previous, skipped: true, skipReason: 'already_verified' };
+    return { ...previous, skipped: true, skipReason: 'already_verified',
+      notification: { configured: Boolean(alertUrl), sent: false, error: '', skipped: true, skipReason: 'covered_by_chinese_daily_report' } };
   }
 
   const workflow = cleanStoredWorkflow(await workflowKv.get('favorites:global', 'json'));
@@ -212,23 +195,12 @@ export async function runWeeklyContentCheck(options = {}) {
     crossDayDuplicateClusters: crossDayDuplicateClusters.slice(0, 20),
     days
   };
-  const previousAttemptMs = Date.parse(String(previous?.lastNotificationAttemptAt || ''));
-  const notificationDue = status === 'unhealthy'
-    && (previous?.status !== 'unhealthy' || !Number.isFinite(previousAttemptMs) || now.getTime() - previousAttemptMs >= ALERT_COOLDOWN_MS);
-  const recoveryDue = status === 'healthy' && previous?.status !== 'healthy';
-  let notification = {
-    configured: Boolean(alertUrl),
-    sent: false,
-    error: '',
-    skipped: true
+  // Weekly validation and recovery are routine content observations, summarized daily.
+  const notification = {
+    configured: Boolean(alertUrl), sent: false, error: '', skipped: true,
+    skipReason: 'covered_by_chinese_daily_report'
   };
-  let lastNotificationAttemptAt = String(previous?.lastNotificationAttemptAt || '');
-  const dailyCoveredGap = isNonUrgentWeeklyGap(record, now);
-  if (dailyCoveredGap) notification.skipReason = 'covered_by_chinese_daily_report';
-  if ((notificationDue && !dailyCoveredGap) || recoveryDue) {
-    notification = await sendWeeklyAlert(alertUrl, record, fetchImpl);
-    lastNotificationAttemptAt = checkedAt;
-  }
+  const lastNotificationAttemptAt = String(previous?.lastNotificationAttemptAt || '');
   const storedRecord = {
     ...record,
     previousStatus: String(previous?.status || ''),

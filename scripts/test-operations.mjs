@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, realpath, rm, stat, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { createHmac } from 'node:crypto';
@@ -20,7 +20,7 @@ const WEBHOOK = 'https://open.feishu.cn/open-apis/bot/v2/hook/placeholder-test-o
 const NOW = new Date();
 const payload = () => ({ source: 'xiaohongshu_creator_export', sourceFileName: 'example.xlsx', capturedAt: new Date(NOW.getTime() - 1000).toISOString(), capturedAtSource: 'official_export', rows: [{ title: '「尊い」の意味', publishedAt: new Date(NOW.getTime() - 86400000).toISOString(), contentType: '图文', impressions: 1000, views: 200, coverClickRate: '20%', likes: 20, comments: 2, favorites: 8, follows: 1, shares: 2, avgWatchSeconds: 5, danmaku: 0 }] });
 async function temporary(t) {
-  const root = await mkdtemp(path.join(os.tmpdir(), 'japanese-ops-test-'));
+  const root = await realpath(await mkdtemp(path.join(os.tmpdir(), 'japanese-ops-test-')));
   t.after(() => rm(root, { recursive: true, force: true }));
   return root;
 }
@@ -62,7 +62,7 @@ test('image verification rejects expired, corrupt, mismatched records without de
   }
 });
 
-test('future weekly gaps retain check records without duplicate alert; recovery still notifies once', async t => {
+test('future weekly gaps and recovery retain records without duplicate alerts', async t => {
   const root = await temporary(t);
   const workflowKv = new FileKV(path.join(root, 'workflow'));
   const imageKv = new FileKV(path.join(root, 'images'));
@@ -83,7 +83,8 @@ test('future weekly gaps retain check records without duplicate alert; recovery 
   const result = await runWeeklyContentCheck(options);
   assert.equal(result.status, 'healthy');
   assert.equal(result.totals.storedImages, 70);
-  assert.equal(notifications, 1);
+  assert.equal(notifications, 0);
+  assert.equal(result.notification.skipReason, 'covered_by_chinese_daily_report');
   assert.equal((await runWeeklyContentCheck({ ...options, validateDraft: () => { throw new Error('unexpected rescan'); } })).skipped, true);
 });
 
@@ -131,6 +132,7 @@ test('official import catches concurrent writes and incorrect readback', async t
 test('daily report distinguishes not-due checks from missing results and retries a failed notification', async t => {
   const kv = new FileKV(await temporary(t));
   const now = new Date('2026-10-01T07:10:00Z');
+  t.mock.timers.enable({ apis: ['Date'], now });
   const words = Array.from({ length: 10 }, (_, index) => `fixture-${index}`);
   await kv.put('favorites:global', JSON.stringify({ revision: 10, todaySnapshot: { dateKey: '2026-10-01', words, source: 'codex_draft' },
     candidatePool: Object.fromEntries(words.map(word => [word, { aiCard: { cardStatus: 'ready', referenceImage: { status: 'ready' } } }])) }));

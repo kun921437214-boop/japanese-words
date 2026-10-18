@@ -1,3 +1,4 @@
+import { LocalWorkflowCoordinator } from '../server/local-coordinator.mjs';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import './test-codex-operations.mjs';
@@ -582,7 +583,7 @@ test('Codex daily context receives separated published learning signals', () => 
 
 test('Codex token can submit drafts but cannot publish or write favorites', async () => {
   const kv = makeKv({ 'favorites:global': { words: [] } });
-  const env = { FAVORITES: kv, CODEX_AUTOMATION_SECRET: 'codex-secret', AUTO_REFRESH_SECRET: 'cron-secret' };
+  const env = { FAVORITES: kv, WORKFLOW_COORDINATOR: new LocalWorkflowCoordinator(kv), CODEX_AUTOMATION_SECRET: 'codex-secret', AUTO_REFRESH_SECRET: 'cron-secret' };
   const submitResponse = await handleCodexDaily({
     request: apiRequest('/codex-daily?date=2026-07-14', {
       method: 'PUT',
@@ -612,7 +613,7 @@ test('Codex token can submit drafts but cannot publish or write favorites', asyn
 
 test('scheduled Worker promotion writes the workflow and is idempotent', async () => {
   const kv = makeKv({ 'favorites:global': { words: ['余裕'] } });
-  const env = { FAVORITES: kv, CODEX_AUTOMATION_SECRET: 'codex-secret', AUTO_REFRESH_SECRET: 'cron-secret' };
+  const env = { FAVORITES: kv, WORKFLOW_COORDINATOR: new LocalWorkflowCoordinator(kv), CODEX_AUTOMATION_SECRET: 'codex-secret', AUTO_REFRESH_SECRET: 'cron-secret' };
   await handleCodexDaily({
     request: apiRequest('/codex-daily?date=2026-07-14', {
       method: 'PUT',
@@ -639,7 +640,7 @@ test('scheduled Worker promotion writes the workflow and is idempotent', async (
   assert.equal((await second.json()).alreadyPublished, true);
 });
 
-test('a valid Codex draft replaces a same-day non-Codex fallback snapshot', async () => {
+test('a valid Codex draft preserves an occupied same-day snapshot', async () => {
   const fallbackWords = Array.from({ length: 20 }, (_, index) => `候选词${index + 1}`);
   const kv = makeKv({
     'favorites:global': {
@@ -654,7 +655,7 @@ test('a valid Codex draft replaces a same-day non-Codex fallback snapshot', asyn
       }
     }
   });
-  const env = { FAVORITES: kv, CODEX_AUTOMATION_SECRET: 'codex-secret', AUTO_REFRESH_SECRET: 'cron-secret' };
+  const env = { FAVORITES: kv, WORKFLOW_COORDINATOR: new LocalWorkflowCoordinator(kv), CODEX_AUTOMATION_SECRET: 'codex-secret', AUTO_REFRESH_SECRET: 'cron-secret' };
   await handleCodexDaily({
     request: apiRequest('/codex-daily?date=2026-07-14', {
       method: 'PUT',
@@ -675,13 +676,11 @@ test('a valid Codex draft replaces a same-day non-Codex fallback snapshot', asyn
   const result = await response.json();
   const stored = await kv.get('favorites:global', 'json');
 
-  assert.equal(response.status, 200);
-  assert.equal(result.published, true);
-  assert.equal(result.alreadyPublished, false);
-  assert.equal(result.source, 'codex_draft');
-  assert.deepEqual(stored.todaySnapshot.words, DAILY_CURATED_WORDS);
-  assert.equal(stored.todaySnapshot.source, 'codex_draft');
-  assert.equal(stored.todaySnapshot.version, 2);
+  assert.equal(response.status, 409);
+  assert.equal(result.error.code, 'CODEX_PROMOTION_EFFECT_CONFLICT');
+  assert.deepEqual(stored.todaySnapshot.words, fallbackWords);
+  assert.equal(stored.todaySnapshot.source, 'candidatePool');
+  assert.equal(stored.todaySnapshot.version, 1);
 });
 
 test('reference image upload is scoped to Codex and can be read by its opaque key', async () => {
@@ -824,7 +823,7 @@ test('daily operations health check persists valid tomorrow draft state', async 
   assert.equal(stored.status, 'healthy');
 });
 
-test('daily operations health check alerts and rejects a missing current snapshot', async () => {
+test('daily operations health check records a missing snapshot for the daily report without duplicate alerts', async () => {
   const kv = makeKv({
     'favorites:global': {
       todaySnapshot: {
@@ -845,12 +844,11 @@ test('daily operations health check alerts and rejects a missing current snapsho
       return new Response('{}', { status: 200 });
     }
   }), /snapshot_date_mismatch/);
-  assert.equal(alertCalls.length, 1);
-  assert.equal(alertCalls[0].body.status, 'unhealthy');
-  assert.equal(alertCalls[0].body.targetDateKey, '2026-07-27');
+  assert.equal(alertCalls.length, 0);
   const stored = await kv.get('operations-health:daily:today-snapshot:2026-07-27', 'json');
   assert.equal(stored.status, 'unhealthy');
-  assert.equal(stored.notification.sent, true);
+  assert.equal(stored.notification.sent, false);
+  assert.equal(stored.notification.skipReason, 'covered_by_chinese_daily_report');
 });
 
 test('late Codex promotion skips missing drafts without triggering a fallback', async () => {

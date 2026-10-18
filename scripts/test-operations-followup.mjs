@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, realpath, rm, stat, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { FileKV } from '../server/file-kv.mjs';
@@ -14,7 +14,7 @@ import { getWeeklyContentWindow } from '../shared/weekly-content-health.mjs';
 const now = new Date('2026-10-06T07:10:00Z');
 const webhook = 'https://open.feishu.cn/open-apis/bot/v2/hook/placeholder-test-only';
 async function temporary(t) {
-  const root = await mkdtemp(path.join(os.tmpdir(), 'japanese-followup-test-'));
+  const root = await realpath(await mkdtemp(path.join(os.tmpdir(), 'japanese-followup-test-')));
   t.after(() => rm(root, { recursive: true, force: true })); return root;
 }
 function report(overrides = {}) {
@@ -142,6 +142,7 @@ test('human-login blocker remains open and missing result transport never claims
 });
 
 test('weekly check still stores all 70 gaps, Chinese daily contains every date, and dispatch is separate from Feishu', async t => {
+  t.mock.timers.enable({ apis: ['Date'], now });
   const root = await temporary(t); const workflowKv = new FileKV(path.join(root, 'workflow'));
   let calls = 0;
   const checked = await runWeeklyContentCheck({ now, workflowKv, imageKv: new FileKV(path.join(root, 'images')), alertUrl: webhook,
@@ -160,13 +161,13 @@ test('weekly check still stores all 70 gaps, Chinese daily contains every date, 
   assert.equal(retried.skipped, true); assert.equal(calls, 1);
 });
 
-test('same-day urgent health alert still sends and records failure', async t => {
+test('same-day routine health gaps remain recorded without duplicate alerts', async t => {
   const root = await temporary(t); const kv = new FileKV(path.join(root, 'workflow')); let calls = 0;
   await assert.rejects(runDailyOperationsHealthCheck({ FAVORITES: kv, OPS_ALERT_WEBHOOK_URL: webhook }, { now,
     kind: 'today-snapshot', fetchImpl: async () => { calls++; return Response.json({ code: 0 }); } }), /health check failed/);
-  assert.equal(calls, 1);
+  assert.equal(calls, 0);
   const stored = await kv.get('operations-health:daily:today-snapshot:2026-10-06', 'json');
-  assert.equal(stored.notification.sent, true); assert.equal(stored.status, 'unhealthy');
+  assert.equal(stored.notification.sent, false); assert.equal(stored.notification.skipReason, 'covered_by_chinese_daily_report'); assert.equal(stored.status, 'unhealthy');
 });
 
 test('weekly quality errors and current-day gaps remain alert eligible; force recheck bypasses prior success', async t => {
