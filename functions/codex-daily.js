@@ -20,6 +20,15 @@ import {
   unauthorizedResponse
 } from '../shared/api-security.mjs';
 import { commitWorkflowMutation } from '../shared/workflow-coordinator.mjs';
+import {
+  codexOperationFailure,
+  codexOperationIdFromHeader,
+  codexValueSha256,
+  executeCodexOperation,
+  lookupCodexOperation,
+  requireCodexOperationId,
+  withCodexWrite
+} from '../shared/codex-operation.mjs';
 
 const METHODS = ['GET', 'PUT', 'POST', 'OPTIONS'];
 
@@ -52,6 +61,20 @@ function summarizeDraft(draft = {}) {
     publishedAt: draft.publishedAt || '',
     validation: draft.validation || null
   };
+}
+
+async function readDraftDocument(env, key) {
+  const raw = await env.FAVORITES.get(key);
+  return raw === null || raw === undefined ? null : JSON.parse(raw);
+}
+
+async function inspectDraftEffect(env, record) {
+  const current = await readDraftDocument(env, record.effect.key);
+  const currentSha256 = await codexValueSha256(current);
+  if (currentSha256 === record.effect.documentSha256) return 'complete';
+  if (currentSha256 !== record.effect.priorSha256) return 'conflict';
+  const workflow = await readDraftDocument(env, record.effect.workflowKey);
+  return await codexValueSha256(workflow) === record.effect.workflowSha256 ? 'absent' : 'conflict';
 }
 
 function cleanPreviewImageUrl(value) {
@@ -252,9 +275,23 @@ export async function onRequest({ request, env }) {
   const authorization = await authorizeRequest(request, env, { allowCodexAutomation: true });
   if (!authorization.ok) return unauthorizedResponse(request, env, authorization, { methods: METHODS, requestId });
   const workflowKey = getWorkflowStorageKey(scope);
-  const workflow = cleanStoredWorkflow(await env.FAVORITES.get(workflowKey, 'json'));
+
+  if (request.method === 'GET' && url.searchParams.has('operationId')) {
+    if (!['codex_automation_secret', 'admin_token', 'local_dev'].includes(authorization.method)) {
+      return fail(403, 'OPERATION_LOOKUP_FORBIDDEN', '当前身份不能查询草稿提交操作');
+    }
+    try {
+      const identity = { scope, kind: 'draft', operationId: requireCodexOperationId(url.searchParams.get('operationId')) };
+      const operation = await lookupCodexOperation(env, identity, record => inspectDraftEffect(env, record));
+      return respond({ ok: true, operation });
+    } catch (error) {
+      const failure = codexOperationFailure(error);
+      return fail(failure.status, failure.code, '草稿提交操作状态无法确认', failure.status === 503);
+    }
+  }
 
   if (request.method === 'GET') {
+    const workflow = cleanStoredWorkflow(await env.FAVORITES.get(workflowKey, 'json'));
     if (view === 'context') return respond({ ok: true, context: buildCodexDailyContext(workflow, targetDateKey) });
     const draftKey = getCodexDraftStorageKey(targetDateKey, scope);
     const storedDraft = await env.FAVORITES.get(draftKey, 'json');
@@ -269,15 +306,46 @@ export async function onRequest({ request, env }) {
   }
   const parsed = await readJsonBody(request, { maxBytes: API_LIMITS.codexDraft });
   if (!parsed.ok) return fail(parsed.status, parsed.code, parsed.message);
-  const draft = validateCodexDailyDraft({
-    ...cleanCodexDailyDraft(parsed.value),
-    targetDateKey: parsed.value?.targetDateKey || targetDateKey,
-    submittedAt: new Date().toISOString(),
-    updatedAt: new Date().toISOString()
-  }, { workflow, expectedDateKey: targetDateKey });
   const draftKey = getCodexDraftStorageKey(targetDateKey, scope);
-  await env.FAVORITES.put(draftKey, JSON.stringify(draft), {
-    expirationTtl: getCodexDailyDraftTtlSeconds(targetDateKey)
-  });
-  return respond({ ok: draft.validation.valid, accepted: true, draft: summarizeDraft(draft) }, draft.validation.valid ? 200 : 422);
+  try {
+    const operationId = codexOperationIdFromHeader(request, parsed.value);
+    const prepare = async () => {
+      const storedWorkflow = await readDraftDocument(env, workflowKey);
+      const workflow = cleanStoredWorkflow(storedWorkflow);
+      const now = new Date().toISOString();
+      const draft = validateCodexDailyDraft({
+        ...cleanCodexDailyDraft(parsed.value), ...(operationId ? { operationId } : {}),
+        targetDateKey: parsed.value?.targetDateKey || targetDateKey, submittedAt: now, updatedAt: now
+      }, { workflow, expectedDateKey: targetDateKey });
+      return { effect: { key: draftKey, document: draft,
+        documentSha256: await codexValueSha256(draft),
+        priorSha256: await codexValueSha256(await readDraftDocument(env, draftKey)),
+        workflowKey, workflowSha256: await codexValueSha256(storedWorkflow),
+        ttlSeconds: getCodexDailyDraftTtlSeconds(targetDateKey) },
+      response: { status: draft.validation.valid ? 200 : 422,
+        body: { ok: draft.validation.valid, accepted: true, draft: summarizeDraft(draft) } } };
+    };
+    const apply = record => env.FAVORITES.put(record.effect.key, JSON.stringify(record.effect.document), {
+      expirationTtl: record.effect.ttlSeconds
+    });
+    if (!operationId) {
+      return await withCodexWrite(env, scope, async () => {
+        const prepared = await prepare();
+        await apply(prepared);
+        return respond(prepared.response.body, prepared.response.status);
+      });
+    }
+    const payload = parsed.value && typeof parsed.value === 'object' && !Array.isArray(parsed.value)
+      ? Object.fromEntries(Object.entries(parsed.value).filter(([key]) => key !== 'operationId'))
+      : parsed.value;
+    const inputSha256 = await codexValueSha256({ targetDateKey, payload });
+    const identity = { scope, kind: 'draft', operationId, target: targetDateKey, inputSha256 };
+    const result = await executeCodexOperation(env, identity, {
+      prepare, apply, inspect: record => inspectDraftEffect(env, record)
+    });
+    return respond({ ...result.body, operation: result.operation }, result.status);
+  } catch (error) {
+    const failure = codexOperationFailure(error);
+    return fail(failure.status, failure.code, '草稿提交未能确认完成', failure.status === 503);
+  }
 }

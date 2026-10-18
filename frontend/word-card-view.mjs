@@ -1,3 +1,4 @@
+import { DEEPSEEK_GENERATION_ENABLED, DEEPSEEK_DISABLED_MESSAGE } from '../shared/generation-policy.mjs';
 import { cleanAiCard } from '../shared/workflow-schema.mjs';
 
 const WORD_CARD_STATUS_LABELS = {
@@ -62,11 +63,11 @@ export function buildWordCardViewModel(options = {}) {
       : '';
   const coverSuggestion = formalContent.coverSuggestion || {};
   const sourceLabel = WORD_CARD_SOURCE_LABELS[card.cardSource] || 'AI 词卡';
-  const statusLabel = status === 'pending' && options.stalePending
+  const statusLabel = !DEEPSEEK_GENERATION_ENABLED && !hasFormalCard ? '等待 Codex 内容' : status === 'pending' && options.stalePending
     ? '生成超时 · 可重试'
     : (WORD_CARD_STATUS_LABELS[status] || WORD_CARD_STATUS_LABELS.none);
   const title = formalContent.suggestedTitles[0] || '';
-  const unavailableMessage = status === 'pending'
+  const unavailableMessage = !DEEPSEEK_GENERATION_ENABLED ? DEEPSEEK_DISABLED_MESSAGE : status === 'pending'
     ? (options.stalePending
         ? `${sourceLabel}生成已超时，请重新生成。正式内容就绪前不会展示推荐标题、例句或参考图。`
         : `${sourceLabel}生成中。生成完成后会刷新为正式词卡内容。`)

@@ -13,6 +13,7 @@
   "include": [
     "shared/api-security.mjs",
     "shared/workflow-coordinator.mjs",
+    "shared/codex-operation.mjs",
     "shared/workflow-mutation.mjs",
     "durable-object/workflow-coordinator.js",
     "functions/healthz.js"

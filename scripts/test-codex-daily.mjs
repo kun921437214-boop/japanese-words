@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import './test-codex-operations.mjs';
+import './test-codex-operation-client.mjs';
 import { createMemoryKv as makeKv } from './test-helpers/kv.mjs';
 import { onRequest as handleCodexDaily } from '../functions/codex-daily.js';
 import {
@@ -772,66 +774,29 @@ test('KV reference images reject payloads above the bounded storage budget', asy
   assert.equal((await upload.json()).error.code, 'IMAGE_TOO_LARGE');
 });
 
-test('midnight trigger prefers Codex and calls DeepSeek only as fallback', async () => {
-  const codexCalls = [];
-  const codexResult = await triggerDailyPublishOrFallback({
-    SITE_URL: 'https://jiyimianbao.pages.dev',
-    AUTO_REFRESH_SECRET: 'cron-secret'
-  }, async (url, options) => {
-    codexCalls.push({ url, options });
-    return new Response(JSON.stringify({ ok: true, published: true, source: 'codex_draft' }), {
-      status: 200,
-      headers: { 'Content-Type': 'application/json' }
+test('midnight trigger publishes Codex without a DeepSeek fallback', async () => {
+  const env = { SITE_URL: 'https://example.invalid', AUTO_REFRESH_SECRET: 'test-only' };
+  for (const fixture of [
+    { status: 200, body: { ok: true, published: true } },
+    { status: 404, body: { error: { code: 'CODEX_DRAFT_MISSING' } } },
+    { status: 422, body: { error: { code: 'CODEX_DRAFT_INVALID' } } },
+    { status: 503, body: {} },
+    { networkError: true }
+  ]) {
+    const calls = [];
+    const result = await triggerDailyPublishOrFallback(env, async (url, options) => {
+      calls.push({ url, options });
+      if (fixture.networkError) throw new Error('offline');
+      return Response.json(fixture.body, { status: fixture.status });
     });
-  });
-  assert.equal(codexResult.source, 'codex');
-  assert.equal(codexCalls.length, 1);
-  assert.match(codexCalls[0].url, /\/codex-daily/);
-
-  const fallbackCalls = [];
-  const fallbackResult = await triggerDailyPublishOrFallback({
-    SITE_URL: 'https://jiyimianbao.pages.dev',
-    AUTO_REFRESH_SECRET: 'cron-secret'
-  }, async (url, options) => {
-    fallbackCalls.push({ url, options });
-    if (url.includes('/codex-daily')) {
-      return new Response(JSON.stringify({ error: { code: 'CODEX_DRAFT_MISSING' } }), {
-        status: 404,
-        headers: { 'Content-Type': 'application/json' }
-      });
-    }
-    return new Response(JSON.stringify({ ok: true, status: 'completed', queued: false }), {
-      status: 200,
-      headers: { 'Content-Type': 'application/json' }
-    });
-  });
-  assert.equal(fallbackResult.ok, true);
-  assert.equal(fallbackResult.source, 'deepseek');
-  assert.equal(fallbackCalls.length, 2);
-  assert.match(fallbackCalls[1].url, /\/daily-refresh/);
-  assert.match(fallbackCalls[1].url, /runInline=true/);
-  assert.equal(fallbackCalls[1].options.headers['Content-Type'], 'application/json');
-});
-
-test('midnight fallback reports queued or failed refreshes as incomplete', async () => {
-  const result = await triggerDailyPublishOrFallback({
-    SITE_URL: 'https://jiyimianbao.pages.dev',
-    AUTO_REFRESH_SECRET: 'cron-secret'
-  }, async url => {
-    if (url.includes('/codex-daily')) {
-      return new Response(JSON.stringify({ error: { code: 'CODEX_DRAFT_MISSING' } }), {
-        status: 404,
-        headers: { 'Content-Type': 'application/json' }
-      });
-    }
-    return new Response(JSON.stringify({ ok: true, status: 'running', queued: true }), {
-      status: 200,
-      headers: { 'Content-Type': 'application/json' }
-    });
-  });
-  assert.equal(result.ok, false);
-  assert.equal(result.source, 'deepseek');
-  assert.equal(result.reason, 'running');
+    assert.equal(calls.length, 1);
+    assert.match(calls[0].url, /\/codex-daily/);
+    assert.equal(JSON.parse(calls[0].options.body).action, 'promote');
+    assert.equal(result.source, 'codex');
+    assert.equal(result.ok, fixture.status === 200);
+    if (fixture.body?.error) assert.equal(result.reason, fixture.body.error.code);
+    if (fixture.networkError) assert.equal(result.reason, 'network_error');
+  }
 });
 
 test('daily operations health check persists valid tomorrow draft state', async () => {

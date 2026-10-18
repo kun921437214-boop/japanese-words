@@ -213,13 +213,53 @@ test('Tencent staging exposes public files from a private mktemp directory', asy
   const release = path.join(root, 'release');
   const staged = await mkdtemp(path.join(root, 'staged-'));
   await mkdir(path.join(release, 'dist'), { recursive: true });
+  await mkdir(path.join(release, 'node_modules'), { recursive: true });
+  await writeFile(path.join(release, 'node_modules', 'reviewed-dependency'), 'patched version');
+  const dependencies = await mkdtemp(path.join(root, 'dependencies-'));
   await writeFile(path.join(release, 'dist', 'app.js'), 'reviewed app\n', { mode: 0o644 });
   assert.equal((await stat(staged)).mode & 0o777, 0o700);
   const deployer = await readFile(new URL('../server/deploy-production.sh', import.meta.url), 'utf8');
   const stage = deployer.slice(deployer.indexOf('cp -a '), deployer.indexOf('echo "Creating a complete workflow'));
-  await execFileAsync('bash', ['-c', 'set -eu\nrelease_dir=$1\nstaged_dist=$2\n' + stage, 'staging', release, staged]);
+  await execFileAsync('bash', ['-c', 'set -eu\nrelease_dir=$1\nstaged_dist=$2\nstaged_dependencies=$3\n' + stage, 'staging', release, staged, dependencies]);
   assert.equal((await stat(staged)).mode & 0o777, 0o755);
   assert.equal(await readFile(path.join(staged, 'app.js'), 'utf8'), 'reviewed app\n');
+  assert.equal((await stat(dependencies)).mode & 0o777, 0o755);
+  assert.equal(await readFile(path.join(dependencies, 'reviewed-dependency'), 'utf8'), 'patched version');
+});
+
+test('Tencent deployment installs tested dependencies and restores them after a failed switch or health check', async t => {
+  const deployer = await readFile(new URL('../server/deploy-production.sh', import.meta.url), 'utf8');
+  const functions = deployer.slice(deployer.indexOf('rollback() {'), deployer.indexOf('echo "Preparing and validating'));
+  for (const scenario of ['success', 'switch-fails', 'health-fails']) {
+    await t.test(scenario, async () => {
+      const root = await mkdtemp(path.join(os.tmpdir(), 'japanese-words-dependencies-'));
+      try {
+        await mkdir(path.join(root, 'app', 'node_modules'), { recursive: true });
+        await mkdir(path.join(root, 'staged'));
+        await writeFile(path.join(root, 'app', 'node_modules', 'version'), 'old');
+        await writeFile(path.join(root, 'staged', 'version'), 'patched');
+        await writeFile(path.join(root, 'production-data'), 'untouched');
+        const harness = [
+          'set -euo pipefail', 'app_dir=$1/app', 'staged_dependencies=$1/staged',
+          'previous_dependencies=$1/previous', 'failed_dependencies=$1/failed',
+          'dependencies_swapped=false', 'dist_swapped=false', 'code_advanced=false', 'current_short=original',
+          'systemctl() { printf "%s\\n" "$*" >> "$app_dir/../service-actions"; }',
+          ...(scenario === 'switch-fails' ? ['mv() { if [[ "$1" == "$staged_dependencies" ]]; then return 1; fi; command mv "$@"; }'] : []),
+          functions,
+          ...(scenario === 'switch-fails' ? ['if swap_runtime_dependencies; then exit 99; fi'] : ['swap_runtime_dependencies']),
+          ...(scenario === 'health-fails' ? ['rollback'] : [])
+        ].join('\n');
+        await execFileAsync('bash', ['-c', harness, 'dependencies', root]);
+        assert.equal(await readFile(path.join(root, 'app', 'node_modules', 'version'), 'utf8'), scenario === 'success' ? 'patched' : 'old');
+        assert.equal(await readFile(path.join(root, 'production-data'), 'utf8'), 'untouched');
+        if (scenario === 'success') assert.equal(await readFile(path.join(root, 'previous', 'version'), 'utf8'), 'old');
+        if (scenario === 'health-fails') {
+          assert.equal(await readFile(path.join(root, 'failed', 'version'), 'utf8'), 'patched');
+          assert.equal(await readFile(path.join(root, 'service-actions'), 'utf8'), 'restart japanese-words.service\nreload nginx\n');
+        }
+      } finally { await rm(root, { recursive: true, force: true }); }
+    });
+  }
 });
 
 test('Tencent release acceptance checks real health JSON and the served artifact', async t => {

@@ -1,5 +1,7 @@
 # Tencent Cloud Migration
 
+As of 2026-10-18, DeepSeek generation and all fallbacks are retired. Existing cards remain readable. References below to DeepSeek jobs describe the historical migration; current generation uses only Codex (see `docs/DEPLOYMENT.md`).
+
 ## Target Architecture
 
 Production uses the existing Tencent Cloud Lighthouse instance in Beijing:

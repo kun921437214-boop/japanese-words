@@ -9,6 +9,8 @@ User=japanese-words
 Group=japanese-words
 WorkingDirectory=/opt/japanese-words/app
 EnvironmentFile=/etc/japanese-words.env
+# One server process, no cluster/PM2 workers or shared-state replicas.
+Environment=JAPANESE_WORDS_RUNTIME_PROCESSES=1
 ExecStart=/usr/bin/node server/tencent-runtime.mjs
 Restart=always
 RestartSec=5

@@ -1,3 +1,4 @@
+import { DEEPSEEK_DISABLED_MESSAGE } from '../shared/generation-policy.mjs';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import test from 'node:test';
@@ -70,7 +71,7 @@ import {
 import { createWorkflowCache } from '../frontend/workflow-cache.mjs';
 import { createWorkflowStore } from '../frontend/workflow-store.mjs';
 import { createWorkflowSync } from '../frontend/workflow-sync.mjs';
-import { buildWordCardViewModel, WORD_CARD_STATUS_LABELS } from '../frontend/word-card-view.mjs';
+import { buildWordCardViewModel } from '../frontend/word-card-view.mjs';
 import { createWorkflowActionsController } from '../frontend/workflow-actions.mjs';
 import { summarizeFavoriteCandidateCoverage } from './smoke-production-model.mjs';
 import {
@@ -113,21 +114,21 @@ test('AI card pending timeout and action state stay deterministic', () => {
   assert.deepEqual(getTodayAiCardActionState({ aiCard: freshPending, nowMs }), {
     status: 'pending',
     stalePending: false,
-    label: '生成中',
+    label: DEEPSEEK_DISABLED_MESSAGE,
     disabled: true
   });
   assert.deepEqual(getTodayAiCardActionState({ aiCard: stalePending, nowMs }), {
     status: 'pending',
     stalePending: true,
-    label: '重试',
-    disabled: false
+    label: DEEPSEEK_DISABLED_MESSAGE,
+    disabled: true
   });
-  assert.equal(getTodayAiCardActionState({ aiCard: { cardStatus: 'ready' } }).label, '重新生成');
-  assert.equal(getTodayAiCardActionState({ aiCard: { cardStatus: 'failed' } }).label, '重试');
+  assert.equal(getTodayAiCardActionState({ aiCard: { cardStatus: 'ready' } }).label, DEEPSEEK_DISABLED_MESSAGE);
+  assert.equal(getTodayAiCardActionState({ aiCard: { cardStatus: 'failed' } }).label, DEEPSEEK_DISABLED_MESSAGE);
   assert.deepEqual(getTodayAiCardActionState({ aiCard: { cardStatus: 'none' }, inFlight: true }), {
     status: 'none',
     stalePending: false,
-    label: '生成中',
+    label: DEEPSEEK_DISABLED_MESSAGE,
     disabled: true
   });
 });
@@ -150,9 +151,9 @@ test('single today-card generation enables only the matching retry mode', () => 
   assert.equal(getSingleTodayAiCardGenerationOptions({ aiCard: stalePending, nowMs }).retryStalePending, true);
 });
 
-test('automatic AI-card policy preserves in-flight, status, and daily-attempt guards', () => {
-  assert.equal(canAutoGenerateAiCard({ aiCard: { cardStatus: 'none' }, attemptCount: 0 }), true);
-  assert.equal(canAutoGenerateAiCard({ aiCard: { cardStatus: 'failed' }, attemptCount: 1 }), true);
+test('retired AI-card generation stays disabled for every status and forced retry', () => {
+  assert.equal(canAutoGenerateAiCard({ aiCard: { cardStatus: 'none' }, attemptCount: 0 }), false);
+  assert.equal(canAutoGenerateAiCard({ aiCard: { cardStatus: 'failed' }, attemptCount: 1 }), false);
   assert.equal(canAutoGenerateAiCard({ aiCard: { cardStatus: 'ready' }, force: true }), false);
   assert.equal(canAutoGenerateAiCard({ aiCard: { cardStatus: 'pending' }, force: true }), false);
   assert.equal(canAutoGenerateAiCard({ aiCard: { cardStatus: 'none' }, inFlight: true }), false);
@@ -164,7 +165,7 @@ test('automatic AI-card policy preserves in-flight, status, and daily-attempt gu
     aiCard: { cardStatus: 'failed' },
     attemptCount: AI_CARD_AUTO_MAX_ATTEMPTS_PER_DAY,
     force: true
-  }), true);
+  }), false);
 });
 
 test('missing today-card selection skips ready, pending, failed, duplicates, and overflow', () => {
@@ -1710,15 +1711,15 @@ test('word card view hides every formal field and reference image until the card
   });
 
   assert.equal(view.hasFormalCard, false);
-  assert.equal(view.statusLabel, '生成中');
+  assert.equal(view.statusLabel, '等待 Codex 内容');
   assert.equal(view.summary, '');
   assert.equal(view.explanation, '');
   assert.deepEqual(view.examples, []);
   assert.deepEqual(view.suggestedTitles, []);
   assert.equal(view.hasReferenceImage, false);
   assert.equal(view.referenceImageUrl, '');
-  assert.equal(view.listTitle, '生成中');
-  assert.match(view.unavailableMessage, /生成中/);
+  assert.equal(view.listTitle, '等待 Codex 内容');
+  assert.equal(view.unavailableMessage, DEEPSEEK_DISABLED_MESSAGE);
 });
 
 test('word card view exposes sanitized formal content and image for ready cards', () => {
@@ -1749,15 +1750,15 @@ test('word card view exposes sanitized formal content and image for ready cards'
   assert.equal(view.listTitle, view.title);
 });
 
-test('word card view labels DeepSeek cards by their stored source and marks stale pending cards retryable', () => {
+test('word card view retains historical DeepSeek source labels without offering retries', () => {
   const view = buildWordCardViewModel({
     aiCard: { cardStatus: 'pending', cardSource: 'deepseek_api' },
     stalePending: true
   });
 
   assert.equal(view.sourceLabel, 'DeepSeek 词卡');
-  assert.equal(view.statusLabel, '生成超时 · 可重试');
-  assert.match(view.unavailableMessage, /DeepSeek 词卡生成已超时/);
+  assert.equal(view.statusLabel, '等待 Codex 内容');
+  assert.equal(view.unavailableMessage, DEEPSEEK_DISABLED_MESSAGE);
 });
 
 test('word card view keeps ready content visible while an explicit regeneration is in flight', () => {
@@ -1790,9 +1791,9 @@ test('word card view centralizes fallback data and failure copy', () => {
     romaji: 'kigarak',
     meaning: '轻松'
   });
-  assert.equal(view.statusLabel, WORD_CARD_STATUS_LABELS.failed);
+  assert.equal(view.statusLabel, '等待 Codex 内容');
   assert.equal(view.summary, '');
-  assert.match(view.unavailableMessage, /生成失败/);
+  assert.equal(view.unavailableMessage, DEEPSEEK_DISABLED_MESSAGE);
 });
 
 test('module migration removes inline handlers and the temporary window compatibility facade', () => {

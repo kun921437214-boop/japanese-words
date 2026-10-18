@@ -1,3 +1,4 @@
+import { DEEPSEEK_GENERATION_ENABLED, DEEPSEEK_DISABLED_CODE, DEEPSEEK_DISABLED_MESSAGE } from '../shared/generation-policy.mjs';
 function cleanText(value, maxLength = 160) {
   return String(value ?? '').trim().slice(0, maxLength);
 }
@@ -41,6 +42,13 @@ export function createApiClient(options = {}) {
   const operationsInFlight = new Set();
 
   async function request(endpoint, requestOptions = {}, config = {}) {
+    const pathname = new URL(endpoint, globalThis.location?.href || 'http://localhost').pathname;
+    if (!DEEPSEEK_GENERATION_ENABLED && requestOptions.method?.toUpperCase() === 'POST'
+      && ['/ai-candidates', '/ai-cards', '/daily-refresh'].includes(pathname)) {
+      return new Response(JSON.stringify({ ok: false, error: {
+        code: DEEPSEEK_DISABLED_CODE, message: DEEPSEEK_DISABLED_MESSAGE, retryable: false
+      } }), { status: 410, headers: { 'Content-Type': 'application/json' } });
+    }
     const timeoutMs = clampInteger(config.timeoutMs, 20000, 1000, 120000);
     const cancelKey = cleanText(config.cancelKey, 120);
     if (cancelKey) activeControllers.get(cancelKey)?.abort();

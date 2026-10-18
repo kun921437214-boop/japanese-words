@@ -135,7 +135,7 @@ Manual words should:
 - Create or update `candidatePool[kanji]`.
 - Use `sourceType = manual_keep`.
 - Preserve existing `manualReviewState`, `manualReviewNote`, and `aiCard`.
-- Generate DeepSeek card later if no `aiCard.ready`.
+- If no `aiCard.ready`, use the Codex content pipeline to supply the card.
 
 Canceling favorite should remove the word from `words` but should not delete the candidatePool entry.
 
@@ -155,7 +155,7 @@ Only show formal card sections when:
 candidatePool[kanji].aiCard.cardStatus === "ready"
 ```
 
-Without a ready card, show only basic information and a "generate DeepSeek word card" action.
+Without a ready card, show basic information and the disabled-generation notice. DeepSeek generation is retired as of 2026-10-18; existing cards and historical source fields remain readable. New candidates, cards and covers use the Codex content pipeline. Missing Codex drafts must not fall back to DeepSeek.
 
 For Codex daily drafts, `cardStatus = ready` is necessary but not sufficient. The publication gate also verifies every required section, its allowed item count, all five example fields (`jp`, `kana`, `romaji`, `cn`, and context note/source), cover fields, at least one explained similar word, and 2-4 interaction prompts.
 

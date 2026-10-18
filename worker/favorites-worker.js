@@ -1,3 +1,5 @@
+import { DEEPSEEK_GENERATION_ENABLED } from '../shared/generation-policy.mjs';
+import { sendOperationsNotification } from '../shared/operations-alert.mjs';
 import {
   addDays,
   buildRankingForDate,
@@ -110,11 +112,9 @@ async function readLimitedText(response, maxLength = 500) {
 }
 
 function cleanAlertUrl(value) {
-  const text = String(value || '').trim();
-  if (!text) return '';
   try {
-    const url = new URL(text);
-    return ['https:', 'http:'].includes(url.protocol) ? url.toString() : '';
+    const url = new URL(String(value || '').trim());
+    return url.protocol === 'https:' ? url.toString() : '';
   } catch {
     return '';
   }
@@ -125,37 +125,11 @@ function dailyHealthStorageKey(kind, targetDateKey) {
 }
 
 async function sendOperationsAlert(env, record, options = {}) {
-  const webhookUrl = cleanAlertUrl(env.OPS_ALERT_WEBHOOK_URL);
-  if (!webhookUrl) return { configured: false, sent: false, error: '' };
-  const fetchImpl = options.fetchImpl || fetch;
-  const stateLabel = record.status === 'healthy' ? '恢复' : '异常';
-  try {
-    const response = await fetchImpl(webhookUrl, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        text: `[japanese-words] 每日内容${stateLabel}：${record.kind} ${record.targetDateKey}（${record.reasons.join('；') || '检查通过'}）`,
-        event: 'japanese_words_daily_health',
-        status: record.status,
-        kind: record.kind,
-        targetDateKey: record.targetDateKey,
-        reasons: record.reasons,
-        checkedAt: record.checkedAt
-      }),
-      signal: globalThis.AbortSignal?.timeout?.(10_000)
-    });
-    if (!response.ok) {
-      const message = await readLimitedText(response);
-      throw new Error(`HTTP ${response.status}${message ? `: ${message}` : ''}`);
-    }
-    return { configured: true, sent: true, error: '' };
-  } catch (error) {
-    return {
-      configured: true,
-      sent: false,
-      error: String(error?.message || error).slice(0, 500)
-    };
-  }
+  return sendOperationsNotification(env, {
+    text: `[japanese-words] 每日内容${record.status === 'healthy' ? '恢复' : '异常'}：${record.kind} ${record.targetDateKey}（${record.reasons.join('；') || '检查通过'}）`,
+    event: 'japanese_words_daily_health', status: record.status, kind: record.kind,
+    targetDateKey: record.targetDateKey, reasons: record.reasons, checkedAt: record.checkedAt
+  }, options);
 }
 
 function buildDraftHealthRecord(draft, targetDateKey, checkedAt) {
@@ -288,41 +262,16 @@ export async function triggerDailyPublishOrFallback(env, fetchImpl = fetch) {
       console.log('Codex daily draft promoted', targetDateKey, result.source || 'codex_draft');
       return { ok: true, source: 'codex', status: codexResponse.status };
     }
-    console.warn('Codex daily draft unavailable; using DeepSeek fallback', codexResponse.status, result?.error?.code || 'UNKNOWN');
-  } catch (error) {
-    console.warn('Codex daily draft promotion failed; using DeepSeek fallback', error?.message || error);
-  }
-
-  const refreshUrl = new URL(`${siteUrl}/daily-refresh`);
-  refreshUrl.searchParams.set('mode', 'manual');
-  refreshUrl.searchParams.set('runInline', 'true');
-  refreshUrl.searchParams.set('skipCards', 'true');
-  const response = await fetchImpl(refreshUrl.toString(), {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${autoRefreshSecret}`
-    },
-    body: JSON.stringify({ action: 'scheduled_fallback', targetDateKey })
-  });
-  const result = await response.json().catch(() => null);
-  if (!response.ok || result?.ok === false || result?.queued === true || result?.status === 'failed') {
-    const reason = result?.error?.code || result?.error || result?.status || 'daily_refresh_failed';
-    console.warn('daily refresh did not complete', response.status, reason);
     return {
       ok: false,
-      source: 'deepseek',
-      status: response.status,
-      reason: String(reason).slice(0, 200)
+      source: 'codex',
+      status: codexResponse.status,
+      reason: result?.error?.code || 'CODEX_DRAFT_UNAVAILABLE'
     };
+  } catch (error) {
+    console.warn('Codex daily draft promotion failed', error?.message || error);
+    return { ok: false, source: 'codex', status: 0, reason: 'network_error' };
   }
-  console.log('daily refresh completed', response.status, result?.status || 'completed');
-  return {
-    ok: true,
-    source: 'deepseek',
-    status: response.status,
-    refreshStatus: String(result?.status || 'completed')
-  };
 }
 
 export async function triggerCodexPromotionIfAvailable(env, fetchImpl = fetch) {
@@ -888,7 +837,7 @@ export default {
       );
     }
 
-    if (AI_CARD_BATCH_CRONS.has(cron)) {
+    if (DEEPSEEK_GENERATION_ENABLED && AI_CARD_BATCH_CRONS.has(cron)) {
       ctx.waitUntil(
         triggerTodayAiCardBatch(env).catch(error => console.warn('ai card batch failed', error?.message || error))
       );
