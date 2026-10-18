@@ -47,6 +47,7 @@ const AI_CARD_BATCH_CRONS = new Set([
 const AI_CARD_BATCH_MAX_WORDS = 5;
 const DAILY_HEALTH_TTL_SECONDS = 30 * 24 * 60 * 60;
 const DAILY_HEALTH_NOTIFICATION_COOLDOWN_MS = 30 * 60 * 1000;
+const dailyHealthChecksInFlight = new WeakMap();
 export const AI_CARD_FAILED_RETRY_TTL_MS = 30 * 60 * 1000;
 
 function toCount(value) {
@@ -173,7 +174,50 @@ function buildSnapshotHealthRecord(workflow, targetDateKey, checkedAt) {
   };
 }
 
+function isMissingDraftHealthRecord(record) {
+  return record?.kind === 'tomorrow-draft'
+    && record.status === 'unhealthy'
+    && Array.isArray(record.reasons)
+    && record.reasons.length === 1
+    && record.reasons[0] === 'draft_missing';
+}
+
+function isRoutineDailyContentFailure(record) {
+  const reasonsByKind = {
+    'tomorrow-draft': new Set(['draft_missing', 'draft_date_mismatch', 'draft_not_valid', 'draft_validation_failed', 'draft_word_count_incomplete', 'draft_cards_incomplete']),
+    'today-snapshot': new Set(['snapshot_date_mismatch', 'snapshot_word_count_incomplete'])
+  };
+  const allowed = reasonsByKind[record?.kind];
+  return Boolean(allowed) && record.status === 'unhealthy'
+    && Array.isArray(record.reasons) && record.reasons.length > 0
+    && record.reasons.every(reason => allowed.has(reason));
+}
+
 export async function runDailyOperationsHealthCheck(env, options = {}) {
+  if (!env.FAVORITES) throw new Error('daily health check requires FAVORITES storage');
+  const kind = options.kind === 'tomorrow-draft' ? 'tomorrow-draft' : 'today-snapshot';
+  const now = options.now instanceof Date ? new Date(options.now.getTime()) : new Date();
+  const currentDateKey = dateKey(now);
+  const targetDateKey = kind === 'tomorrow-draft' ? addDays(currentDateKey, 1) : currentDateKey;
+  const key = dailyHealthStorageKey(kind, targetDateKey);
+  let pending = dailyHealthChecksInFlight.get(env.FAVORITES);
+  if (!pending) {
+    pending = new Map();
+    dailyHealthChecksInFlight.set(env.FAVORITES, pending);
+  }
+  // Serialize this KV instance and key only; this is not a distributed lock.
+  const run = (pending.get(key) || Promise.resolve()).catch(() => {}).then(() => (
+    runDailyOperationsHealthCheckUnlocked(env, { ...options, kind, now })
+  ));
+  pending.set(key, run);
+  try {
+    return await run;
+  } finally {
+    if (pending.get(key) === run) pending.delete(key);
+  }
+}
+
+async function runDailyOperationsHealthCheckUnlocked(env, options = {}) {
   if (!env.FAVORITES) throw new Error('daily health check requires FAVORITES storage');
   const kind = options.kind === 'tomorrow-draft' ? 'tomorrow-draft' : 'today-snapshot';
   const now = options.now instanceof Date ? options.now : new Date();
@@ -195,9 +239,27 @@ export async function runDailyOperationsHealthCheck(env, options = {}) {
     );
 
   const previousAttemptMs = Date.parse(String(previous?.lastNotificationAttemptAt || ''));
+  const continuingMissingDraft = isMissingDraftHealthRecord(record)
+    && isMissingDraftHealthRecord(previous)
+    && previous.targetDateKey === targetDateKey;
+  let draftMissingNotifiedAt = '';
+  if (continuingMissingDraft) {
+    const persistedSuccessAt = String(previous?.draftMissingNotifiedAt || '');
+    if (Number.isFinite(Date.parse(persistedSuccessAt))) {
+      draftMissingNotifiedAt = persistedSuccessAt;
+    } else if (previous?.notification?.sent === true && Number.isFinite(previousAttemptMs)) {
+      // Migrate only a recorded successful send, never an attempt or a skipped check.
+      draftMissingNotifiedAt = previous.lastNotificationAttemptAt;
+    }
+  }
   const notificationDue = record.status === 'unhealthy'
+    && !draftMissingNotifiedAt
     && (!Number.isFinite(previousAttemptMs) || now.getTime() - previousAttemptMs >= DAILY_HEALTH_NOTIFICATION_COOLDOWN_MS);
   const recoveryDue = record.status === 'healthy' && previous?.status === 'unhealthy';
+  // Content failures and their recoveries belong only in the Chinese daily report.
+  const dailyReportOnly = isRoutineDailyContentFailure(record)
+    || (recoveryDue && previous?.kind === record.kind
+      && previous?.targetDateKey === targetDateKey && isRoutineDailyContentFailure(previous));
   let notification = {
     configured: Boolean(cleanAlertUrl(env.OPS_ALERT_WEBHOOK_URL)),
     sent: false,
@@ -205,17 +267,22 @@ export async function runDailyOperationsHealthCheck(env, options = {}) {
     skipped: true
   };
   let lastNotificationAttemptAt = String(previous?.lastNotificationAttemptAt || '');
-  if (notificationDue || recoveryDue) {
+  if (dailyReportOnly) notification.skipReason = 'covered_by_chinese_daily_report';
+  if ((notificationDue || recoveryDue) && !dailyReportOnly) {
     notification = {
       ...(await sendOperationsAlert(env, record, options)),
       skipped: false
     };
     lastNotificationAttemptAt = checkedAt;
   }
+  if (isMissingDraftHealthRecord(record) && notification.sent === true) {
+    draftMissingNotifiedAt = checkedAt;
+  }
   const storedRecord = {
     ...record,
     previousStatus: String(previous?.status || ''),
     lastNotificationAttemptAt,
+    ...(kind === 'tomorrow-draft' ? { draftMissingNotifiedAt } : {}),
     notification
   };
   await env.FAVORITES.put(key, JSON.stringify(storedRecord), {
@@ -279,7 +346,7 @@ export async function triggerDailyPublishOrFallback(env, fetchImpl = fetch) {
     body: JSON.stringify({ action: 'scheduled_fallback', targetDateKey })
   });
   const result = await response.json().catch(() => null);
-  if (!response.ok || result?.ok === false || result?.queued === true || result?.status === 'failed') {
+  if (!response.ok || result?.ok !== true || result?.queued === true || result?.status !== 'completed') {
     const reason = result?.error?.code || result?.error || result?.status || 'daily_refresh_failed';
     console.warn('daily refresh did not complete', response.status, reason);
     return {
@@ -289,7 +356,27 @@ export async function triggerDailyPublishOrFallback(env, fetchImpl = fetch) {
       reason: String(reason).slice(0, 200)
     };
   }
-  console.log('daily refresh completed', response.status, result?.status || 'completed');
+  // A completed run-state does not prove that its merged snapshot is today's list.
+  // Reuse the same authoritative, read-only snapshot check as daily health.
+  let snapshotFailure = '';
+  try {
+    if (!env.FAVORITES) {
+      snapshotFailure = 'daily_refresh_snapshot_storage_missing';
+    } else {
+      const workflow = cleanStoredWorkflow(await env.FAVORITES.get('favorites:global', 'json'));
+      const checkedAt = new Date();
+      const snapshotHealth = buildSnapshotHealthRecord(workflow, targetDateKey, checkedAt.toISOString());
+      if (dateKey(checkedAt) !== targetDateKey) snapshotFailure = 'daily_refresh_date_changed';
+      else if (snapshotHealth.status !== 'healthy') snapshotFailure = snapshotHealth.reasons.join(', ');
+    }
+  } catch {
+    snapshotFailure = 'daily_refresh_snapshot_read_failed';
+  }
+  if (snapshotFailure) {
+    console.warn('daily refresh did not complete', response.status, snapshotFailure);
+    return { ok: false, source: 'deepseek', status: response.status, reason: snapshotFailure };
+  }
+  console.log('daily refresh completed', response.status, result.status);
   return {
     ok: true,
     source: 'deepseek',

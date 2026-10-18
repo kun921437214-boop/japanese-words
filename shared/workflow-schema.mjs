@@ -13,7 +13,8 @@ const SCHEMA_VERSION = 3;
 const WORDS_LIMIT = 500;
 const PUBLISHED_RECORDS_LIMIT = 1000;
 const AI_BATCHES_LIMIT = 100;
-const HISTORY_SNAPSHOTS_LIMIT = 120;
+// Keep existing archives while backfilling the four missing daily snapshots.
+const HISTORY_SNAPSHOTS_LIMIT = 124;
 const TODAY_SNAPSHOT_HISTORY_LIMIT = 45;
 const AI_PREVIEW_ITEMS_LIMIT = 100;
 const TEAM_DISMISSED_WORDS_LIMIT = 100;

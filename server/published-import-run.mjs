@@ -116,7 +116,7 @@ async function main() {
     ).catch(() => fail('IMPORT_HEALTH_WRITE_FAILED'));
   }
   const notification = result.status === 'verified'
-    ? await sendOperationsNotification(process.env, { text: `[japanese-words] 官方数据导入并读回通过；批次 ${result.batchId}；revision ${result.revision}`, event: 'published_import_verified' })
+    ? { sent: false, skipped: true, skipReason: 'covered_by_chinese_daily_report' }
     : { sent: false };
   console.log(JSON.stringify({ event: 'published_import_completed', ...result, notification }));
 }
