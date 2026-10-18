@@ -26,6 +26,7 @@ const backupImageKv = new FileKV(path.join(partialDirectory, 'reference-images-k
 const workflowKeys = await copyKv(workflowKv, backupWorkflowKv, { reportListedKeys: true });
 const imageKeys = await copyKv(imageKv, backupImageKv, { reportListedKeys: true });
 const draftKeys = workflowKeys.filter(key => key.startsWith('codex-draft:'));
+const operationKeys = workflowKeys.filter(key => key.startsWith('codex-operation:'));
 const manifest = {
   version: 1,
   createdAt: new Date().toISOString(),
@@ -33,6 +34,8 @@ const manifest = {
   workflowKeyCount: workflowKeys.length,
   codexDraftCount: draftKeys.length,
   codexDraftKeys: draftKeys,
+  codexOperationCount: operationKeys.length,
+  codexOperationKeys: operationKeys,
   referenceImageCount: imageKeys.length,
   sha256: digest
 };
@@ -49,6 +52,7 @@ console.log(JSON.stringify({
   published: workflow.publishedRecords.length,
   workflowKeys: workflowKeys.length,
   codexDrafts: draftKeys.length,
+  codexOperations: operationKeys.length,
   referenceImages: imageKeys.length,
   sha256: digest
 }, null, 2));

@@ -1,4 +1,4 @@
-import { commitWorkflowMutationDirect } from '../shared/workflow-coordinator.mjs';
+import { cleanWorkflowStorageKey, commitWorkflowMutationDirect } from '../shared/workflow-coordinator.mjs';
 
 export class LocalWorkflowCoordinator {
   constructor(kv) {
@@ -40,5 +40,10 @@ export class LocalWorkflowCoordinator {
     } finally {
       if (this.queues.get(key) === current) this.queues.delete(key);
     }
+  }
+
+  withCodexWrite(key, operation) {
+    if (!cleanWorkflowStorageKey(key)) throw new Error('Invalid workflow storage key');
+    return this.enqueue(key, operation);
   }
 }

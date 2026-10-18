@@ -5,12 +5,13 @@ import {
   applyCodexImageManifestResult,
   applyCodexImageUploadResult,
   getCodexImageContentType,
-  getPendingCodexImageItems,
-  isRetryableCodexImageUploadError
+  getPendingCodexImageItems
 } from '../shared/codex-image-batch.mjs';
 import { addDays, cleanDateKey, dateKey } from '../shared/rankings.mjs';
 import { validateCodexDailyDraft } from '../shared/codex-daily-draft.mjs';
 import { fetchJsonResponse } from './lib/http-json.mjs';
+import { runCodexClientOperation } from './lib/codex-operation-client.mjs';
+import { codexValueSha256, requireCodexOperationId } from '../shared/codex-operation.mjs';
 
 function loadLocalAutomationEnv() {
   const envFile = path.resolve(process.env.CODEX_DAILY_ENV_FILE || '.env.codex-daily');
@@ -105,12 +106,6 @@ function print(value) {
   process.stdout.write(`${JSON.stringify(value, null, 2)}\n`);
 }
 
-function sleep(milliseconds) {
-  return new Promise(resolve => {
-    setTimeout(resolve, milliseconds);
-  });
-}
-
 function getPositiveInteger(value, fallback, label) {
   if (value === undefined || value === null || value === '') return fallback;
   const result = Number.parseInt(String(value), 10);
@@ -137,24 +132,28 @@ function getBatchImageFile(entry, imagesDirectory, manifest) {
   return matches[0] ? path.join(imagesDirectory, matches[0]) : '';
 }
 
-async function requestJsonWithRetry(url, options, {
-  attempts,
-  baseDelayMilliseconds,
-  onRetry
-}) {
-  let lastError = null;
-  for (let attempt = 1; attempt <= attempts; attempt += 1) {
-    try {
-      return await requestJson(url, options);
-    } catch (error) {
-      lastError = error;
-      if (attempt >= attempts || !isRetryableCodexImageUploadError(error)) throw error;
-      const delayMilliseconds = Math.min(baseDelayMilliseconds * (2 ** (attempt - 1)), 10000);
-      onRetry?.({ attempt, nextAttempt: attempt + 1, delayMilliseconds, error });
-      await sleep(delayMilliseconds);
-    }
+async function operationRequest(url, options, settings = {}) {
+  if (args['new-operation'] !== undefined && args['new-operation'] !== true) {
+    throw new Error('--new-operation 必须作为无值的显式开关');
   }
-  throw lastError;
+  const operationPrefix = args['operation-id-prefix'];
+  let operationId = args['operation-id'] || '';
+  if (args.command === 'upload-images') {
+    if (operationId) throw new Error('批量上传请使用 --operation-id-prefix，不共用一个 operationId');
+    if (operationPrefix) {
+      requireCodexOperationId(operationPrefix);
+      if (operationPrefix.length > 80) throw new Error('--operation-id-prefix 最多80字符');
+      operationId = operationPrefix + '-' + (await codexValueSha256({ date: targetDateKey, word: settings.word })).slice(0, 32);
+    }
+  } else if (operationPrefix) throw new Error('--operation-id-prefix 仅用于批量上传');
+  return runCodexClientOperation({
+    url, options, kind: settings.word ? 'image' : 'draft', request: requestJson,
+    journalDirectory: path.resolve(args['operations-dir'] || path.join(getOutputDirectory(args, targetDateKey), 'operations')),
+    operationId, newOperation: Boolean(args['new-operation']),
+    attempts: settings.attempts || getPositiveInteger(args.attempts, 3, '--attempts'),
+    retryDelayMs: settings.baseDelayMilliseconds ?? getPositiveInteger(args['retry-delay-ms'], 1500, '--retry-delay-ms'),
+    onRetry: settings.onRetry
+  });
 }
 
 const args = parseArgs(process.argv.slice(2));
@@ -169,8 +168,9 @@ if (args.command === 'help') {
       validate: '本地校验 --draft 文件，不发送网络写请求',
       submit: '校验并提交 --draft，必须额外提供 --confirm-submit',
       'upload-image': '上传 --file 对应的 --word 参考图片，必须额外提供 --confirm-submit',
-      'upload-images': '批量上传草稿缺失图片，逐张写回 --draft/--manifest，支持断点续传和瞬时错误重试'
+      'upload-images': '批量上传草稿缺失图片，逐张写回 --draft/--manifest；持久ID，未知结果先查询再用同ID重试'
     },
+    operationOptions: { 'operations-dir': '持久操作日志目录，默认输出目录/operations', 'operation-id': '单次操作显式ID；默认首次生成并持久保存', 'operation-id-prefix': '批量操作显式ID前缀', 'new-operation': '已核对旧操作完成后开始新批准内容；须同时指定显式ID/批量前缀' },
     defaultTargetDate: targetDateKey
   });
   process.exit(0);
@@ -220,12 +220,12 @@ if (args.command === 'validate' || args.command === 'submit') {
   const token = getToken();
   const url = new URL(`${site}/codex-daily`);
   url.searchParams.set('date', targetDateKey);
-  const data = await requestJson(url, {
+  const data = await operationRequest(url, {
     method: 'PUT',
     headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
     body: JSON.stringify(draftInput)
   });
-  print({ ok: true, command: 'submit', targetDateKey, reportFile, draft: data.draft });
+  print({ ok: true, command: 'submit', targetDateKey, reportFile, draft: data.draft, operation: data.operation });
   process.exit(0);
 }
 
@@ -241,11 +241,11 @@ if (args.command === 'upload-image') {
   const url = new URL(`${site}/codex-image`);
   url.searchParams.set('date', targetDateKey);
   url.searchParams.set('word', word);
-  const data = await requestJson(url, {
+  const data = await operationRequest(url, {
     method: 'PUT',
     headers: { Authorization: `Bearer ${token}`, 'Content-Type': contentType },
     body: fs.readFileSync(file)
-  });
+  }, { word });
   print({ ok: true, command: 'upload-image', targetDateKey, word, ...data });
   process.exit(0);
 }
@@ -328,11 +328,12 @@ if (args.command === 'upload-images') {
     url.searchParams.set('word', entry.word);
     let data;
     try {
-      data = await requestJsonWithRetry(url, {
+      data = await operationRequest(url, {
         method: 'PUT',
         headers: { Authorization: `Bearer ${token}`, 'Content-Type': contentType },
         body: fs.readFileSync(entry.file)
       }, {
+        word: entry.word,
         attempts,
         baseDelayMilliseconds,
         onRetry({ nextAttempt, delayMilliseconds, error }) {
@@ -361,19 +362,22 @@ if (args.command === 'upload-images') {
         order: entry.order,
         word: entry.word,
         httpStatus: Number(error?.status) || null,
-        errorCode: error?.data?.error?.code || 'NETWORK_ERROR',
+        errorCode: error?.code || error?.data?.error?.code || 'NETWORK_ERROR',
         message: error.message
       });
       process.exit(1);
     }
 
-    const generatedAt = new Date().toISOString();
+    const generatedAt = data.operation?.createdAt || new Date().toISOString();
     const relativeFile = path.relative(imagesDirectory, entry.file) || path.basename(entry.file);
     applyCodexImageUploadResult(draft, entry.word, data, generatedAt);
     applyCodexImageManifestResult(manifest, entry.word, data, {
       file: relativeFile,
       generatedAt
     });
+    manifest[entry.word].operationId = data.operation.operationId;
+    manifest[entry.word].inputSha256 = data.operation.inputSha256;
+    manifest[entry.word].resultSha256 = data.operation.resultSha256;
     writeJson(draftFile, draft);
     writeJson(manifestFile, manifest);
     uploaded += 1;
@@ -382,6 +386,7 @@ if (args.command === 'upload-images') {
       command: 'upload-images',
       targetDateKey,
       status: 'checkpoint',
+      operationId: data.operation.operationId,
       order: entry.order,
       word: entry.word,
       uploaded,

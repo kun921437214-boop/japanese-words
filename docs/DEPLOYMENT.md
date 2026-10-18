@@ -84,6 +84,14 @@ The override is rejected unless the bundle HEAD, fetched target commit, and
 target `package-lock.json` digest all match the pinned values. The normal
 dependency-free path remains unchanged.
 
+The tested `node_modules` directory is staged on the application filesystem and
+switched with the code and static build. Failed switches or health checks restore
+the previous dependencies before restarting the application. A successful release
+preserves the old dependency directory beside the previous static artifact under
+the private releases backup directory. A lockfile approval alone does not prove
+that the running process uses the patched package; verify the installed version
+and the application's health after deployment.
+
 After it succeeds, run the read-only smoke check from a trusted workstation and visually check the affected desktop and mobile workflows. A GitHub push is never sufficient authorization to run this command.
 
 ### Reviewed Node 22 runtime upgrade
@@ -183,20 +191,24 @@ Important workflow fields:
 
 Any server write must preserve all major fields, even if the current endpoint only edits one of them. Tencent writes are serialized by `LocalWorkflowCoordinator`; the retained Cloudflare stack uses the external `WORKFLOW_COORDINATOR` Durable Object when explicitly restored.
 
+## DeepSeek retirement (2026-10-18)
+
+New content uses the Codex pipeline. DeepSeek candidate/card generation, cover regeneration, and scheduled fallback are disabled. Legacy generation POST routes return non-retryable HTTP 410 before provider calls or workflow writes. Existing cards and source attribution remain readable; GET status routes remain available. Existing DeepSeek environment variables do not re-enable generation.
+
 ## Daily Refresh
 
-The protected endpoint is:
+The legacy generation endpoint is retired (POST returns HTTP 410; GET remains read-only):
 
 ```text
 POST /daily-refresh
 Authorization: Bearer <AUTO_REFRESH_SECRET>
 ```
 
-The Tencent runtime calls this endpoint through its internal scheduler. Cloudflare cron is intentionally empty while Tencent is Production; any rollback schedule must be reviewed and enabled only after Tencent scheduling is disabled.
+The Tencent runtime no longer calls this endpoint for daily generation. Cloudflare cron is intentionally empty while Tencent is Production; any rollback schedule must be reviewed and enabled only after Tencent scheduling is disabled.
 
 The daily path has two completion checks:
 
-- 00:00 Asia/Shanghai promotion first tries the valid Codex draft, then runs DeepSeek inline as fallback. A queued or failed fallback is not success and leaves the scheduler marker retryable.
+- 00:00 Asia/Shanghai promotion uses only a valid Codex draft. Missing or invalid drafts return an explicit failure without a DeepSeek fallback.
 - 00:10 checks the current `todaySnapshot`; 17:15 checks the next-day Codex draft. Results are stored as `operations-health:daily:*` records, reported in `/healthz`, and sent to `OPS_ALERT_WEBHOOK_URL` when configured.
 
 The Tencent runtime checks above are a service-side safety net. Current Codex operator automation runs separately:
@@ -223,9 +235,9 @@ Then retry deployment.
 
 Confirm Nginx is serving the new `dist/`, compare the deployed Git commit with the approved GitHub `main` commit, then hard refresh the browser. Browser JS and CSS are configured for revalidation.
 
-### DeepSeek generation fails
+### Legacy DeepSeek generation returns HTTP 410
 
-Check that `DEEPSEEK_API_KEY` exists in `/etc/japanese-words.env`, then inspect the protected `/daily-refresh` run state and `journalctl -u japanese-words.service`.
+This is intentional. Supply new content through the Codex pipeline; do not restore the old provider call or retry the retired endpoints.
 
 ### Daily refresh is unauthorized
 
